@@ -3,7 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="NVSPlotter" Width="1280" Height="820"
         WindowStartupLocation="CenterScreen"
-        WindowState="Maximized" UseLayoutRounding="False">
+        WindowState="Maximized" UseLayoutRounding="False"
+        PreviewKeyDown="Window_PreviewKeyDown">
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="360"/>
@@ -39,9 +40,18 @@
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <TextBlock Text="Tool:" Width="90" VerticalAlignment="Center"/>
-                                <ComboBox x:Name="ToolCombo" Width="190">
-                                    <ComboBoxItem Content="Line" IsSelected="True"/>
-                                    <ComboBoxItem Content="Pan (Middle Mouse also works)"/>
+                                <ComboBox x:Name="ToolCombo" Width="190" SelectedValuePath="Tag" SelectionChanged="ToolCombo_SelectionChanged">
+                                    <ComboBoxItem Content="Line" Tag="Line" IsSelected="True"/>
+                                    <ComboBoxItem Content="Pan (Middle Mouse also works)" Tag="Pan"/>
+                                    <ComboBoxItem Content="Rectangle Tool" Tag="Rectangle"/>
+                                    <ComboBoxItem Content="Circle Tool" Tag="Circle"/>
+                                    <ComboBoxItem Content="Polyline Tool" Tag="Polyline"/>
+                                    <ComboBoxItem Content="Measurement Tool" Tag="Measure"/>
+                                    <ComboBoxItem Content="Guides / Grid Tool" Tag="Guides"/>
+                                    <ComboBoxItem Content="Text / Annotation Tool" Tag="Text"/>
+                                    <ComboBoxItem Content="Selection / Transform Tool" Tag="Select"/>
+                                    <ComboBoxItem Content="Crop / Mask Tool" Tag="Crop"/>
+                                    <ComboBoxItem Content="Image Alignment Tool" Tag="ImageAlign"/>
                                 </ComboBox>
                             </StackPanel>
 
@@ -52,8 +62,39 @@
                                 
                             </StackPanel>
 
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Reference:" Width="90" VerticalAlignment="Center"/>
+                                <Button x:Name="ImportImageBtn" Content="Import image" Width="79" Click="ImportImageBtn_Click"/>
+                                <Button x:Name="ClearImageBtn" Content="Remove" Width="53" Margin="8,0,0,0" Click="ClearImageBtn_Click"/>
+                                <CheckBox x:Name="ImageLockCheck" Content="Lock" Margin="8,0,0,0" VerticalAlignment="Center" Click="ImageLockCheck_Click"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Rotation:" Width="90" VerticalAlignment="Center"/>
+                                <Slider x:Name="ImageRotateSlider" Minimum="-180" Maximum="180" Value="0" Width="150"
+                                        ValueChanged="ImageRotateSlider_ValueChanged"/>
+                                <TextBlock x:Name="ImageRotateValue" Width="60" Margin="10,0,0,0" VerticalAlignment="Center" Text="0°"/>
+                                <Button x:Name="ImageRotateResetBtn" Content="Reset" Width="60" Margin="8,0,0,0" Click="ImageRotateResetBtn_Click"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Image filter:" Width="90" VerticalAlignment="Center"/>
+                                <ComboBox x:Name="ImageFilterCombo" Width="190" SelectedValuePath="Tag" SelectionChanged="ImageFilterCombo_SelectionChanged" IsEnabled="False">
+                                    <ComboBoxItem Content="None" Tag="None" IsSelected="True"/>
+                                    <ComboBoxItem Content="Grayscale" Tag="Grayscale"/>
+                                    <ComboBoxItem Content="Sepia" Tag="Sepia"/>
+                                    <ComboBoxItem Content="Invert" Tag="Invert"/>
+                                    <ComboBoxItem Content="High Contrast" Tag="HighContrast"/>
+                                </ComboBox>
+                            </StackPanel>
+
                             <StackPanel x:Name="status" Orientation="Horizontal" Margin="0,0,0,8">
                                 <TextBlock x:Name="WorkingAreaStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Measure:" Width="90" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="MeasurementStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555" Text="—"/>
                             </StackPanel>
 
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
@@ -67,8 +108,8 @@
                             <WrapPanel Orientation="Horizontal" >
                                 <Button x:Name="ClearBtn" Content="Clear" Width="55" Click="ClearBtn_Click"/>
                                 <Button x:Name="UndoBtn" Content="Undo" Width="55" Click="UndoBtn_Click"/>
-                                <Button x:Name="FitBtn" Content="Fit" Width="44" Click="FitBtn_Click"/>
-                                <Button x:Name="RotateCanvasBtn" Content="Rotate 90°" Width="154" Click="RotateCanvasBtn_Click" Height="30"/>
+                                <Button x:Name="FitBtn" Content="Fit" Width="77" Click="FitBtn_Click"/>
+                                <Button x:Name="RotateCanvasBtn" Content="Rotate 90°" Width="110" Click="RotateCanvasBtn_Click" Height="30"/>
                             </WrapPanel>
                         </StackPanel>
                     </GroupBox>
@@ -163,6 +204,7 @@
                 MouseUp="DrawCanvas_MouseUp"
                 MouseMove="DrawCanvas_MouseMove"
                 MouseLeave="DrawCanvas_MouseLeave"
+                MouseRightButtonDown="DrawCanvas_MouseRightButtonDown"
                 MouseLeftButtonDown="DrawCanvas_MouseLeftButtonDown"
                 MouseLeftButtonUp="DrawCanvas_MouseLeftButtonUp"/>
                         <Canvas x:Name="RulerCanvas" IsHitTestVisible="False" Panel.ZIndex="10"/>
