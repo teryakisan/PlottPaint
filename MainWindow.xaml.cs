@@ -23,7 +23,7 @@ namespace NVSPlotter
     public partial class MainWindow : Window
     {
         // --- Document is stored in mm; canvas is "px" where 1 px = 1 mm before zoom ---
-        private PlotDocument _doc = new PlotDocument(841, 1189);
+        private PlotDocument _doc = new PlotDocument(Settings.Default.bedX, Settings.Default.bedY);
 
         private readonly ReferenceImageService _imageService = new();
         private readonly WorkingAreaManager _workingAreaManager = new();
@@ -407,39 +407,135 @@ namespace NVSPlotter
             AppendLog("Ports refreshed.");
         }
 
-        private void ConnectBtn_Click(object sender, RoutedEventArgs e)
+        private async void ConnectBtn_Click(object sender, RoutedEventArgs e)
         {
-            AppendLog("Connect action not implemented yet.");
+            if (_grbl?.IsOpen == true)
+            {
+                await DisconnectAsync();
+                UpdateConnStatus();
+                return;
+            }
+
+            var port = GetSelectedPort();
+            if (string.IsNullOrWhiteSpace(port))
+            {
+                AppendLog("Select a serial port first.");
+                return;
+            }
+
+            var baud = GetSelectedBaud();
+
+            try
+            {
+                _grbl?.Dispose();
+                _grbl = new GrblConnection(port, baud, AppendLog);
+
+                UpdateConnStatus();
+                await _grbl.OpenAsync();
+                _sendCts = new CancellationTokenSource();
+
+                AppendLog("Connected to GRBL.");
+                await LoadGrblSettingsAsync();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Connect failed: " + ex.Message);
+                await DisconnectAsync();
+            }
+            finally
+            {
+                UpdateConnStatus();
+            }
         }
 
-        private void HomeBtn_Click(object sender, RoutedEventArgs e)
+        private string? GetSelectedPort()
         {
-            AppendLog("Home command not implemented yet.");
+            var port = PortCombo?.SelectedItem as string ?? PortCombo?.SelectedValue as string;
+            return string.IsNullOrWhiteSpace(port) ? null : port;
         }
 
-        private void UnlockBtn_Click(object sender, RoutedEventArgs e)
+        private int GetSelectedBaud()
         {
-            AppendLog("Unlock command not implemented yet.");
+            var value = (BaudCombo?.SelectedItem as ComboBoxItem)?.Content?.ToString()
+                        ?? BaudCombo?.SelectedValue?.ToString();
+
+            if (int.TryParse(value, NumberStyles.Integer, CultureInfo.InvariantCulture, out var baud))
+            {
+                return baud;
+            }
+
+            return 115200;
         }
 
-        private void ResetBtn_Click(object sender, RoutedEventArgs e)
+        private async Task DisconnectAsync()
         {
-            AppendLog("Reset command not implemented yet.");
+            _sendCts?.Cancel();
+            _sendCts?.Dispose();
+            _sendCts = null;
+
+            if (_grbl != null)
+            {
+                try
+                {
+                    await _grbl.CloseAsync();
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("Error while closing port: " + ex.Message);
+                }
+                finally
+                {
+                    _grbl.Dispose();
+                    _grbl = null;
+                }
+
+                AppendLog("Disconnected.");
+            }
         }
 
-        private void SendBtn_Click(object sender, RoutedEventArgs e)
+        private async Task LoadGrblSettingsAsync()
         {
-            AppendLog("Send G-code not implemented yet.");
-        }
+            if (_grbl == null) return;
 
-        private void StopBtn_Click(object sender, RoutedEventArgs e)
-        {
-            AppendLog("Stop command not implemented yet.");
-        }
+            try
+            {
+                var lines = await _grbl.SendAndCollectAsync("$$", TimeSpan.FromSeconds(3));
 
-        private void ManualSendBtn_Click(object sender, RoutedEventArgs e)
-        {
-            AppendLog("Manual send not implemented yet.");
+                double bedX = _bedX;
+                double bedY = _bedY;
+                int homingMask = _homingDirMask;
+
+                foreach (var line in lines)
+                {
+                    if (line.StartsWith("$130=") && double.TryParse(line[5..], NumberStyles.Float, CultureInfo.InvariantCulture, out var x))
+                    {
+                        bedX = x;
+                        _bedFromGrbl = true;
+                    }
+                    else if (line.StartsWith("$131=") && double.TryParse(line[5..], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
+                    {
+                        bedY = y;
+                        _bedFromGrbl = true;
+                    }
+                    else if (line.StartsWith("$23=") && int.TryParse(line[4..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var mask))
+                    {
+                        homingMask = mask;
+                    }
+                }
+
+                _bedX = bedX;
+                _bedY = bedY;
+                _homingDirMask = homingMask;
+                _homeAtMaxX = (_homingDirMask & 0x01) != 0;
+                _homeAtMaxY = (_homingDirMask & 0x02) != 0;
+
+                AppendLog($"Read $$: $130={_bedX:0.###}, $131={_bedY:0.###}, $23={_homingDirMask}");
+                RenderAll();
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Failed to query $$: " + ex.Message);
+            }
         }
 
         private void UndoBtn_Click(object sender, RoutedEventArgs e)
@@ -495,7 +591,6 @@ namespace NVSPlotter
             CanvasScroll.ScrollToHorizontalOffset(newOffX);
             CanvasScroll.ScrollToVerticalOffset(newOffY);
         }
-
 
         // ----------------------------
         // Canvas: Draw / Pan
@@ -1300,5 +1395,104 @@ namespace NVSPlotter
 
             _imageManipulator.BeginHandle(e, handle);
         }
+
+        private async void HomeBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureConnected()) return;
+
+            try
+            {
+                await _grbl!.SendLineWaitOkAsync("$H", TimeSpan.FromSeconds(30), _sendCts?.Token ?? CancellationToken.None);
+                _isHomed = true;
+                AppendLog("Homing completed.");
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Homing failed: " + ex.Message);
+            }
+        }
+
+        private async void UnlockBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureConnected()) return;
+
+            try
+            {
+                await _grbl!.SendLineWaitOkAsync("$X", TimeSpan.FromSeconds(5), _sendCts?.Token ?? CancellationToken.None);
+                AppendLog("Machine unlocked.");
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Unlock failed: " + ex.Message);
+            }
+        }
+
+        private async void ResetBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureConnected()) return;
+
+            try
+            {
+                await _grbl!.SoftResetAsync();
+                _isHomed = false;
+                AppendLog("Soft reset sent.");
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Reset failed: " + ex.Message);
+            }
+        }
+
+        private void SendBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Send G-code not implemented yet.");
+        }
+
+        private void StopBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (_sendCts == null)
+            {
+                AppendLog("Nothing to cancel.");
+                return;
+            }
+
+            _sendCts.Cancel();
+            _sendCts.Dispose();
+            _sendCts = new CancellationTokenSource();
+            AppendLog("Operation cancelled.");
+        }
+
+        private async void ManualSendBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureConnected()) return;
+
+            var cmd = ManualCmdBox?.Text?.Trim();
+            if (string.IsNullOrWhiteSpace(cmd))
+            {
+                AppendLog("Enter a GRBL command first.");
+                return;
+            }
+
+            try
+            {
+                await _grbl!.SendAndCollectAsync(cmd, TimeSpan.FromSeconds(5), _sendCts?.Token ?? CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Manual send failed: " + ex.Message);
+            }
+        }
+
+        private bool EnsureConnected()
+        {
+            if (_grbl?.IsOpen == true)
+            {
+                return true;
+            }
+
+            AppendLog("Not connected to GRBL.");
+            return false;
+        }
+
     }
  }

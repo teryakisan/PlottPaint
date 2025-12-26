@@ -102,8 +102,8 @@
                            
 
                             
-
-                        <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                    
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <TextBlock Text="Zoom:" Width="90" VerticalAlignment="Center"/>
                                 <!-- NOTE: no ValueChanged handler here on purpose -->
                                 <Slider x:Name="ZoomSlider" Minimum="0.1" Maximum="4.0" Value="1.0"
@@ -117,7 +117,11 @@
                                 <Button x:Name="FitBtn" Content="Fit" Width="77" Click="FitBtn_Click"/>
                                 <Button x:Name="RotateCanvasBtn" Content="Rotate 90°" Width="110" Click="RotateCanvasBtn_Click" Height="30"/>
                             </WrapPanel>
+                            
+
                         </StackPanel>
+                        
+                        
                     </GroupBox>
 
                     <GroupBox Header="G-code" Margin="0,0,0,10">
