@@ -27,6 +27,7 @@ namespace NVSPlotter
 
         private readonly ReferenceImageService _imageService = new();
         private readonly WorkingAreaManager _workingAreaManager = new();
+        private readonly ReferenceImageManipulator _imageManipulator;
 
         // Canvas transforms
         private readonly ScaleTransform _zoom = new ScaleTransform(1.0, 1.0);
@@ -38,35 +39,15 @@ namespace NVSPlotter
         private Line? _workingAreaCrosshairVertical;
 
         // Reference image manipulation state
-        private ImageHandle _activeImageHandle = ImageHandle.None;
-        private PointMm _imageDragStart;
-        private Rect _imageRectStart;
-        private const double MIN_IMAGE_SIZE = 20.0;
-        private double _imageRotateStartAngle;
-        private double _imageRotateStartVectorAngle;
-        private PointMm _imageRotateCenter;
         private bool _suppressRotateSlider;
         private bool _suppressImageFilterChange;
         private const double ROTATE_HANDLE_OFFSET = 40.0;
         private const double ROTATE_HANDLE_SIZE = 16.0;
         private const int CIRCLE_SEGMENTS = 64;
-        private const double MEASUREMENT_MARKER_RADIUS = 4.0;
 
         // Drawing state
-        private bool _isDrawing;
-        private PointMm _startMm;
-        private Line? _previewLine;
-        private Shape? _previewShape;
-        private ToolMode _activeDrawingTool = ToolMode.Line;
-        private bool _isPolylineActive;
-        private PointMm _polylineLastPoint;
-        private bool _isMeasuring;
-        private bool _hasMeasurement;
-        private PointMm _measurementStart;
-        private PointMm _measurementEnd;
-        private Line? _measurementLine;
-        private Ellipse? _measurementStartMarker;
-        private Ellipse? _measurementEndMarker;
+        private readonly MeasurementOverlay _measurementOverlay;
+        private readonly ShapeDrawingController _shapeController;
 
         // Undo
         private readonly Stack<LineStroke> _undo = new Stack<LineStroke>();
@@ -116,8 +97,25 @@ namespace NVSPlotter
             UpdateReferenceUiState();
             RefreshPorts();
 
-            RenderAll();
-            UpdateConnStatus();
+            _measurementOverlay = new MeasurementOverlay(
+                DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
+                MeasurementStatus);
+
+            _imageManipulator = new ReferenceImageManipulator(
+                _imageService,
+                DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
+                CanvasScroll ?? throw new InvalidOperationException("CanvasScroll control is missing."),
+                () => _doc,
+                RenderAll,
+                UpdateReferenceUiState);
+
+            _shapeController = new ShapeDrawingController(
+                DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
+                stroke => { _doc.Strokes.Add(stroke); _lastGcode = ""; },
+                RenderAll);
+
+             RenderAll();
+             UpdateConnStatus();
         }
 
         private void UpdateReferenceUiState()
@@ -307,7 +305,7 @@ namespace NVSPlotter
         {
             _imageService.Clear();
             SetImageLocked(false);
-            EndImageManipulation();
+            _imageManipulator.End();
             UpdateReferenceUiState();
             RenderAll();
         }
@@ -370,7 +368,7 @@ namespace NVSPlotter
 
             if (locked)
             {
-                EndImageManipulation();
+                _imageManipulator.End();
             }
 
             UpdateReferenceUiState();
@@ -391,6 +389,57 @@ namespace NVSPlotter
             _undo.Clear();
             _lastGcode = "";
             RenderAll();
+        }
+
+        private void ExportBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Export G-code not implemented yet.");
+        }
+
+        private void CopyBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Copy G-code not implemented yet.");
+        }
+
+        private void RefreshPortsBtn_Click(object sender, RoutedEventArgs e)
+        {
+            RefreshPorts();
+            AppendLog("Ports refreshed.");
+        }
+
+        private void ConnectBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Connect action not implemented yet.");
+        }
+
+        private void HomeBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Home command not implemented yet.");
+        }
+
+        private void UnlockBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Unlock command not implemented yet.");
+        }
+
+        private void ResetBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Reset command not implemented yet.");
+        }
+
+        private void SendBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Send G-code not implemented yet.");
+        }
+
+        private void StopBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Stop command not implemented yet.");
+        }
+
+        private void ManualSendBtn_Click(object sender, RoutedEventArgs e)
+        {
+            AppendLog("Manual send not implemented yet.");
         }
 
         private void UndoBtn_Click(object sender, RoutedEventArgs e)
@@ -485,25 +534,22 @@ namespace NVSPlotter
             {
                 CancelWorkingAreaDrag();
             }
-            if (_activeImageHandle != ImageHandle.None)
+            if (_imageManipulator.IsManipulating)
             {
-                EndImageManipulation();
+                _imageManipulator.End();
             }
-            if (_isDrawing)
+            _shapeController.CancelAll();
+            if (_measurementOverlay.IsMeasuring)
             {
-                CancelPreview();
-            }
-            if (_isMeasuring)
-            {
-                ResetMeasurement();
+                _measurementOverlay.Reset();
             }
         }
 
         private void DrawCanvas_MouseMove(object sender, MouseEventArgs e)
         {
-            if (_activeImageHandle != ImageHandle.None)
+            if (_imageManipulator.IsManipulating)
             {
-                UpdateImageManipulation(e);
+                _imageManipulator.Update(e);
                 return;
             }
 
@@ -530,41 +576,19 @@ namespace NVSPlotter
                 return;
             }
 
-            if (_isMeasuring)
+            if (_measurementOverlay.IsMeasuring)
             {
                 var measurePoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-                UpdateMeasurement(measurePoint);
+                _measurementOverlay.Update(measurePoint);
                 e.Handled = true;
                 return;
             }
  
-            if (!_isDrawing)
-            {
-                if (_isPolylineActive)
-                {
-                    var polyPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-                    UpdatePolylinePreview(polyPoint);
-                }
-                return;
-            }
-
             var mm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-
-            switch (_activeDrawingTool)
+            if (_shapeController.Update(mm))
             {
-                case ToolMode.Rectangle:
-                    UpdateRectanglePreview(mm);
-                    break;
-                case ToolMode.Circle:
-                    UpdateCirclePreview(mm);
-                    break;
-                default:
-                    if (_previewLine != null)
-                    {
-                        _previewLine.X2 = mm.X;
-                        _previewLine.Y2 = mm.Y;
-                    }
-                    break;
+                e.Handled = true;
+                return;
             }
         }
 
@@ -580,14 +604,16 @@ namespace NVSPlotter
 
             if (tool == ToolMode.Polyline)
             {
-                HandlePolylineClick(e);
+                var point = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                _shapeController.HandlePolylineClick(point, e.ClickCount >= 2);
+                e.Handled = true;
                 return;
             }
 
             if (tool == ToolMode.Measure)
             {
                 var start = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-                BeginMeasurement(start);
+                _measurementOverlay.Begin(start);
                 DrawCanvas.CaptureMouse();
                 e.Handled = true;
                 return;
@@ -595,220 +621,41 @@ namespace NVSPlotter
 
             if (tool == ToolMode.Pan || _isPanning) return; // Pan tool
 
-            _activeDrawingTool = tool;
-            _isDrawing = true;
-            _startMm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-
-            switch (tool)
-            {
-                case ToolMode.Rectangle:
-                    BeginRectanglePreview(_startMm);
-                    break;
-                case ToolMode.Circle:
-                    BeginCirclePreview(_startMm);
-                    break;
-                default:
-                    BeginLinePreview(_startMm);
-                    break;
-            }
-
-            DrawCanvas.CaptureMouse();
+            var startPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+            _shapeController.BeginDraw(tool, startPoint);
             e.Handled = true;
         }
 
         private void DrawCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
+            if (_imageManipulator.IsManipulating)
+            {
+                _imageManipulator.End();
+                e.Handled = true;
+                return;
+            }
+
             if (_workingAreaManager.IsDragging)
             {
                 CompleteWorkingAreaDrag(e);
                 return;
             }
 
-            if (_isMeasuring)
+            if (_measurementOverlay.IsMeasuring)
             {
                 var measureEnd = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-                CompleteMeasurement(measureEnd);
+                _measurementOverlay.Complete(measureEnd, Distance);
                 e.Handled = true;
                 return;
             }
 
-            if (!_isDrawing) return;
-
-            var endMm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-
-            switch (_activeDrawingTool)
+            if (_shapeController.IsDrawing)
             {
-                case ToolMode.Rectangle:
-                    FinalizeRectangle(_startMm, endMm);
-                    break;
-                case ToolMode.Circle:
-                    FinalizeEllipse(_startMm, endMm);
-                    break;
-                default:
-                    AddStroke(_startMm, endMm);
-                    break;
-            }
-
-            CancelPreview();
-
-            RenderAll();
-            e.Handled = true;
-        }
-
-        private void CancelPreview()
-        {
-            _isDrawing = false;
-            if (_previewLine != null)
-            {
-                DrawCanvas.Children.Remove(_previewLine);
-                _previewLine = null;
-            }
-            if (_previewShape != null)
-            {
-                DrawCanvas.Children.Remove(_previewShape);
-                _previewShape = null;
-            }
-             DrawCanvas.ReleaseMouseCapture();
-         }
-
-        private void AddStroke(PointMm start, PointMm end)
-        {
-            if (Distance(start, end) < 0.25) return;
-            _doc.Strokes.Add(new LineStroke(start, end));
-            _lastGcode = "";
-        }
-        
-        private void BeginMeasurement(PointMm start)
-        {
-            _isMeasuring = true;
-            _hasMeasurement = false;
-            _measurementStart = start;
-            _measurementEnd = start;
-
-            ClearMeasurementVisuals();
-
-            _measurementLine = new Line
-            {
-                Stroke = Brushes.MediumPurple,
-                StrokeThickness = 1.5,
-                StrokeDashArray = new DoubleCollection { 2, 2 },
-                SnapsToDevicePixels = true
-            };
-            DrawCanvas.Children.Add(_measurementLine);
-            Panel.SetZIndex(_measurementLine, 18);
-
-            _measurementStartMarker = CreateMeasurementMarker();
-            _measurementEndMarker = CreateMeasurementMarker();
-            DrawCanvas.Children.Add(_measurementStartMarker);
-            DrawCanvas.Children.Add(_measurementEndMarker);
-            Panel.SetZIndex(_measurementStartMarker, 19);
-            Panel.SetZIndex(_measurementEndMarker, 19);
-
-            UpdateMeasurement(start);
-        }
-
-        private void UpdateMeasurement(PointMm current)
-        {
-            _measurementEnd = current;
-
-            if (_measurementLine != null)
-            {
-                _measurementLine.X1 = _measurementStart.X;
-                _measurementLine.Y1 = _measurementStart.Y;
-                _measurementLine.X2 = _measurementEnd.X;
-                _measurementLine.Y2 = _measurementEnd.Y;
-            }
-
-            SetMarkerPosition(_measurementStartMarker, _measurementStart);
-            SetMarkerPosition(_measurementEndMarker, _measurementEnd);
-
-            UpdateMeasurementStatus(_measurementStart, _measurementEnd);
-        }
-
-        private void CompleteMeasurement(PointMm end)
-        {
-            _measurementEnd = end;
-            var dist = Distance(_measurementStart, _measurementEnd);
-            if (dist < 0.25)
-            {
-                ResetMeasurement();
+                var endMm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                _shapeController.CompleteDraw(endMm);
+                RenderAll();
+                e.Handled = true;
                 return;
-            }
-
-            UpdateMeasurement(_measurementEnd);
-            _isMeasuring = false;
-            _hasMeasurement = true;
-            if (DrawCanvas.IsMouseCaptured)
-            {
-                DrawCanvas.ReleaseMouseCapture();
-            }
-        }
-
-        private void ResetMeasurement()
-        {
-            _isMeasuring = false;
-            _hasMeasurement = false;
-            ClearMeasurementVisuals();
-            UpdateMeasurementStatusText("—");
-            if (DrawCanvas.IsMouseCaptured)
-            {
-                DrawCanvas.ReleaseMouseCapture();
-            }
-        }
-
-        private void ClearMeasurementVisuals()
-        {
-            if (_measurementLine != null)
-            {
-                DrawCanvas.Children.Remove(_measurementLine);
-                _measurementLine = null;
-            }
-            if (_measurementStartMarker != null)
-            {
-                DrawCanvas.Children.Remove(_measurementStartMarker);
-                _measurementStartMarker = null;
-            }
-            if (_measurementEndMarker != null)
-            {
-                DrawCanvas.Children.Remove(_measurementEndMarker);
-                _measurementEndMarker = null;
-            }
-        }
-
-        private static Ellipse CreateMeasurementMarker()
-        {
-            return new Ellipse
-            {
-                Width = MEASUREMENT_MARKER_RADIUS * 2,
-                Height = MEASUREMENT_MARKER_RADIUS * 2,
-                Stroke = Brushes.MediumPurple,
-                StrokeThickness = 1,
-                Fill = Brushes.White,
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-        }
-
-        private static void SetMarkerPosition(Ellipse? marker, PointMm position)
-        {
-            if (marker == null) return;
-            Canvas.SetLeft(marker, position.X - MEASUREMENT_MARKER_RADIUS);
-            Canvas.SetTop(marker, position.Y - MEASUREMENT_MARKER_RADIUS);
-        }
-
-        private void UpdateMeasurementStatus(PointMm start, PointMm end)
-        {
-            var dist = Distance(start, end);
-            var angle = Math.Atan2(end.Y - start.Y, end.X - start.X) * 180.0 / Math.PI;
-            if (angle < 0) angle += 360.0;
-            UpdateMeasurementStatusText($"{dist:0.##} mm @ {angle:0.#}°");
-        }
-
-        private void UpdateMeasurementStatusText(string text)
-        {
-            if (MeasurementStatus != null)
-            {
-                MeasurementStatus.Text = text;
             }
         }
 
@@ -857,17 +704,412 @@ namespace NVSPlotter
             }
             return new PointMm(_doc.WidthMm / 2.0, _doc.HeightMm / 2.0);
         }
- 
-         private static double Distance(PointMm a, PointMm b)
-         {
-             var dx = a.X - b.X;
-             var dy = a.Y - b.Y;
-             return Math.Sqrt(dx * dx + dy * dy);
-         }
 
-        // ----------------------------
-        // Render
-        // ----------------------------
+        private static double Distance(PointMm a, PointMm b)
+        {
+            var dx = a.X - b.X;
+            var dy = a.Y - b.Y;
+            return Math.Sqrt(dx * dx + dy * dy);
+        }
+
+        private void DrawCanvas_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (_measurementOverlay.IsMeasuring || (GetCurrentTool() == ToolMode.Measure && _measurementOverlay.HasMeasurement))
+            {
+                _measurementOverlay.Reset();
+                e.Handled = true;
+                return;
+            }
+
+            if (_shapeController.TryFinishPolyline())
+            {
+                e.Handled = true;
+            }
+        }
+
+        private void ToolCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_measurementOverlay == null) return;
+
+            var tool = GetCurrentTool();
+
+            if (tool != ToolMode.Measure && (_measurementOverlay.IsMeasuring || _measurementOverlay.HasMeasurement))
+            {
+                _measurementOverlay.Reset();
+            }
+
+            if (tool != ToolMode.Polyline)
+            {
+                _shapeController.FinishPolyline();
+            }
+            if (_shapeController.IsDrawing && tool != ToolMode.Polyline)
+            {
+                _shapeController.CancelAll();
+            }
+        }
+
+        private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (_measurementOverlay.IsMeasuring && e.Key == Key.Escape)
+            {
+                _measurementOverlay.Reset();
+                e.Handled = true;
+                return;
+            }
+
+            if (_shapeController.IsPolylineActive && (e.Key == Key.Escape || e.Key == Key.Enter || e.Key == Key.Return))
+            {
+                _shapeController.FinishPolyline();
+                e.Handled = true;
+                return;
+            }
+
+            if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.Z)
+            {
+                PerformUndo();
+                e.Handled = true;
+            }
+        }
+
+        private void AppendLog(string message)
+        {
+            if (ConsoleBox == null) return;
+
+            var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
+            ConsoleBox.AppendText(line + Environment.NewLine);
+            ConsoleBox.ScrollToEnd();
+        }
+
+        private void RefreshPorts()
+        {
+            if (PortCombo == null) return;
+
+            var previous = PortCombo.SelectedItem as string ?? PortCombo.SelectedValue as string;
+            var ports = SerialPort.GetPortNames().OrderBy(p => p).ToList();
+
+            PortCombo.ItemsSource = ports;
+
+            if (previous != null && ports.Contains(previous))
+            {
+                PortCombo.SelectedItem = previous;
+            }
+            else if (ports.Count > 0)
+            {
+                PortCombo.SelectedIndex = 0;
+            }
+
+            UpdateConnStatus();
+        }
+
+        private void UpdateConnStatus()
+        {
+            var isConnected = _grbl?.IsOpen == true;
+
+            if (ConnStatusLabel != null)
+            {
+                ConnStatusLabel.Text = isConnected
+                    ? $"Connected: {_grbl!.PortName} @ {_grbl.BaudRate}"
+                    : "Disconnected";
+            }
+
+            if (ConnectBtn != null)
+            {
+                ConnectBtn.Content = isConnected ? "Disconnect" : "Connect";
+            }
+
+            if (PortCombo != null)
+            {
+                PortCombo.IsEnabled = !isConnected;
+            }
+
+            if (BaudCombo != null)
+            {
+                BaudCombo.IsEnabled = !isConnected;
+            }
+
+            if (SendBtn != null)
+            {
+                SendBtn.IsEnabled = isConnected;
+            }
+
+            if (StopBtn != null)
+            {
+                StopBtn.IsEnabled = isConnected;
+            }
+        }
+
+        private void BeginWorkingAreaDrag(MouseEventArgs e)
+        {
+            var start = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+            _workingAreaManager.BeginDrag(start);
+
+            RemoveWorkingAreaCrosshair();
+            EnsureWorkingAreaPreview();
+            UpdateWorkingAreaPreview(_workingAreaManager.PreviewArea ?? new Rect(start.X, start.Y, 0, 0));
+
+            DrawCanvas?.CaptureMouse();
+            e.Handled = true;
+        }
+
+        private void UpdateWorkingAreaDrag(MouseEventArgs e)
+        {
+            var current = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+            var rect = _workingAreaManager.UpdateDrag(current);
+            UpdateWorkingAreaPreview(rect);
+            UpdateWorkingAreaStatus();
+            e.Handled = true;
+        }
+
+        private void CompleteWorkingAreaDrag(MouseEventArgs e)
+        {
+            var end = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+            _ = _workingAreaManager.CompleteDrag(end);
+
+            RemoveWorkingAreaPreview();
+            RemoveWorkingAreaCrosshair();
+            UpdateWorkingAreaStatus();
+            RenderAll();
+
+            DrawCanvas?.ReleaseMouseCapture();
+            e.Handled = true;
+        }
+
+        private void CancelWorkingAreaDrag()
+        {
+            _workingAreaManager.CancelDrag();
+            RemoveWorkingAreaPreview();
+            RemoveWorkingAreaCrosshair();
+            UpdateWorkingAreaStatus();
+            RenderAll();
+        }
+
+        private void EnsureWorkingAreaPreview()
+        {
+            if (DrawCanvas == null || _workingAreaPreviewRect != null) return;
+
+            _workingAreaPreviewRect = CreateWorkingAreaVisual();
+            DrawCanvas.Children.Add(_workingAreaPreviewRect);
+            Panel.SetZIndex(_workingAreaPreviewRect, 12);
+        }
+
+        private void UpdateWorkingAreaPreview(Rect rect)
+        {
+            if (DrawCanvas == null) return;
+
+            EnsureWorkingAreaPreview();
+            if (_workingAreaPreviewRect == null) return;
+
+            _workingAreaPreviewRect.Width = rect.Width;
+            _workingAreaPreviewRect.Height = rect.Height;
+            Canvas.SetLeft(_workingAreaPreviewRect, rect.Left);
+            Canvas.SetTop(_workingAreaPreviewRect, rect.Top);
+        }
+
+        private void RemoveWorkingAreaPreview()
+        {
+            if (DrawCanvas == null || _workingAreaPreviewRect == null) return;
+            DrawCanvas.Children.Remove(_workingAreaPreviewRect);
+            _workingAreaPreviewRect = null;
+        }
+
+        private void UpdateWorkingAreaCrosshair(PointMm pos)
+        {
+            if (DrawCanvas == null) return;
+
+            if (_workingAreaCrosshairHorizontal == null)
+            {
+                _workingAreaCrosshairHorizontal = new Line
+                {
+                    Stroke = Brushes.DeepSkyBlue,
+                    StrokeThickness = 1,
+                    StrokeDashArray = new DoubleCollection { 2, 2 },
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                DrawCanvas.Children.Add(_workingAreaCrosshairHorizontal);
+                Panel.SetZIndex(_workingAreaCrosshairHorizontal, 11);
+            }
+
+            if (_workingAreaCrosshairVertical == null)
+            {
+                _workingAreaCrosshairVertical = new Line
+                {
+                    Stroke = Brushes.DeepSkyBlue,
+                    StrokeThickness = 1,
+                    StrokeDashArray = new DoubleCollection { 2, 2 },
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                DrawCanvas.Children.Add(_workingAreaCrosshairVertical);
+                Panel.SetZIndex(_workingAreaCrosshairVertical, 11);
+            }
+
+            _workingAreaCrosshairHorizontal.X1 = 0;
+            _workingAreaCrosshairHorizontal.X2 = _doc.WidthMm;
+            _workingAreaCrosshairHorizontal.Y1 = pos.Y;
+            _workingAreaCrosshairHorizontal.Y2 = pos.Y;
+
+            _workingAreaCrosshairVertical.X1 = pos.X;
+            _workingAreaCrosshairVertical.X2 = pos.X;
+            _workingAreaCrosshairVertical.Y1 = 0;
+            _workingAreaCrosshairVertical.Y2 = _doc.HeightMm;
+        }
+
+        private void RemoveWorkingAreaCrosshair()
+        {
+            if (DrawCanvas != null && _workingAreaCrosshairHorizontal != null)
+            {
+                DrawCanvas.Children.Remove(_workingAreaCrosshairHorizontal);
+                _workingAreaCrosshairHorizontal = null;
+            }
+
+            if (DrawCanvas != null && _workingAreaCrosshairVertical != null)
+            {
+                DrawCanvas.Children.Remove(_workingAreaCrosshairVertical);
+                _workingAreaCrosshairVertical = null;
+            }
+        }
+
+        private Rectangle CreateWorkingAreaVisual()
+        {
+            return new Rectangle
+            {
+                Stroke = Brushes.DeepSkyBlue,
+                StrokeThickness = 1.5,
+                StrokeDashArray = new DoubleCollection { 4, 2 },
+                Fill = new SolidColorBrush(Color.FromArgb(32, 0, 122, 204)),
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+        }
+
+        private void UpdateWorkingAreaStatus()
+        {
+            if (WorkingAreaStatus == null) return;
+            WorkingAreaStatus.Text = _workingAreaManager.GetStatusText();
+        }
+
+        private void DrawRulers()
+        {
+            if (RulerCanvas == null) return;
+
+            const double rulerThickness = 18.0;
+            const double minorStep = 1.0;
+            const double majorStep = 10.0;
+            const double labelStep = 50.0;
+
+            Brush rulerFill = new SolidColorBrush(Color.FromRgb(248, 248, 248));
+            Brush borderBrush = Brushes.LightGray;
+            Brush tickBrush = Brushes.Gray;
+
+            Rectangle CreateBackground(double width, double height)
+            {
+                return new Rectangle
+                {
+                    Width = width,
+                    Height = height,
+                    Fill = rulerFill,
+                    Stroke = borderBrush,
+                    StrokeThickness = 0.5,
+                    IsHitTestVisible = false
+                };
+            }
+
+            var topBackground = CreateBackground(_doc.WidthMm, rulerThickness);
+            Canvas.SetLeft(topBackground, 0);
+            Canvas.SetTop(topBackground, 0);
+            RulerCanvas.Children.Add(topBackground);
+
+            var leftBackground = CreateBackground(rulerThickness, _doc.HeightMm);
+            Canvas.SetLeft(leftBackground, 0);
+            Canvas.SetTop(leftBackground, 0);
+            RulerCanvas.Children.Add(leftBackground);
+
+            void AddVerticalTick(double x)
+            {
+                bool isMajor = Math.Abs(x % majorStep) < 0.0001;
+                bool showLabel = isMajor && Math.Abs(x % labelStep) < 0.0001;
+                double len = isMajor ? rulerThickness : rulerThickness / 2.5;
+
+                var line = new Line
+                {
+                    X1 = x,
+                    X2 = x,
+                    Y1 = 0,
+                    Y2 = len,
+                    Stroke = tickBrush,
+                    StrokeThickness = 0.6,
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
+                RulerCanvas.Children.Add(line);
+
+                if (showLabel)
+                {
+                    var label = CreateRulerLabel(x, rotate: false);
+                    Canvas.SetLeft(label, x + 2);
+                    Canvas.SetTop(label, 1);
+                    RulerCanvas.Children.Add(label);
+                }
+            }
+
+            void AddHorizontalTick(double y)
+            {
+                bool isMajor = Math.Abs(y % majorStep) < 0.0001;
+                bool showLabel = isMajor && Math.Abs(y % labelStep) < 0.0001;
+                double len = isMajor ? rulerThickness : rulerThickness / 2.5;
+
+                var line = new Line
+                {
+                    X1 = 0,
+                    X2 = len,
+                    Y1 = y,
+                    Y2 = y,
+                    Stroke = tickBrush,
+                    StrokeThickness = 0.6,
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
+                RulerCanvas.Children.Add(line);
+
+                if (showLabel)
+                {
+                    var label = CreateRulerLabel(y, rotate: true);
+                    Canvas.SetLeft(label, 1);
+                    Canvas.SetTop(label, y + 2);
+                    RulerCanvas.Children.Add(label);
+                }
+            }
+
+            for (double x = 0; x <= _doc.WidthMm; x += minorStep)
+            {
+                AddVerticalTick(x);
+            }
+
+            for (double y = 0; y <= _doc.HeightMm; y += minorStep)
+            {
+                AddHorizontalTick(y);
+            }
+        }
+
+        private TextBlock CreateRulerLabel(double value, bool rotate)
+        {
+            var tb = new TextBlock
+            {
+                Text = value.ToString("0"),
+                FontSize = 9,
+                Foreground = Brushes.Gray,
+                IsHitTestVisible = false
+            };
+            if (rotate)
+            {
+                tb.LayoutTransform = new RotateTransform(-90);
+            }
+            return tb;
+        }
+
         private void RenderAll()
         {
             if (DrawCanvas == null || RulerCanvas == null) return;
@@ -1056,1174 +1298,7 @@ namespace NVSPlotter
             if (_imageService.ImageRect is null || _imageService.IsLocked) return;
             if (sender is not FrameworkElement fe || fe.Tag is not ImageHandle handle) return;
 
-            _activeImageHandle = handle;
-            _imageRectStart = _imageService.ImageRect.Value;
-
-            if (handle == ImageHandle.Rotate)
-            {
-                _imageRotateCenter = new PointMm(
-                    _imageRectStart.Left + _imageRectStart.Width / 2.0,
-                    _imageRectStart.Top + _imageRectStart.Height / 2.0);
-
-                var start = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-                _imageRotateStartVectorAngle = Math.Atan2(start.Y - _imageRotateCenter.Y, start.X - _imageRotateCenter.X) * 180.0 / Math.PI;
-                _imageRotateStartAngle = _imageService.Angle;
-            }
-            else
-            {
-                _imageDragStart = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-            }
-
-            DrawCanvas.CaptureMouse();
-            e.Handled = true;
+            _imageManipulator.BeginHandle(e, handle);
         }
-
-        private void UpdateImageManipulation(MouseEventArgs e)
-        {
-            if (_imageService.IsLocked) return;
-            if (_activeImageHandle == ImageHandle.None || _imageService.ImageRect is null) return;
-
-            if (_activeImageHandle == ImageHandle.Rotate)
-            {
-                var rotatePoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-                var currentAngle = Math.Atan2(rotatePoint.Y - _imageRotateCenter.Y, rotatePoint.X - _imageRotateCenter.X) * 180.0 / Math.PI;
-                var delta = currentAngle - _imageRotateStartVectorAngle;
-                _imageService.Angle = NormalizeAngle(_imageRotateStartAngle + delta);
-                UpdateReferenceUiState();
-                RenderAll();
-                return;
-            }
-
-            var current = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-            var dx = current.X - _imageDragStart.X;
-            var dy = current.Y - _imageDragStart.Y;
-
-            Rect rect;
-            if (_activeImageHandle == ImageHandle.Move)
-            {
-                var left = Math.Clamp(_imageRectStart.Left + dx, 0, _doc.WidthMm - _imageRectStart.Width);
-                var top = Math.Clamp(_imageRectStart.Top + dy, 0, _doc.HeightMm - _imageRectStart.Height);
-                rect = new Rect(left, top, _imageRectStart.Width, _imageRectStart.Height);
-            }
-            else
-            {
-                rect = ResizeReferenceRect(_activeImageHandle, _imageRectStart, dx, dy);
-            }
-
-            _imageService.ImageRect = rect;
-            RenderAll();
-        }
-
-        private Rect ResizeReferenceRect(ImageHandle handle, Rect start, double dx, double dy)
-        {
-            double left = start.Left;
-            double right = start.Right;
-            double top = start.Top;
-            double bottom = start.Bottom;
-
-            switch (handle)
-            {
-                case ImageHandle.Nw:
-                    left = Math.Clamp(left + dx, 0, right - MIN_IMAGE_SIZE);
-                    top = Math.Clamp(top + dy, 0, bottom - MIN_IMAGE_SIZE);
-                    break;
-                case ImageHandle.Ne:
-                    right = Math.Clamp(right + dx, left + MIN_IMAGE_SIZE, _doc.WidthMm);
-                    top = Math.Clamp(top + dy, 0, bottom - MIN_IMAGE_SIZE);
-                    break;
-                case ImageHandle.Se:
-                    right = Math.Clamp(right + dx, left + MIN_IMAGE_SIZE, _doc.WidthMm);
-                    bottom = Math.Clamp(bottom + dy, top + MIN_IMAGE_SIZE, _doc.HeightMm);
-                    break;
-                case ImageHandle.Sw:
-                    left = Math.Clamp(left + dx, 0, right - MIN_IMAGE_SIZE);
-                    bottom = Math.Clamp(bottom + dy, top + MIN_IMAGE_SIZE, _doc.HeightMm);
-                    break;
-            }
-
-            var width = Math.Max(MIN_IMAGE_SIZE, right - left);
-            var height = Math.Max(MIN_IMAGE_SIZE, bottom - top);
-            left = Math.Clamp(left, 0, _doc.WidthMm - width);
-            top = Math.Clamp(top, 0, _doc.HeightMm - height);
-
-            return new Rect(left, top, width, height);
-        }
-
-        private void EndImageManipulation()
-        {
-            if (_activeImageHandle == ImageHandle.None) return;
-            _activeImageHandle = ImageHandle.None;
-            if (DrawCanvas.IsMouseCaptured)
-                DrawCanvas.ReleaseMouseCapture();
-        }
-
-        private void BeginWorkingAreaDrag(MouseButtonEventArgs e)
-        {
-            if (e.LeftButton != MouseButtonState.Pressed) return;
-
-            var start = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-            _workingAreaManager.BeginDrag(start);
-
-            if (_workingAreaPreviewRect == null)
-            {
-                _workingAreaPreviewRect = CreateWorkingAreaVisual();
-                DrawCanvas.Children.Add(_workingAreaPreviewRect);
-            }
-
-            if (_workingAreaManager.PreviewArea is Rect preview)
-            {
-                UpdateWorkingAreaPreview(preview);
-            }
-
-            UpdateWorkingAreaCrosshair(start);
-            DrawCanvas.Cursor = Cursors.Cross;
-            DrawCanvas.CaptureMouse();
-            e.Handled = true;
-        }
-
-        private void UpdateWorkingAreaDrag(MouseEventArgs e)
-        {
-            if (!_workingAreaManager.IsDragging) return;
-
-            var current = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-            var rect = _workingAreaManager.UpdateDrag(current);
-            UpdateWorkingAreaPreview(rect);
-            UpdateWorkingAreaCrosshair(current);
-            e.Handled = true;
-        }
-
-        private void CompleteWorkingAreaDrag(MouseButtonEventArgs e)
-        {
-            if (!_workingAreaManager.IsDragging) return;
-
-            var end = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-            _workingAreaManager.CompleteDrag(end);
-            DrawCanvas.ReleaseMouseCapture();
-            DrawCanvas.ClearValue(CursorProperty);
-
-            RemoveWorkingAreaPreview();
-            RemoveWorkingAreaCrosshair();
-            UpdateWorkingAreaStatus();
-            RenderAll();
-            e.Handled = true;
-        }
-
-        private void CancelWorkingAreaDrag()
-        {
-            if (!_workingAreaManager.IsDragging) return;
-
-            _workingAreaManager.CancelDrag();
-            DrawCanvas.ReleaseMouseCapture();
-            DrawCanvas.ClearValue(CursorProperty);
-            RemoveWorkingAreaPreview();
-            RemoveWorkingAreaCrosshair();
-            UpdateWorkingAreaStatus();
-        }
-
-        private void RemoveWorkingAreaPreview()
-        {
-            if (_workingAreaPreviewRect != null)
-            {
-                DrawCanvas.Children.Remove(_workingAreaPreviewRect);
-                _workingAreaPreviewRect = null;
-            }
-        }
-
-        private void UpdateWorkingAreaPreview(Rect rect)
-        {
-            if (_workingAreaPreviewRect == null) return;
-            _workingAreaPreviewRect.Width = rect.Width;
-            _workingAreaPreviewRect.Height = rect.Height;
-            Canvas.SetLeft(_workingAreaPreviewRect, rect.Left);
-            Canvas.SetTop(_workingAreaPreviewRect, rect.Top);
-        }
-
-        private void UpdateWorkingAreaCrosshair(PointMm position)
-        {
-            if (DrawCanvas == null) return;
-
-            Line EnsureLine(ref Line? line)
-            {
-                if (line == null)
-                {
-                    line = new Line
-                    {
-                        Stroke = Brushes.DodgerBlue,
-                        StrokeThickness = 1,
-                        StrokeDashArray = new DoubleCollection { 4, 4 },
-                        SnapsToDevicePixels = true,
-                        IsHitTestVisible = false
-                    };
-                    RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
-                    DrawCanvas.Children.Add(line);
-                    Panel.SetZIndex(line, 9);
-                }
-                return line;
-            }
-
-            var horizontal = EnsureLine(ref _workingAreaCrosshairHorizontal);
-            horizontal.X1 = 0;
-            horizontal.X2 = _doc.WidthMm;
-            horizontal.Y1 = position.Y;
-            horizontal.Y2 = position.Y;
-
-            var vertical = EnsureLine(ref _workingAreaCrosshairVertical);
-            vertical.X1 = position.X;
-            vertical.X2 = position.X;
-            vertical.Y1 = 0;
-            vertical.Y2 = _doc.HeightMm;
-        }
-
-        private void RemoveWorkingAreaCrosshair()
-        {
-            if (DrawCanvas != null)
-            {
-                if (_workingAreaCrosshairHorizontal != null)
-                {
-                    DrawCanvas.Children.Remove(_workingAreaCrosshairHorizontal);
-                }
-                if (_workingAreaCrosshairVertical != null)
-                {
-                    DrawCanvas.Children.Remove(_workingAreaCrosshairVertical);
-                }
-            }
-            _workingAreaCrosshairHorizontal = null;
-            _workingAreaCrosshairVertical = null;
-            if (DrawCanvas != null && !_workingAreaManager.IsDragging && !_workingAreaManager.IsDefining)
-            {
-                DrawCanvas.ClearValue(CursorProperty);
-            }
-        }
-
-        private Rectangle CreateWorkingAreaVisual()
-        {
-            return new Rectangle
-            {
-                Stroke = Brushes.Red,
-                StrokeThickness = 2,
-                Fill = Brushes.Transparent,
-                StrokeDashArray = new DoubleCollection { 6, 2 },
-                IsHitTestVisible = false
-            };
-        }
-
-        private void UpdateWorkingAreaStatus()
-        {
-            if (WorkingAreaStatus == null) return;
-            WorkingAreaStatus.Text = _workingAreaManager.GetStatusText();
-        }
-
-        private void DrawRulers()
-        {
-            if (RulerCanvas == null) return;
-
-            const double rulerThickness = 18.0;
-            const double minorStep = 1.0;
-            const double majorStep = 10.0;
-            const double labelStep = 50.0;
-
-            Brush rulerFill = new SolidColorBrush(Color.FromRgb(248, 248, 248));
-            Brush borderBrush = Brushes.LightGray;
-            Brush tickBrush = Brushes.Gray;
-
-            Rectangle CreateBackground(double width, double height)
-            {
-                return new Rectangle
-                {
-                    Width = width,
-                    Height = height,
-                    Fill = rulerFill,
-                    Stroke = borderBrush,
-                    StrokeThickness = 0.5,
-                    IsHitTestVisible = false
-                };
-            }
-
-            var topBackground = CreateBackground(_doc.WidthMm, rulerThickness);
-            Canvas.SetLeft(topBackground, 0);
-            Canvas.SetTop(topBackground, 0);
-            RulerCanvas.Children.Add(topBackground);
-
-            var leftBackground = CreateBackground(rulerThickness, _doc.HeightMm);
-            Canvas.SetLeft(leftBackground, 0);
-            Canvas.SetTop(leftBackground, 0);
-            RulerCanvas.Children.Add(leftBackground);
-
-            void AddVerticalTick(double x)
-            {
-                bool isMajor = Math.Abs(x % majorStep) < 0.0001;
-                bool showLabel = isMajor && Math.Abs(x % labelStep) < 0.0001;
-                double len = isMajor ? rulerThickness : rulerThickness / 2.5;
-
-                var line = new Line
-                {
-                    X1 = x,
-                    X2 = x,
-                    Y1 = 0,
-                    Y2 = len,
-                    Stroke = tickBrush,
-                    StrokeThickness = 0.6,
-                    SnapsToDevicePixels = true,
-                    IsHitTestVisible = false
-                };
-                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
-                RulerCanvas.Children.Add(line);
-
-                if (showLabel)
-                {
-                    var label = CreateRulerLabel(x, rotate: false);
-                    Canvas.SetLeft(label, x + 2);
-                    Canvas.SetTop(label, 1);
-                    RulerCanvas.Children.Add(label);
-                }
-            }
-
-            void AddHorizontalTick(double y)
-            {
-                bool isMajor = Math.Abs(y % majorStep) < 0.0001;
-                bool showLabel = isMajor && Math.Abs(y % labelStep) < 0.0001;
-                double len = isMajor ? rulerThickness : rulerThickness / 2.5;
-
-                var line = new Line
-                {
-                    X1 = 0,
-                    X2 = len,
-                    Y1 = y,
-                    Y2 = y,
-                    Stroke = tickBrush,
-                    StrokeThickness = 0.6,
-                    SnapsToDevicePixels = true,
-                    IsHitTestVisible = false
-                };
-                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
-                RulerCanvas.Children.Add(line);
-
-                if (showLabel)
-                {
-                    var label = CreateRulerLabel(y, rotate: true);
-                    Canvas.SetLeft(label, 1);
-                    Canvas.SetTop(label, y + 2);
-                    RulerCanvas.Children.Add(label);
-                }
-            }
-
-            for (double x = 0; x <= _doc.WidthMm; x += minorStep)
-            {
-                AddVerticalTick(x);
-            }
-
-            for (double y = 0; y <= _doc.HeightMm; y += minorStep)
-            {
-                AddHorizontalTick(y);
-            }
-        }
-
-        private TextBlock CreateRulerLabel(double value, bool rotate)
-        {
-            var tb = new TextBlock
-            {
-                Text = value.ToString("0"),
-                FontSize = 9,
-                Foreground = Brushes.Gray,
-                IsHitTestVisible = false
-            };
-            if (rotate)
-            {
-                tb.LayoutTransform = new RotateTransform(-90);
-            }
-            return tb;
-        }
-
-        private enum ImageHandle
-        {
-            None,
-            Move,
-            Nw,
-            Ne,
-            Se,
-            Sw,
-            Rotate
-        }
-
-        private enum ToolMode
-        {
-            Line,
-            Pan,
-            Rectangle,
-            Circle,
-            Polyline,
-            Measure,
-            Guides,
-            Text,
-            Select,
-            Crop,
-            ImageAlign
-        }
-
-        // ----------------------------
-        // G-code export
-        // ----------------------------
-        private void ExportBtn_Click(object sender, RoutedEventArgs e)
-        {
-            var g = BuildGcode();
-            var dlg = new SaveFileDialog
-            {
-                Filter = "G-code (*.gcode;*.nc;*.txt)|*.gcode;*.nc;*.txt|All files (*.*)|*.*",
-                FileName = "plot.gcode"
-            };
-            if (dlg.ShowDialog() == true)
-            {
-                File.WriteAllText(dlg.FileName, g, Encoding.UTF8);
-                AppendLog($"Saved: {dlg.FileName}");
-            }
-        }
-
-        private void CopyBtn_Click(object sender, RoutedEventArgs e)
-        {
-            var g = BuildGcode();
-            Clipboard.SetText(g);
-            AppendLog("G-code copied to clipboard.");
-        }
-
-        private string BuildGcode()
-        {
-            var feedXY = ParseDouble(FeedXYBox.Text, 3000);
-            var zUp = ParseDouble(ZUpBox.Text, 10);
-            var zDown = ParseDouble(ZDownBox.Text, 2);
-            var optimize = OptimizeCheck.IsChecked == true;
-
-            var strokes = _doc.Strokes.ToList();
-            if (optimize) strokes = StrokeOptimizer.OptimizeNearest(strokes);
-
-            // Fit doc into bed (with margin), possibly rotating CW to better fit.
-            var fit = ComputeFit(_doc.WidthMm, _doc.HeightMm, _bedX, _bedY, SAFE_MARGIN_MM);
-
-            AppendLog($"G-code fit={fit.Mode}, scale={fit.Scale:0.###}, usableBed=({_bedX - 2 * SAFE_MARGIN_MM:0.###} x {_bedY - 2 * SAFE_MARGIN_MM:0.###})");
-            AppendLog("G-code convention: X>=0, Y<=0");
-
-            var sb = new StringBuilder(64 * 1024);
-            sb.AppendLine("; NVSPlotter");
-            sb.AppendLine("; Units: mm");
-            sb.AppendLine("; Work convention: X positive, Y negative");
-            sb.AppendLine("G21");           // mm
-            sb.AppendLine("G90");           // absolute
-            sb.AppendLine("G54");
-            sb.AppendLine("G92.1");         // clear G92 offsets
-            sb.AppendLine("G10 L20 P1 X0 Y0"); // set G54 so current position (home) is work 0,0
-            sb.AppendLine($"G0 Z{Fmt(zUp)}");
-
-            foreach (var s in strokes)
-            {
-                var aBed = DocToBed(s.A, fit);
-                var bBed = DocToBed(s.B, fit);
-
-                var aWork = BedToWork(aBed);
-                var bWork = BedToWork(bBed);
-
-                sb.AppendLine($"G0 X{Fmt(aWork.X)} Y{Fmt(aWork.Y)}");
-                sb.AppendLine($"G0 Z{Fmt(zDown)}");
-                sb.AppendLine($"G1 X{Fmt(bWork.X)} Y{Fmt(bWork.Y)} F{Fmt(feedXY)}");
-                sb.AppendLine($"G0 Z{Fmt(zUp)}");
-            }
-
-            sb.AppendLine("G0 X0 Y0"); // back to home (work origin)
-            sb.AppendLine("M2");
-
-            _lastGcode = sb.ToString();
-            AppendLog($"Built G-code: lines={_lastGcode.Split('\n').Length}");
-            return _lastGcode;
-        }
-
-        private enum FitMode { None, RotateCW }
-        private readonly record struct FitSpec(FitMode Mode, double Scale, double Margin, double DocW, double DocH);
-
-        private FitSpec ComputeFit(double docW, double docH, double bedX, double bedY, double margin)
-        {
-            var ux = Math.Max(1.0, bedX - margin * 2);
-            var uy = Math.Max(1.0, bedY - margin * 2);
-
-            // No-rotate scale
-            var s0 = Math.Min(ux / docW, uy / docH);
-            // Rotate CW scale
-            var s1 = Math.Min(ux / docH, uy / docW);
-
-            // Never scale up above 1.0
-            s0 = Math.Min(s0, 1.0);
-            s1 = Math.Min(s1, 1.0);
-
-            if (s1 > s0) return new FitSpec(FitMode.RotateCW, s1, margin, docW, docH);
-            return new FitSpec(FitMode.None, s0, margin, docW, docH);
-        }
-
-        // Map doc point into bed coordinates (origin = bed min/min corner), inside margins.
-        private PointMm DocToBed(PointMm p, FitSpec fit)
-        {
-            var m = fit.Margin;
-            var s = fit.Scale;
-
-            return fit.Mode switch
-            {
-                FitMode.None =>
-                    new PointMm(
-                        ClampBedX(m + p.X * s),
-                        ClampBedY(m + p.Y * s)
-                    ),
-
-                // CW rotation about doc:
-                // x' = y
-                // y' = docW - x
-                FitMode.RotateCW =>
-                    new PointMm(
-                        ClampBedX(m + p.Y * s),
-                        ClampBedY(m + (fit.DocW - p.X) * s)
-                    ),
-
-                _ =>
-                    new PointMm(
-                        ClampBedX(m + p.X * s),
-                        ClampBedY(m + p.Y * s)
-                    )
-            };
-        }
-
-        private double ClampBedX(double x) => Math.Clamp(x, SAFE_MARGIN_MM, _bedX - SAFE_MARGIN_MM);
-        private double ClampBedY(double y) => Math.Clamp(y, SAFE_MARGIN_MM, _bedY - SAFE_MARGIN_MM);
-
-        // Convert bed-local positive coords into WORK coords relative to home (0,0).
-        // REQUIRED BY USER: X ALWAYS positive, Y ALWAYS negative.
-        //
-        // We still compute "distance into the bed from HOME" using $23, because home might be at min or max.
-        // Then we apply the requested sign convention:
-        //   X = +distance, Y = -distance
-        private PointMm BedToWork(PointMm bed)
-        {
-            // Distance from HOME along each axis into the bed (always positive)
-            var distX = _homeAtMaxX ? (_bedX - bed.X) : bed.X;
-            var distY = _homeAtMaxY ? (_bedY - bed.Y) : bed.Y;
-
-            // Enforce requested sign convention
-            var wx = Math.Max(0, distX);      // ALWAYS >= 0
-            var wy = -Math.Max(0, distY);     // ALWAYS <= 0
-
-            return new PointMm(wx, wy);
-        }
-
-        private static double ParseDouble(string? s, double fallback)
-        {
-            if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return v;
-            if (double.TryParse(s, NumberStyles.Float, CultureInfo.CurrentCulture, out v)) return v;
-            return fallback;
-        }
-
-        private static string Fmt(double v) => v.ToString("0.###", CultureInfo.InvariantCulture);
-
-        // ----------------------------
-        // Plotter connection
-        // ----------------------------
-        private void RefreshPortsBtn_Click(object sender, RoutedEventArgs e) => RefreshPorts();
-
-        private void RefreshPorts()
-        {
-            PortCombo.Items.Clear();
-            foreach (var p in SerialPort.GetPortNames().OrderBy(x => x))
-                PortCombo.Items.Add(p);
-
-            if (PortCombo.Items.Count > 0 && PortCombo.SelectedIndex < 0)
-                PortCombo.SelectedIndex = 0;
-
-            AppendLog("Ports refreshed.");
-        }
-
-        private async void ConnectBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (_grbl != null && _grbl.IsOpen)
-            {
-                await DisconnectAsync();
-                return;
-            }
-
-            var port = PortCombo.SelectedItem as string;
-            if (string.IsNullOrWhiteSpace(port))
-            {
-                AppendLog("No COM port selected.");
-                return;
-            }
-
-            var baud = int.Parse(((ComboBoxItem)BaudCombo.SelectedItem).Content.ToString()!);
-
-            try
-            {
-                _grbl = new GrblConnection(port, baud, AppendLog);
-                await _grbl.OpenAsync();
-                AppendLog("Connected.");
-
-                _isHomed = false;
-
-                // Load bed + homing mask from $$
-                await LoadMachineSettingsAsync();
-
-                RenderAll();
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Connect failed: " + ex.Message);
-                _grbl = null;
-            }
-            finally
-            {
-                UpdateConnStatus();
-            }
-        }
-
-        private async Task LoadMachineSettingsAsync()
-        {
-            if (_grbl == null || !_grbl.IsOpen) return;
-
-            try
-            {
-                AppendLog("Querying GRBL $$...");
-                var lines = await _grbl.SendAndCollectAsync("$$", TimeSpan.FromSeconds(20));
-
-                if (TryParseSetting(lines, "$130", out var x) && x > 0) { _bedX = x; _bedFromGrbl = true; }
-                if (TryParseSetting(lines, "$131", out var y) && y > 0) { _bedY = y; _bedFromGrbl = true; }
-
-                if (TryParseSettingInt(lines, "$23", out var m))
-                {
-                    _homingDirMask = m;
-                    _homeAtMaxX = (m & 0x01) != 0;
-                    _homeAtMaxY = (m & 0x02) != 0;
-                }
-
-                AppendLog($"Settings: $130={_bedX:0.###}, $131={_bedY:0.###}, $23={_homingDirMask} => HomeAtMax X={_homeAtMaxX} Y={_homeAtMaxY}");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("$$ read failed: " + ex.Message);
-            }
-        }
-
-        private static bool TryParseSetting(List<string> lines, string key, out double value)
-        {
-            value = 0;
-            foreach (var raw in lines)
-            {
-                var line = raw.Trim();
-                if (!line.StartsWith(key + "=", StringComparison.Ordinal)) continue;
-
-                var s = line.Substring(key.Length + 1).Trim();
-                var paren = s.IndexOf('(');
-                if (paren >= 0) s = s.Substring(0, paren).Trim();
-
-                if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out value)) return true;
-                if (double.TryParse(s, NumberStyles.Float, CultureInfo.CurrentCulture, out value)) return true;
-            }
-            return false;
-        }
-
-        private static bool TryParseSettingInt(List<string> lines, string key, out int value)
-        {
-            value = 0;
-            foreach (var raw in lines)
-            {
-                var line = raw.Trim();
-                if (!line.StartsWith(key + "=", StringComparison.Ordinal)) continue;
-
-                var s = line.Substring(key.Length + 1).Trim();
-                var paren = s.IndexOf('(');
-                if (paren >= 0) s = s.Substring(0, paren).Trim();
-
-                if (int.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out value)) return true;
-                if (int.TryParse(s, NumberStyles.Integer, CultureInfo.CurrentCulture, out value)) return true;
-            }
-            return false;
-        }
-
-        private async Task DisconnectAsync()
-        {
-            try
-            {
-                _sendCts?.Cancel();
-                _sendCts = null;
-
-                if (_grbl != null)
-                {
-                    await _grbl.CloseAsync();
-                    _grbl = null;
-                }
-                _isHomed = false;
-
-                AppendLog("Disconnected.");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Disconnect error: " + ex.Message);
-            }
-            finally
-            {
-                UpdateConnStatus();
-            }
-        }
-
-        private void UpdateConnStatus()
-        {
-            var ok = _grbl != null && _grbl.IsOpen;
-            ConnectBtn.Content = ok ? "Disconnect" : "Connect";
-            ConnStatusLabel.Text = ok ? $"Connected: {_grbl!.PortName} @ {_grbl.BaudRate}" : "Not connected.";
-            SendBtn.IsEnabled = ok;
-            StopBtn.IsEnabled = ok;
-        }
-
-        private async void HomeBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (!EnsureConnected()) return;
-
-            try
-            {
-                AppendLog("Homing: $H");
-                await _grbl!.SendLineWaitOkAsync("$H", TimeSpan.FromSeconds(120));
-                _isHomed = true;
-                AppendLog("Home complete.");
-            }
-            catch (Exception ex)
-            {
-                _isHomed = false;
-                AppendLog("Home failed: " + ex.Message);
-            }
-            finally
-            {
-                RenderAll();
-            }
-        }
-
-        private async void UnlockBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (!EnsureConnected()) return;
-            try { await _grbl!.SendLineWaitOkAsync("$X", TimeSpan.FromSeconds(10)); }
-            catch (Exception ex) { AppendLog("$X failed: " + ex.Message); }
-        }
-
-        private async void ResetBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (!EnsureConnected()) return;
-            try
-            {
-                await _grbl!.SoftResetAsync();
-                _isHomed = false;
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Reset failed: " + ex.Message);
-            }
-            finally
-            {
-                RenderAll();
-            }
-        }
-
-        private async void ManualSendBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (!EnsureConnected()) return;
-            var cmd = (ManualCmdBox.Text ?? "").Trim();
-            if (cmd.Length == 0) return;
-
-            ManualCmdBox.Text = "";
-            try
-            {
-                await _grbl!.SendLineWaitOkAsync(cmd, TimeSpan.FromSeconds(10));
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Manual send failed: " + ex.Message);
-            }
-        }
-
-        private async void SendBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (!EnsureConnected()) return;
-
-            if (!_isHomed)
-            {
-                AppendLog("Refusing to send: not homed. Click Home first.");
-                return;
-            }
-
-            var g = string.IsNullOrWhiteSpace(_lastGcode) ? BuildGcode() : _lastGcode;
-
-            var lines = g.Split('\n')
-                         .Select(x => x.Trim())
-                         .Where(x => x.Length > 0 && !x.StartsWith(";"))
-                         .ToList();
-
-            if (lines.Count == 0)
-            {
-                AppendLog("No G-code to send.");
-                return;
-            }
-
-            if (_sendCts != null)
-            {
-                AppendLog("Send already in progress.");
-                return;
-            }
-
-            _sendCts = new CancellationTokenSource();
-            var token = _sendCts.Token;
-
-            AppendLog($"Sending {lines.Count} lines...");
-            try
-            {
-                int sent = 0;
-                foreach (var line in lines)
-                {
-                    token.ThrowIfCancellationRequested();
-                    await _grbl!.SendLineWaitOkAsync(line, TimeSpan.FromSeconds(20), token);
-                    sent++;
-                    if (sent % 25 == 0) AppendLog($"Progress: {sent}/{lines.Count}");
-                }
-                AppendLog("Send complete.");
-            }
-            catch (OperationCanceledException)
-            {
-                AppendLog("Send canceled.");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Send error: " + ex.Message);
-            }
-            finally
-            {
-                _sendCts?.Dispose();
-                _sendCts = null;
-            }
-        }
-
-        private async void StopBtn_Click(object sender, RoutedEventArgs e)
-        {
-            if (!EnsureConnected()) return;
-
-            try
-            {
-                _sendCts?.Cancel();
-                await _grbl!.SoftResetAsync();
-                _isHomed = false;
-                AppendLog("Stop: canceled + reset sent.");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Stop error: " + ex.Message);
-            }
-            finally
-            {
-                RenderAll();
-            }
-        }
-
-        private bool EnsureConnected()
-        {
-            if (_grbl == null || !_grbl.IsOpen)
-            {
-                AppendLog("Not connected.");
-                UpdateConnStatus();
-                return false;
-            }
-            return true;
-        }
-
-        // ----------------------------
-        // Logging
-        // ----------------------------
-        private void AppendLog(string msg)
-        {
-            Dispatcher.Invoke(() =>
-            {
-                var line = $"[{DateTime.Now:HH:mm:ss}] {msg}";
-                ConsoleBox.AppendText(line + Environment.NewLine);
-                ConsoleBox.ScrollToEnd();
-            });
-        }
-
-        private void BeginLinePreview(PointMm start)
-        {
-            _previewLine = new Line
-            {
-                X1 = start.X,
-                Y1 = start.Y,
-                X2 = start.X,
-                Y2 = start.Y,
-                Stroke = Brushes.OrangeRed,
-                StrokeThickness = 1.5,
-                StrokeDashArray = new DoubleCollection { 3, 2 },
-                SnapsToDevicePixels = true
-            };
-
-            DrawCanvas.Children.Add(_previewLine);
-            Panel.SetZIndex(_previewLine, 15);
-        }
-
-        private void BeginRectanglePreview(PointMm start)
-        {
-            var rect = new Rectangle
-            {
-                Stroke = Brushes.OrangeRed,
-                StrokeThickness = 1.5,
-                StrokeDashArray = new DoubleCollection { 3, 2 },
-                Fill = Brushes.Transparent,
-                SnapsToDevicePixels = true
-            };
-
-            _previewShape = rect;
-            DrawCanvas.Children.Add(rect);
-            Panel.SetZIndex(rect, 15);
-            Canvas.SetLeft(rect, start.X);
-            Canvas.SetTop(rect, start.Y);
-            rect.Width = 0;
-            rect.Height = 0;
-        }
-
-        private void BeginCirclePreview(PointMm start)
-        {
-            var ellipse = new Ellipse
-            {
-                Stroke = Brushes.OrangeRed,
-                StrokeThickness = 1.5,
-                StrokeDashArray = new DoubleCollection { 3, 2 },
-                Fill = Brushes.Transparent,
-                SnapsToDevicePixels = true
-            };
-
-            _previewShape = ellipse;
-            DrawCanvas.Children.Add(ellipse);
-            Panel.SetZIndex(ellipse, 15);
-            Canvas.SetLeft(ellipse, start.X);
-            Canvas.SetTop(ellipse, start.Y);
-            ellipse.Width = 0;
-            ellipse.Height = 0;
-        }
-
-        private void UpdateRectanglePreview(PointMm current)
-        {
-            if (_previewShape is not Rectangle rect) return;
-
-            var left = Math.Min(_startMm.X, current.X);
-            var top = Math.Min(_startMm.Y, current.Y);
-            var width = Math.Abs(current.X - _startMm.X);
-            var height = Math.Abs(current.Y - _startMm.Y);
-
-            Canvas.SetLeft(rect, left);
-            Canvas.SetTop(rect, top);
-            rect.Width = width;
-            rect.Height = height;
-        }
-
-        private void UpdateCirclePreview(PointMm current)
-        {
-            if (_previewShape is not Ellipse ellipse) return;
-
-            var left = Math.Min(_startMm.X, current.X);
-            var top = Math.Min(_startMm.Y, current.Y);
-            var width = Math.Abs(current.X - _startMm.X);
-            var height = Math.Abs(current.Y - _startMm.Y);
-
-            Canvas.SetLeft(ellipse, left);
-            Canvas.SetTop(ellipse, top);
-            ellipse.Width = width;
-            ellipse.Height = height;
-        }
-
-        private void FinalizeRectangle(PointMm start, PointMm end)
-        {
-            var left = Math.Min(start.X, end.X);
-            var right = Math.Max(start.X, end.X);
-            var top = Math.Min(start.Y, end.Y);
-            var bottom = Math.Max(start.Y, end.Y);
-
-            if ((right - left) < 0.25 || (bottom - top) < 0.25) return;
-
-            var topLeft = new PointMm(left, top);
-            var topRight = new PointMm(right, top);
-            var bottomRight = new PointMm(right, bottom);
-            var bottomLeft = new PointMm(left, bottom);
-
-            AddStroke(topLeft, topRight);
-            AddStroke(topRight, bottomRight);
-            AddStroke(bottomRight, bottomLeft);
-            AddStroke(bottomLeft, topLeft);
-        }
-
-        private void FinalizeEllipse(PointMm start, PointMm end)
-        {
-            var left = Math.Min(start.X, end.X);
-            var right = Math.Max(start.X, end.X);
-            var top = Math.Min(start.Y, end.Y);
-            var bottom = Math.Max(start.Y, end.Y);
-
-            if ((right - left) < 0.25 || (bottom - top) < 0.25) return;
-
-            var centerX = (left + right) / 2.0;
-            var centerY = (top + bottom) / 2.0;
-            var radiusX = Math.Max((right - left) / 2.0, 0.1);
-            var radiusY = Math.Max((bottom - top) / 2.0, 0.1);
-
-            PointMm? firstPoint = null;
-            PointMm? prevPoint = null;
-
-            for (int i = 0; i < CIRCLE_SEGMENTS; i++)
-            {
-                var angle = 2.0 * Math.PI * i / CIRCLE_SEGMENTS;
-                var x = centerX + radiusX * Math.Cos(angle);
-                var y = centerY + radiusY * Math.Sin(angle);
-                var point = new PointMm(x, y);
-
-                if (prevPoint is PointMm prev)
-                {
-                    AddStroke(prev, point);
-                }
-                else
-                {
-                    firstPoint = point;
-                }
-
-                prevPoint = point;
-            }
-
-            if (prevPoint is PointMm last && firstPoint is PointMm first)
-            {
-                AddStroke(last, first);
-            }
-        }
-
-        private void HandlePolylineClick(MouseButtonEventArgs e)
-        {
-            var point = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-            var isDoubleClick = e.ClickCount >= 2;
-
-            if (!_isPolylineActive)
-            {
-                _isPolylineActive = true;
-                _activeDrawingTool = ToolMode.Polyline;
-                _polylineLastPoint = point;
-                BeginLinePreview(point);
-                DrawCanvas.CaptureMouse();
-                e.Handled = true;
-                return;
-            }
-
-            if (Distance(_polylineLastPoint, point) >= 0.25)
-            {
-                CancelPreview();
-                AddStroke(_polylineLastPoint, point);
-                _polylineLastPoint = point;
-                RenderAll();
-            }
-            else
-            {
-                _polylineLastPoint = point;
-            }
-
-            if (isDoubleClick)
-            {
-                FinishPolyline();
-            }
-            else
-            {
-                BeginLinePreview(_polylineLastPoint);
-                DrawCanvas.CaptureMouse();
-            }
-
-            e.Handled = true;
-        }
-
-        private void UpdatePolylinePreview(PointMm current)
-        {
-            if (!_isPolylineActive) return;
-
-            if (_previewLine == null)
-            {
-                BeginLinePreview(_polylineLastPoint);
-            }
-
-            _previewLine!.X1 = _polylineLastPoint.X;
-            _previewLine.Y1 = _polylineLastPoint.Y;
-            _previewLine.X2 = current.X;
-            _previewLine.Y2 = current.Y;
-        }
-
-        private void FinishPolyline()
-        {
-            if (!_isPolylineActive) return;
-
-            _isPolylineActive = false;
-            _activeDrawingTool = ToolMode.Line;
-            CancelPreview();
-        }
-
-        private bool TryFinishPolyline()
-        {
-            if (!_isPolylineActive)
-            {
-                return false;
-            }
-
-            FinishPolyline();
-            return true;
-        }
-
-        private void ToolCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            var tool = GetCurrentTool();
-
-            if (tool != ToolMode.Measure && (_isMeasuring || _hasMeasurement))
-            {
-                ResetMeasurement();
-            }
-
-            if (tool != ToolMode.Polyline)
-            {
-                FinishPolyline();
-            }
-
-            if (_isDrawing && tool != _activeDrawingTool)
-            {
-                CancelPreview();
-            }
-        }
-
-        private void DrawCanvas_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
-        {
-            if (_isMeasuring || (GetCurrentTool() == ToolMode.Measure && _hasMeasurement))
-            {
-                ResetMeasurement();
-                e.Handled = true;
-                return;
-            }
-
-             if (TryFinishPolyline())
-             {
-                 e.Handled = true;
-             }
-         }
-
-        private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
-        {
-            if (_isMeasuring && e.Key == Key.Escape)
-            {
-                ResetMeasurement();
-                e.Handled = true;
-                return;
-            }
-
-            if (_isPolylineActive && (e.Key == Key.Escape || e.Key == Key.Enter || e.Key == Key.Return))
-            {
-                FinishPolyline();
-                e.Handled = true;
-                return;
-            }
- 
-             if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.Key == Key.Z)
-             {
-                 PerformUndo();
-                 e.Handled = true;
-             }
-         }
     }
  }

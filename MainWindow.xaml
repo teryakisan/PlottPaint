@@ -46,6 +46,8 @@
                                     <ComboBoxItem Content="Rectangle Tool" Tag="Rectangle"/>
                                     <ComboBoxItem Content="Circle Tool" Tag="Circle"/>
                                     <ComboBoxItem Content="Polyline Tool" Tag="Polyline"/>
+                                    <ComboBoxItem Content="Bezier Tool" Tag="Bezier"/>
+                                    <ComboBoxItem Content="Erase Tool" Tag="Erase"/>
                                     <ComboBoxItem Content="Measurement Tool" Tag="Measure"/>
                                     <ComboBoxItem Content="Guides / Grid Tool" Tag="Guides"/>
                                     <ComboBoxItem Content="Text / Annotation Tool" Tag="Text"/>
@@ -56,10 +58,19 @@
                             </StackPanel>
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock Text="Measure:" Width="90" VerticalAlignment="Center"/>
+                                <TextBlock x:Name="MeasurementStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555" Text="—"/>
+                            </StackPanel>
+
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <TextBlock Text="Working area:" Width="90" VerticalAlignment="Center"/>
                                 <Button x:Name="DefineWorkingAreaBtn" Content="Define" Width="90" Click="DefineWorkingAreaBtn_Click"/>
                                 <Button x:Name="ClearWorkingAreaBtn" Content="Clear" Width="90" Margin="8,0,0,0" Click="ClearWorkingAreaBtn_Click"/>
-                                
+                              
+                            </StackPanel>
+
+                            <StackPanel x:Name="status" Orientation="Horizontal" Margin="0,0,0,8">
+                                <TextBlock x:Name="WorkingAreaStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555"/>
                             </StackPanel>
 
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
@@ -88,14 +99,9 @@
                                 </ComboBox>
                             </StackPanel>
 
-                            <StackPanel x:Name="status" Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBlock x:Name="WorkingAreaStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555"/>
-                            </StackPanel>
+                           
 
-                            <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                <TextBlock Text="Measure:" Width="90" VerticalAlignment="Center"/>
-                                <TextBlock x:Name="MeasurementStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555" Text="—"/>
-                            </StackPanel>
+                            
 
                         <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                 <TextBlock Text="Zoom:" Width="90" VerticalAlignment="Center"/>
