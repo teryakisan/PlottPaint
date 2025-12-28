@@ -2,12 +2,14 @@
 using NVSPlotter.Models;
 using NVSPlotter.Properties;
 using NVSPlotter.Services;
+using NVSPlotter.Util;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
 using System.IO.Ports;
 using System.Linq;
+using System.Reflection;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,21 +19,29 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
+using System.Windows.Threading;
+using System.Configuration;
 
 namespace NVSPlotter
 {
     public partial class MainWindow : Window
     {
+
+        // --- CONFIG
+        private readonly Configuration _config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
+
         // --- Document is stored in mm; canvas is "px" where 1 px = 1 mm before zoom ---
-        private PlotDocument _doc = new PlotDocument(Settings.Default.bedX, Settings.Default.bedY);
+        public PlotDocument _doc = new(Settings.Default.bedX, Settings.Default.bedY);
+        private readonly Utility _util = new();
+        private readonly RulerFactory _rulerFactory = new();
 
         private readonly ReferenceImageService _imageService = new();
         private readonly WorkingAreaManager _workingAreaManager = new();
         private readonly ReferenceImageManipulator _imageManipulator;
 
         // Canvas transforms
-        private readonly ScaleTransform _zoom = new ScaleTransform(1.0, 1.0);
-        private readonly RotateTransform _canvasRotation = new RotateTransform(0);
+        private readonly ScaleTransform _zoom = new(1.0, 1.0);
+        private readonly RotateTransform _canvasRotation = new(0);
 
         // Working area overlay visuals
         private Rectangle? _workingAreaPreviewRect;
@@ -50,7 +60,7 @@ namespace NVSPlotter
         private readonly ShapeDrawingController _shapeController;
 
         // Undo
-        private readonly Stack<LineStroke> _undo = new Stack<LineStroke>();
+        private readonly Stack<LineStroke> _undo = new();
 
         // Pan state (middle mouse)
         private bool _isPanning;
@@ -75,12 +85,25 @@ namespace NVSPlotter
         private bool _homeAtMaxX = false; // derived from $23 bit0
         private bool _homeAtMaxY = false; // derived from $23 bit1
 
-        private bool _isHomed;
+        private bool _isHomed = false;
 
         private const double SAFE_MARGIN_MM = 50.0;
 
+        private readonly DispatcherTimer _filterThrottle;
+
         public MainWindow()
         {
+            _filterThrottle = new DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(60) // adjust (30–100ms)
+            };
+            _filterThrottle.Tick += (_, __) =>
+            {
+                _filterThrottle.Stop();
+                ApplyPreviewFilter();
+            };
+        
+
             InitializeComponent();
 
             DrawCanvas.RenderTransform = _zoom;
@@ -117,6 +140,27 @@ namespace NVSPlotter
              RenderAll();
              UpdateConnStatus();
         }
+
+        private void FilterControlSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+
+            // restart timer each change -> only applies after user pauses for Interval
+            _filterThrottle.Stop();
+            _filterThrottle.Start();
+
+        }
+
+        private void ApplyPreviewFilter()
+        {
+            if (_imageService.OriginalImage == null) return;
+            if (FindName("FilterControlSlider") is Slider slider)
+            {
+                int intensity = (int)Math.Round(slider.Value);
+                _imageService.SetFilter(_imageService.CurrentFilter, intensity);
+                RenderAll();
+            }
+        }
+
 
         private void UpdateReferenceUiState()
         {
@@ -155,22 +199,7 @@ namespace NVSPlotter
             }
         }
 
-        private static double NormalizeAngle(double angle)
-        {
-            var normalized = angle % 360.0;
-            if (normalized <= -180.0) normalized += 360.0;
-            if (normalized > 180.0) normalized -= 360.0;
-            return normalized;
-        }
-
-        private static Vector RotateVector(Vector v, double angleDegrees)
-        {
-            var radians = angleDegrees * Math.PI / 180.0;
-            var cos = Math.Cos(radians);
-            var sin = Math.Sin(radians);
-            return new Vector(v.X * cos - v.Y * sin, v.X * sin + v.Y * cos);
-        }
-
+      
         private static void ApplyImageRotation(UIElement element, double angleDegrees)
         {
             element.RenderTransformOrigin = new Point(0.5, 0.5);
@@ -312,7 +341,7 @@ namespace NVSPlotter
 
         private void ImageLockCheck_Click(object sender, RoutedEventArgs e)
         {
-            var locked = (sender as CheckBox)?.IsChecked == true;
+            var locked = sender is CheckBox { IsChecked: true };
             SetImageLocked(locked, syncCheckbox: false);
             RenderAll();
         }
@@ -336,7 +365,7 @@ namespace NVSPlotter
             RenderAll();
         }
 
-        private void ImageFilterCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        public void ImageFilterCombo_SelectionChanged(object sender, SelectionChangedEventArgs? e)
         {
             if (_suppressImageFilterChange) return;
             if (_imageService.OriginalImage == null) return;
@@ -344,7 +373,7 @@ namespace NVSPlotter
             var filter = ParseImageFilter((sender as ComboBox)?.SelectedValue);
             if (filter == _imageService.CurrentFilter) return;
 
-            _imageService.SetFilter(filter);
+            _imageService.SetFilter(filter, 1);
             UpdateReferenceUiState();
             RenderAll();
         }
@@ -699,7 +728,8 @@ namespace NVSPlotter
 
             if (tool == ToolMode.Polyline)
             {
-                var point = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var point = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)))
+;
                 _shapeController.HandlePolylineClick(point, e.ClickCount >= 2);
                 e.Handled = true;
                 return;
@@ -739,7 +769,7 @@ namespace NVSPlotter
             if (_measurementOverlay.IsMeasuring)
             {
                 var measureEnd = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-                _measurementOverlay.Complete(measureEnd, Distance);
+                _measurementOverlay.Complete(measureEnd, Utility.Distance);
                 e.Handled = true;
                 return;
             }
@@ -798,13 +828,6 @@ namespace NVSPlotter
                 }
             }
             return new PointMm(_doc.WidthMm / 2.0, _doc.HeightMm / 2.0);
-        }
-
-        private static double Distance(PointMm a, PointMm b)
-        {
-            var dx = a.X - b.X;
-            var dy = a.Y - b.Y;
-            return Math.Sqrt(dx * dx + dy * dy);
         }
 
         private void DrawCanvas_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
@@ -1017,7 +1040,7 @@ namespace NVSPlotter
                 {
                     Stroke = Brushes.DeepSkyBlue,
                     StrokeThickness = 1,
-                    StrokeDashArray = new DoubleCollection { 2, 2 },
+                    StrokeDashArray = [2, 2],
                     SnapsToDevicePixels = true,
                     IsHitTestVisible = false
                 };
@@ -1031,7 +1054,7 @@ namespace NVSPlotter
                 {
                     Stroke = Brushes.DeepSkyBlue,
                     StrokeThickness = 1,
-                    StrokeDashArray = new DoubleCollection { 2, 2 },
+                    StrokeDashArray = [2, 2],
                     SnapsToDevicePixels = true,
                     IsHitTestVisible = false
                 };
@@ -1065,13 +1088,13 @@ namespace NVSPlotter
             }
         }
 
-        private Rectangle CreateWorkingAreaVisual()
+        private static Rectangle CreateWorkingAreaVisual()
         {
             return new Rectangle
             {
                 Stroke = Brushes.DeepSkyBlue,
                 StrokeThickness = 1.5,
-                StrokeDashArray = new DoubleCollection { 4, 2 },
+                StrokeDashArray = [4, 2],
                 Fill = new SolidColorBrush(Color.FromArgb(32, 0, 122, 204)),
                 IsHitTestVisible = false,
                 SnapsToDevicePixels = true
@@ -1091,11 +1114,14 @@ namespace NVSPlotter
             const double rulerThickness = 18.0;
             const double minorStep = 1.0;
             const double majorStep = 10.0;
-            const double labelStep = 50.0;
+            double labelStep = 50.0;
 
             Brush rulerFill = new SolidColorBrush(Color.FromRgb(248, 248, 248));
             Brush borderBrush = Brushes.LightGray;
             Brush tickBrush = Brushes.Gray;
+
+            double ox = rulerThickness; // document X offset (top ruler starts after corner)
+            double oy = rulerThickness; // document Y offset (left ruler starts after corner)
 
             Rectangle CreateBackground(double width, double height)
             {
@@ -1110,14 +1136,22 @@ namespace NVSPlotter
                 };
             }
 
-            var topBackground = CreateBackground(_doc.WidthMm, rulerThickness);
-            Canvas.SetLeft(topBackground, 0);
+            // Corner block so the rulers don't overlap each other
+            var corner = CreateBackground(rulerThickness, rulerThickness);
+            Canvas.SetLeft(corner, 0);
+            Canvas.SetTop(corner, 0);
+            RulerCanvas.Children.Add(corner);
+
+            // Top ruler (shifted right by corner width)
+            var topBackground = CreateBackground(_doc.WidthMm-rulerThickness, rulerThickness);
+            Canvas.SetLeft(topBackground, ox);
             Canvas.SetTop(topBackground, 0);
             RulerCanvas.Children.Add(topBackground);
 
-            var leftBackground = CreateBackground(rulerThickness, _doc.HeightMm);
+            // Left ruler (shifted down by corner height)
+            var leftBackground = CreateBackground(rulerThickness, _doc.HeightMm-rulerThickness);
             Canvas.SetLeft(leftBackground, 0);
-            Canvas.SetTop(leftBackground, 0);
+            Canvas.SetTop(leftBackground, oy);
             RulerCanvas.Children.Add(leftBackground);
 
             void AddVerticalTick(double x)
@@ -1126,10 +1160,12 @@ namespace NVSPlotter
                 bool showLabel = isMajor && Math.Abs(x % labelStep) < 0.0001;
                 double len = isMajor ? rulerThickness : rulerThickness / 2.5;
 
+                double cx = ox + x;
+
                 var line = new Line
                 {
-                    X1 = x,
-                    X2 = x,
+                    X1 = cx,
+                    X2 = cx,
                     Y1 = 0,
                     Y2 = len,
                     Stroke = tickBrush,
@@ -1143,7 +1179,7 @@ namespace NVSPlotter
                 if (showLabel)
                 {
                     var label = CreateRulerLabel(x, rotate: false);
-                    Canvas.SetLeft(label, x + 2);
+                    Canvas.SetLeft(label, cx + 2);
                     Canvas.SetTop(label, 1);
                     RulerCanvas.Children.Add(label);
                 }
@@ -1155,12 +1191,14 @@ namespace NVSPlotter
                 bool showLabel = isMajor && Math.Abs(y % labelStep) < 0.0001;
                 double len = isMajor ? rulerThickness : rulerThickness / 2.5;
 
+                double cy = oy + y;
+
                 var line = new Line
                 {
                     X1 = 0,
                     X2 = len,
-                    Y1 = y,
-                    Y2 = y,
+                    Y1 = cy,
+                    Y2 = cy,
                     Stroke = tickBrush,
                     StrokeThickness = 0.6,
                     SnapsToDevicePixels = true,
@@ -1173,28 +1211,25 @@ namespace NVSPlotter
                 {
                     var label = CreateRulerLabel(y, rotate: true);
                     Canvas.SetLeft(label, 1);
-                    Canvas.SetTop(label, y + 2);
+                    Canvas.SetTop(label, cy + 2);
                     RulerCanvas.Children.Add(label);
                 }
             }
 
             for (double x = 0; x <= _doc.WidthMm; x += minorStep)
-            {
                 AddVerticalTick(x);
-            }
 
             for (double y = 0; y <= _doc.HeightMm; y += minorStep)
-            {
                 AddHorizontalTick(y);
-            }
         }
 
-        private TextBlock CreateRulerLabel(double value, bool rotate)
+        private static TextBlock CreateRulerLabel(double value, bool rotate)
         {
             var tb = new TextBlock
             {
                 Text = value.ToString("0"),
                 FontSize = 9,
+                FontWeight= FontWeights.Bold,
                 Foreground = Brushes.Gray,
                 IsHitTestVisible = false
             };
@@ -1268,8 +1303,8 @@ namespace NVSPlotter
 
             AppendLog($"Doc: {_doc.WidthMm:0} x {_doc.HeightMm:0} mm, strokes={_doc.Strokes.Count}");
             AppendLog($"Bed: X={_bedX:0.###} Y={_bedY:0.###} {(_bedFromGrbl ? "(from $$)" : "(default)")}, margin={SAFE_MARGIN_MM:0.###}mm");
-            AppendLog($"$23={_homingDirMask} => HomeAtMax: X={_homeAtMaxX}, Y={_homeAtMaxY}, homed={_isHomed}");
-            AppendLog("Work convention: X ALWAYS positive, Y ALWAYS negative.");
+            //AppendLog($"$23={_homingDirMask} => HomeAtMax: X={_homeAtMaxX}, Y={_homeAtMaxY}, homed={_isHomed}");
+            //AppendLog("Work convention: X ALWAYS positive, Y ALWAYS negative.");
 
             UpdateZoomHost();
         }
@@ -1298,7 +1333,7 @@ namespace NVSPlotter
                 Height = rect.Height,
                 Stroke = Brushes.DimGray,
                 StrokeThickness = 1,
-                StrokeDashArray = new DoubleCollection { 4, 2 },
+                StrokeDashArray = [4, 2],
                 Fill = Brushes.Transparent,
                 IsHitTestVisible = false
             };
@@ -1353,7 +1388,7 @@ namespace NVSPlotter
             AddHandle(ImageHandle.Sw, rect.Left, rect.Bottom, Cursors.SizeNESW);
 
             var center = new Point(rect.Left + rect.Width / 2.0, rect.Top + rect.Height / 2.0);
-            var rotatedVector = RotateVector(new Vector(0, -ROTATE_HANDLE_OFFSET), _imageService.Angle);
+            var rotatedVector = Utility.RotateVector(new Vector(0, -ROTATE_HANDLE_OFFSET), _imageService.Angle);
             var handleCenter = new Point(center.X + rotatedVector.X, center.Y + rotatedVector.Y);
 
             var connector = new Line
@@ -1364,7 +1399,7 @@ namespace NVSPlotter
                 Y2 = handleCenter.Y,
                 Stroke = Brushes.DodgerBlue,
                 StrokeThickness = 1,
-                StrokeDashArray = new DoubleCollection { 2, 2 },
+                StrokeDashArray = [2, 2],
                 IsHitTestVisible = false
             };
             DrawCanvas.Children.Add(connector);
@@ -1443,9 +1478,102 @@ namespace NVSPlotter
             }
         }
 
-        private void SendBtn_Click(object sender, RoutedEventArgs e)
+        private async void ManualSendBtn_Click(object sender, RoutedEventArgs e)
         {
-            AppendLog("Send G-code not implemented yet.");
+            if (!EnsureConnected()) return;
+            var cmd = (ManualCmdBox.Text ?? "").Trim();
+            if (cmd.Length == 0) return;
+
+            ManualCmdBox.Text = "";
+            try
+            {
+                await _grbl!.SendLineWaitOkAsync(cmd, TimeSpan.FromSeconds(10));
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Manual send failed: " + ex.Message);
+            }
+        }
+
+        private async void SendBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureConnected()) return;
+
+            if (!_isHomed)
+            {
+                AppendLog("Refusing to send: not homed. Click Home first.");
+                return;
+            }
+
+            var g = string.IsNullOrWhiteSpace(_lastGcode) ? BuildGcode() : _lastGcode;
+
+            var lines = g.Split('\n')
+                         .Select(x => x.Trim())
+                         .Where(x => x.Length > 0 && !x.StartsWith(";"))
+                         .ToList();
+
+            if (lines.Count == 0)
+            {
+                AppendLog("No G-code to send.");
+                return;
+            }
+
+            if (_sendCts != null)
+            {
+                AppendLog("Send already in progress.");
+                return;
+            }
+
+            _sendCts = new CancellationTokenSource();
+            var token = _sendCts.Token;
+
+            AppendLog($"Sending {lines.Count} lines...");
+            try
+            {
+                int sent = 0;
+                foreach (var line in lines)
+                {
+                    token.ThrowIfCancellationRequested();
+                    await _grbl!.SendLineWaitOkAsync(line, TimeSpan.FromSeconds(20), token);
+                    sent++;
+                    if (sent % 25 == 0) AppendLog($"Progress: {sent}/{lines.Count}");
+                }
+                AppendLog("Send complete.");
+            }
+            catch (OperationCanceledException)
+            {
+                AppendLog("Send canceled.");
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Send error: " + ex.Message);
+            }
+            finally
+            {
+                _sendCts?.Dispose();
+                _sendCts = null;
+            }
+        }
+
+        private async void StopBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (!EnsureConnected()) return;
+
+            try
+            {
+                _sendCts?.Cancel();
+                await _grbl!.SoftResetAsync();
+                _isHomed = false;
+                AppendLog("Stop: canceled + reset sent.");
+            }
+            catch (Exception ex)
+            {
+                AppendLog("Stop error: " + ex.Message);
+            }
+            finally
+            {
+                RenderAll();
+            }
         }
 
         private void StopBtn_Click(object sender, RoutedEventArgs e)
@@ -1495,4 +1623,5 @@ namespace NVSPlotter
         }
 
     }
+
  }

@@ -1,4 +1,5 @@
 ﻿using NVSPlotter.Models;
+using NVSPlotter.Util;
 using System;
 using System.Windows.Controls;
 using System.Windows.Media;
@@ -20,6 +21,7 @@ public sealed class MeasurementOverlay
     private Line? _line;
     private Ellipse? _startMarker;
     private Ellipse? _endMarker;
+    private readonly Utility _util = new();
 
     public bool IsMeasuring => _isMeasuring;
     public bool HasMeasurement => _hasMeasurement;
@@ -44,7 +46,7 @@ public sealed class MeasurementOverlay
         {
             Stroke = Brushes.MediumPurple,
             StrokeThickness = 1.5,
-            StrokeDashArray = new DoubleCollection { 2, 2 },
+            StrokeDashArray = [2, 2],
             SnapsToDevicePixels = true
         };
         _canvas.Children.Add(_line);
@@ -89,7 +91,7 @@ public sealed class MeasurementOverlay
             return;
 
         _end = end;
-        var distance = distanceEvaluator?.Invoke(_start, _end) ?? Distance(_start, _end);
+        var distance = distanceEvaluator?.Invoke(_start, _end) ?? Utility.Distance(_start, _end);
         if (distance < minimumDistance)
         {
             Reset();
@@ -153,7 +155,7 @@ public sealed class MeasurementOverlay
 
     private void UpdateStatus(PointMm start, PointMm end)
     {
-        var dist = Distance(start, end);
+        var dist = Utility.Distance(start, end);
         var angle = Math.Atan2(end.Y - start.Y, end.X - start.X) * 180.0 / Math.PI;
         if (angle < 0) angle += 360.0;
         UpdateStatusText($"{dist:0.##} mm @ {angle:0.#}°");
@@ -175,10 +177,5 @@ public sealed class MeasurementOverlay
         }
     }
 
-    private static double Distance(PointMm a, PointMm b)
-    {
-        var dx = a.X - b.X;
-        var dy = a.Y - b.Y;
-        return Math.Sqrt(dx * dx + dy * dy);
-    }
+  
 }

@@ -31,8 +31,8 @@ public sealed class GrblConnection : IDisposable
             NewLine = "\n",
             DtrEnable = true,
             RtsEnable = true,
-            ReadTimeout = 2000,
-            WriteTimeout = 2000
+            ReadTimeout = 5000,
+            WriteTimeout = 5000
         };
         _port.DataReceived += Port_DataReceived;
     }
@@ -59,7 +59,7 @@ public sealed class GrblConnection : IDisposable
     public async Task SoftResetAsync()
     {
         if (!_port.IsOpen) return;
-        _port.Write(new char[] { (char)0x18 }, 0, 1);
+        _port.Write([(char)0x18], 0, 1);
         await Task.Delay(200);
         _log("Sent Ctrl+X (soft reset).");
     }
@@ -72,7 +72,7 @@ public sealed class GrblConnection : IDisposable
     public async Task<List<string>> SendAndCollectAsync(string line, TimeSpan timeout, CancellationToken ct = default)
     {
         line = line.Trim();
-        if (line.Length == 0) return new List<string>();
+        if (line.Length == 0) return [];
 
         var collected = new List<string>();
 
@@ -149,7 +149,7 @@ public sealed class GrblConnection : IDisposable
                     var idx = str.IndexOf('\n');
                     if (idx < 0) break;
 
-                    var line = str.Substring(0, idx).Trim('\r');
+                    var line = str[..idx].Trim('\r');
                     _lines.Enqueue(line);
 
                     _rx.Clear();

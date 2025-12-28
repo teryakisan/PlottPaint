@@ -46,5 +46,17 @@ namespace NVSPlotter.Properties {
                 this["bedY"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("128")]
+        public int circleSegments {
+            get {
+                return ((int)(this["circleSegments"]));
+            }
+            set {
+                this["circleSegments"] = value;
+            }
+        }
     }
 }

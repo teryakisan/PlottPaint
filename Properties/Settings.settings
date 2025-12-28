@@ -8,5 +8,8 @@
     <Setting Name="bedY" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">1189</Value>
     </Setting>
+    <Setting Name="circleSegments" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">128</Value>
+    </Setting>
   </Settings>
 </SettingsFile>

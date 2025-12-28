@@ -1,20 +1,25 @@
 using System;
 using System.Collections.Generic;
+using System.Web;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using NVSPlotter.Models;
+using NVSPlotter.Properties;
+using NVSPlotter.Util;
 
 namespace NVSPlotter.Services;
 
-public sealed class ShapeDrawingController
+public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> commitStroke, Action requestRender)
 {
-    private const double MIN_DIST = 0.25;
-    private const int CIRCLE_SEGMENTS = 64;
+    private readonly Utility _util = new();
 
-    private readonly Canvas _canvas;
-    private readonly Action<LineStroke> _commitStroke;
-    private readonly Action _requestRender;
+    private const double MIN_DIST = 0.25;
+    private static int CIRCLE_SEGMENTS => Settings.Default.circleSegments;
+
+    private readonly Canvas _canvas = canvas ?? throw new ArgumentNullException(nameof(canvas));
+    private readonly Action<LineStroke> _commitStroke = commitStroke ?? throw new ArgumentNullException(nameof(commitStroke));
+    private readonly Action _requestRender = requestRender ?? throw new ArgumentNullException(nameof(requestRender));
 
     private bool _isDrawing;
     private bool _isPolylineActive;
@@ -26,13 +31,6 @@ public sealed class ShapeDrawingController
 
     public bool IsDrawing => _isDrawing;
     public bool IsPolylineActive => _isPolylineActive;
-
-    public ShapeDrawingController(Canvas canvas, Action<LineStroke> commitStroke, Action requestRender)
-    {
-        _canvas = canvas ?? throw new ArgumentNullException(nameof(canvas));
-        _commitStroke = commitStroke ?? throw new ArgumentNullException(nameof(commitStroke));
-        _requestRender = requestRender ?? throw new ArgumentNullException(nameof(requestRender));
-    }
 
     public void BeginDraw(ToolMode tool, PointMm start)
     {
@@ -123,7 +121,7 @@ public sealed class ShapeDrawingController
             return;
         }
 
-        if (Distance(_polylineLast, point) >= MIN_DIST)
+        if (Utility.Distance(_polylineLast, point) >= MIN_DIST)
         {
             CancelPreview();
             AddStroke(_polylineLast, point);
@@ -170,16 +168,11 @@ public sealed class ShapeDrawingController
 
     private void AddStroke(PointMm a, PointMm b)
     {
-        if (Distance(a, b) < MIN_DIST) return;
+        if (Utility.Distance(a, b) < MIN_DIST) return;
         _commitStroke(new LineStroke(a, b));
     }
 
-    private static double Distance(PointMm a, PointMm b)
-    {
-        var dx = a.X - b.X;
-        var dy = a.Y - b.Y;
-        return Math.Sqrt(dx * dx + dy * dy);
-    }
+  
 
     private void BeginLinePreview(PointMm start)
     {
@@ -191,7 +184,7 @@ public sealed class ShapeDrawingController
             Y2 = start.Y,
             Stroke = Brushes.OrangeRed,
             StrokeThickness = 1.5,
-            StrokeDashArray = new DoubleCollection { 3, 2 },
+            StrokeDashArray = [3, 2],
             SnapsToDevicePixels = true
         };
         _canvas.Children.Add(_previewLine);
@@ -204,7 +197,7 @@ public sealed class ShapeDrawingController
         {
             Stroke = Brushes.OrangeRed,
             StrokeThickness = 1.5,
-            StrokeDashArray = new DoubleCollection { 3, 2 },
+            StrokeDashArray = [3, 2],
             Fill = Brushes.Transparent,
             SnapsToDevicePixels = true
         };
@@ -224,7 +217,7 @@ public sealed class ShapeDrawingController
         {
             Stroke = Brushes.OrangeRed,
             StrokeThickness = 1.5,
-            StrokeDashArray = new DoubleCollection { 3, 2 },
+            StrokeDashArray = [3, 2],
             Fill = Brushes.Transparent,
             SnapsToDevicePixels = true
         };
