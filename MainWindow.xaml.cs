@@ -1641,6 +1641,89 @@ namespace NVSPlotter
             return _lastGcode;
         }
 
+ 
+
+          private static string Fmt(double v) => v.ToString("0.###", CultureInfo.InvariantCulture); private enum FitMode { None, RotateCW }
+        private readonly record struct FitSpec(FitMode Mode, double Scale, double Margin, double DocW, double DocH);
+
+        private FitSpec ComputeFit(double docW, double docH, double bedX, double bedY, double margin)
+        {
+            var ux = Math.Max(1.0, bedX - margin * 2);
+            var uy = Math.Max(1.0, bedY - margin * 2);
+
+            // No-rotate scale
+            var s0 = Math.Min(ux / docW, uy / docH);
+            // Rotate CW scale
+            var s1 = Math.Min(ux / docH, uy / docW);
+
+            // Never scale up above 1.0
+            s0 = Math.Min(s0, 1.0);
+            s1 = Math.Min(s1, 1.0);
+
+            if (s1 > s0) return new FitSpec(FitMode.RotateCW, s1, margin, docW, docH);
+            return new FitSpec(FitMode.None, s0, margin, docW, docH);
+        }
+
+        // Map doc point into bed coordinates (origin = bed min/min corner), inside margins.
+        private PointMm DocToBed(PointMm p, FitSpec fit)
+        {
+            var m = fit.Margin;
+            var s = fit.Scale;
+
+            return fit.Mode switch
+            {
+                FitMode.None =>
+                    new PointMm(
+                        ClampBedX(m + p.X * s),
+                        ClampBedY(m + p.Y * s)
+                    ),
+
+                // CW rotation about doc:
+                // x' = y
+                // y' = docW - x
+                FitMode.RotateCW =>
+                    new PointMm(
+                        ClampBedX(m + p.Y * s),
+                        ClampBedY(m + (fit.DocW - p.X) * s)
+                    ),
+
+                _ =>
+                    new PointMm(
+                        ClampBedX(m + p.X * s),
+                        ClampBedY(m + p.Y * s)
+                    )
+            };
+        }
+
+        private double ClampBedX(double x) => Math.Clamp(x, SAFE_MARGIN_MM, _bedX - SAFE_MARGIN_MM);
+        private double ClampBedY(double y) => Math.Clamp(y, SAFE_MARGIN_MM, _bedY - SAFE_MARGIN_MM);
+
+        // Convert bed-local positive coords into WORK coords relative to home (0,0).
+        // REQUIRED BY USER: X ALWAYS positive, Y ALWAYS negative.
+        //
+        // We still compute "distance into the bed from HOME" using $23, because home might be at min or max.
+        // Then we apply the requested sign convention:
+        //   X = +distance, Y = -distance
+        private PointMm BedToWork(PointMm bed)
+        {
+            // Distance from HOME along each axis into the bed (always positive)
+            var distX = _homeAtMaxX ? (_bedX - bed.X) : bed.X;
+            var distY = _homeAtMaxY ? (_bedY - bed.Y) : bed.Y;
+
+            // Enforce requested sign convention
+            var wx = Math.Max(0, distX);      // ALWAYS >= 0
+            var wy = -Math.Max(0, distY);     // ALWAYS <= 0
+
+            return new PointMm(wx, wy);
+        }
+
+        private static double ParseDouble(string? s, double fallback)
+        {
+            if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return v;
+            if (double.TryParse(s, NumberStyles.Float, CultureInfo.CurrentCulture, out v)) return v;
+            return fallback;
+        }
+
         private bool EnsureConnected()
         {
             if (_grbl?.IsOpen == true)
