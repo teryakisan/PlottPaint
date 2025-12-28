@@ -420,15 +420,6 @@ namespace NVSPlotter
             RenderAll();
         }
 
-        private void ExportBtn_Click(object sender, RoutedEventArgs e)
-        {
-            AppendLog("Export G-code not implemented yet.");
-        }
-
-        private void CopyBtn_Click(object sender, RoutedEventArgs e)
-        {
-            AppendLog("Copy G-code not implemented yet.");
-        }
 
         private void RefreshPortsBtn_Click(object sender, RoutedEventArgs e)
         {
@@ -1576,39 +1567,78 @@ namespace NVSPlotter
             }
         }
 
-        private void StopBtn_Click(object sender, RoutedEventArgs e)
+        // ----------------------------
+        // G-code export
+        // ----------------------------
+        private void ExportBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (_sendCts == null)
+            var g = BuildGcode();
+            var dlg = new SaveFileDialog
             {
-                AppendLog("Nothing to cancel.");
-                return;
+                Filter = "G-code (*.gcode;*.nc;*.txt)|*.gcode;*.nc;*.txt|All files (*.*)|*.*",
+                FileName = "plot.gcode"
+            };
+            if (dlg.ShowDialog() == true)
+            {
+                File.WriteAllText(dlg.FileName, g, Encoding.UTF8);
+                AppendLog($"Saved: {dlg.FileName}");
             }
-
-            _sendCts.Cancel();
-            _sendCts.Dispose();
-            _sendCts = new CancellationTokenSource();
-            AppendLog("Operation cancelled.");
         }
 
-        private async void ManualSendBtn_Click(object sender, RoutedEventArgs e)
+        private void CopyBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (!EnsureConnected()) return;
+            var g = BuildGcode();
+            Clipboard.SetText(g);
+            AppendLog("G-code copied to clipboard.");
+        }
 
-            var cmd = ManualCmdBox?.Text?.Trim();
-            if (string.IsNullOrWhiteSpace(cmd))
+        private string BuildGcode()
+        {
+            var feedXY = ParseDouble(FeedXYBox.Text, 3000);
+            var zUp = ParseDouble(ZUpBox.Text, 10);
+            var zDown = ParseDouble(ZDownBox.Text, 2);
+            var optimize = OptimizeCheck.IsChecked == true;
+
+            var strokes = _doc.Strokes.ToList();
+            if (optimize) strokes = StrokeOptimizer.OptimizeNearest(strokes);
+
+            // Fit doc into bed (with margin), possibly rotating CW to better fit.
+            var fit = ComputeFit(_doc.WidthMm, _doc.HeightMm, _bedX, _bedY, SAFE_MARGIN_MM);
+
+            AppendLog($"G-code fit={fit.Mode}, scale={fit.Scale:0.###}, usableBed=({_bedX - 2 * SAFE_MARGIN_MM:0.###} x {_bedY - 2 * SAFE_MARGIN_MM:0.###})");
+            AppendLog("G-code convention: X>=0, Y<=0");
+
+            var sb = new StringBuilder(64 * 1024);
+            sb.AppendLine("; NVSPlotter");
+            sb.AppendLine("; Units: mm");
+            sb.AppendLine("; Work convention: X positive, Y negative");
+            sb.AppendLine("G21");           // mm
+            sb.AppendLine("G90");           // absolute
+            sb.AppendLine("G54");
+            sb.AppendLine("G92.1");         // clear G92 offsets
+            sb.AppendLine("G10 L20 P1 X0 Y0"); // set G54 so current position (home) is work 0,0
+            sb.AppendLine($"G0 Z{Fmt(zUp)}");
+
+            foreach (var s in strokes)
             {
-                AppendLog("Enter a GRBL command first.");
-                return;
+                var aBed = DocToBed(s.A, fit);
+                var bBed = DocToBed(s.B, fit);
+
+                var aWork = BedToWork(aBed);
+                var bWork = BedToWork(bBed);
+
+                sb.AppendLine($"G0 X{Fmt(aWork.X)} Y{Fmt(aWork.Y)}");
+                sb.AppendLine($"G0 Z{Fmt(zDown)}");
+                sb.AppendLine($"G1 X{Fmt(bWork.X)} Y{Fmt(bWork.Y)} F{Fmt(feedXY)}");
+                sb.AppendLine($"G0 Z{Fmt(zUp)}");
             }
 
-            try
-            {
-                await _grbl!.SendAndCollectAsync(cmd, TimeSpan.FromSeconds(5), _sendCts?.Token ?? CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Manual send failed: " + ex.Message);
-            }
+            sb.AppendLine("G0 X0 Y0"); // back to home (work origin)
+            sb.AppendLine("M2");
+
+            _lastGcode = sb.ToString();
+            AppendLog($"Built G-code: lines={_lastGcode.Split('\n').Length}");
+            return _lastGcode;
         }
 
         private bool EnsureConnected()
