@@ -452,7 +452,6 @@ namespace NVSPlotter
 
                 UpdateConnStatus();
                 await _grbl.OpenAsync();
-                _sendCts = new CancellationTokenSource();
 
                 AppendLog("Connected to GRBL.");
                 await LoadGrblSettingsAsync();
@@ -1599,6 +1598,10 @@ namespace NVSPlotter
             var zDown = ParseDouble(ZDownBox.Text, 2);
             var optimize = OptimizeCheck.IsChecked == true;
 
+            // Hardware Z is inverted: flip the commanded values
+            var zUpCmd = -zUp;
+            var zDownCmd = -zDown;
+
             var strokes = _doc.Strokes.ToList();
             if (optimize) strokes = StrokeOptimizer.OptimizeNearest(strokes);
 
@@ -1617,20 +1620,37 @@ namespace NVSPlotter
             sb.AppendLine("G54");
             sb.AppendLine("G92.1");         // clear G92 offsets
             sb.AppendLine("G10 L20 P1 X0 Y0"); // set G54 so current position (home) is work 0,0
-            sb.AppendLine($"G0 Z{Fmt(zUp)}");
+            sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
 
-            foreach (var s in strokes)
+            const double joinTol = 0.01; // mm
+            var paths = BuildPaths(strokes, joinTol);
+
+            foreach (var path in paths)
             {
-                var aBed = DocToBed(s.A, fit);
-                var bBed = DocToBed(s.B, fit);
+                if (path.Count == 0) continue;
 
-                var aWork = BedToWork(aBed);
-                var bWork = BedToWork(bBed);
+                var first = path[0];
+                var startWork = BedToWork(DocToBed(first.A, fit));
 
-                sb.AppendLine($"G0 X{Fmt(aWork.X)} Y{Fmt(aWork.Y)}");
-                sb.AppendLine($"G0 Z{Fmt(zDown)}");
-                sb.AppendLine($"G1 X{Fmt(bWork.X)} Y{Fmt(bWork.Y)} F{Fmt(feedXY)}");
-                sb.AppendLine($"G0 Z{Fmt(zUp)}");
+                sb.AppendLine($"G0 X{Fmt(startWork.X)} Y{Fmt(startWork.Y)}");
+                sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
+
+                bool firstMove = true;
+                foreach (var seg in path)
+                {
+                    var endWork = BedToWork(DocToBed(seg.B, fit));
+                    if (firstMove)
+                    {
+                        sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
+                        firstMove = false;
+                    }
+                    else
+                    {
+                        sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
+                    }
+                }
+
+                sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
             }
 
             sb.AppendLine("G0 X0 Y0"); // back to home (work origin)
@@ -1639,6 +1659,35 @@ namespace NVSPlotter
             _lastGcode = sb.ToString();
             AppendLog($"Built G-code: lines={_lastGcode.Split('\n').Length}");
             return _lastGcode;
+
+            static List<List<LineStroke>> BuildPaths(List<LineStroke> input, double tol)
+            {
+                var result = new List<List<LineStroke>>();
+                List<LineStroke>? current = null;
+
+                foreach (var stroke in input)
+                {
+                    if (current == null)
+                    {
+                        current = new List<LineStroke> { stroke };
+                        result.Add(current);
+                        continue;
+                    }
+
+                    var prev = current[^1];
+                    if (Utility.Distance(prev.B, stroke.A) <= tol)
+                    {
+                        current.Add(stroke);
+                    }
+                    else
+                    {
+                        current = new List<LineStroke> { stroke };
+                        result.Add(current);
+                    }
+                }
+
+                return result;
+            }
         }
 
  
