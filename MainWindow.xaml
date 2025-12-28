@@ -56,6 +56,7 @@
                                         <ComboBoxItem Content="Selection / Transform Tool" Tag="Select"/>
                                         <ComboBoxItem Content="Crop / Mask Tool" Tag="Crop"/>
                                         <ComboBoxItem Content="Image Alignment Tool" Tag="ImageAlign"/>
+                                        <ComboBoxItem Content="Paint Well Tool" Tag="PaintWell"/>
                                     </ComboBox>
                                 </StackPanel>
 
@@ -273,6 +274,126 @@
                             </StackPanel>
                         </Expander>
 
+                    </GroupBox>
+
+                    <!-- PAINT WELLS / PAINTING MODE -->
+                    <GroupBox x:Name="PaintWellsGroup" Header="🎨 Painting Mode" Margin="0,0,0,10">
+                        <Expander Header="Paint Wells" IsExpanded="True">
+                            <StackPanel Margin="10">
+                                <!-- Enable/Disable Painting Mode -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <CheckBox x:Name="PaintModeEnabledCheck" Content="Enable Painting Mode" 
+                                              IsChecked="False" VerticalAlignment="Center" 
+                                              Click="PaintModeEnabledCheck_Click"/>
+                                </StackPanel>
+
+                                <!-- Active Paint Color Selection -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="Active Color:" Width="80" VerticalAlignment="Center"/>
+                                    <ComboBox x:Name="ActivePaintWellCombo" Width="140" 
+                                              SelectionChanged="ActivePaintWellCombo_SelectionChanged">
+                                        <ComboBox.ItemTemplate>
+                                            <DataTemplate>
+                                                <StackPanel Orientation="Horizontal">
+                                                    <Rectangle Width="16" Height="16" Margin="0,0,8,0"
+                                                               Stroke="Gray" StrokeThickness="1">
+                                                        <Rectangle.Fill>
+                                                            <SolidColorBrush Color="{Binding Color}"/>
+                                                        </Rectangle.Fill>
+                                                    </Rectangle>
+                                                    <TextBlock Text="{Binding Name}"/>
+                                                </StackPanel>
+                                            </DataTemplate>
+                                        </ComboBox.ItemTemplate>
+                                    </ComboBox>
+                                    <Button Content="None" Width="50" Margin="5,0,0,0" 
+                                            Click="ClearActivePaintWell_Click" ToolTip="Clear active paint (use black)"/>
+                                </StackPanel>
+
+                                <!-- Paint Wells List -->
+                                <TextBlock Text="Paint Wells:" Margin="0,5,0,3" FontWeight="SemiBold"/>
+                                <ListBox x:Name="PaintWellsList" Height="100" Margin="0,0,0,8"
+                                         SelectionChanged="PaintWellsList_SelectionChanged">
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Orientation="Horizontal">
+                                                <Rectangle Width="20" Height="20" Margin="0,0,8,0"
+                                                           Stroke="DarkGray" StrokeThickness="1">
+                                                    <Rectangle.Fill>
+                                                        <SolidColorBrush Color="{Binding Color}"/>
+                                                    </Rectangle.Fill>
+                                                </Rectangle>
+                                                <TextBlock Text="{Binding Name}" VerticalAlignment="Center" Width="100"/>
+                                                <TextBlock Text="{Binding DipDepth, StringFormat='Dip: {0:0.#}mm'}" 
+                                                           VerticalAlignment="Center" Foreground="Gray" FontSize="10"/>
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <!-- Paint Well Actions -->
+                                <WrapPanel Margin="0,0,0,8">
+                                    <Button x:Name="AddPaintWellBtn" Content="Add Well" Width="70" Margin="0,0,5,0" 
+                                            Click="AddPaintWellBtn_Click" ToolTip="Select PaintWell tool and draw on canvas"/>
+                                    <Button x:Name="RemovePaintWellBtn" Content="Remove" Width="60" Margin="0,0,5,0" 
+                                            Click="RemovePaintWellBtn_Click"/>
+                                    <Button x:Name="ClearPaintWellsBtn" Content="Clear All" Width="60" 
+                                            Click="ClearPaintWellsBtn_Click"/>
+                                </WrapPanel>
+                                
+                                <!-- Quick Setup -->
+                                <Button x:Name="QuickSetupPaintWellsBtn" Content="🎨 Quick Setup (RGB)" 
+                                        Margin="0,0,0,8" Click="QuickSetupPaintWellsBtn_Click"
+                                        ToolTip="Create Red, Blue, and Green paint wells automatically"/>
+
+                                <!-- Selected Well Properties -->
+                                <Border BorderBrush="#CCC" BorderThickness="1" Padding="8" Margin="0,5,0,0"
+                                        Visibility="{Binding ElementName=PaintWellsList, Path=SelectedItem, Converter={StaticResource NullToVisibilityConverter}}">
+                                    <StackPanel>
+                                        <TextBlock Text="Selected Well Properties:" FontWeight="SemiBold" Margin="0,0,0,5"/>
+                                        
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                            <TextBlock Text="Name:" Width="70" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="PaintWellNameBox" Width="150" 
+                                                     TextChanged="PaintWellNameBox_TextChanged"/>
+                                        </StackPanel>
+
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                            <TextBlock Text="Color:" Width="70" VerticalAlignment="Center"/>
+                                            <Rectangle x:Name="PaintWellColorPreview" Width="24" Height="24" 
+                                                       Stroke="Gray" StrokeThickness="1" Margin="0,0,8,0"
+                                                       MouseLeftButtonDown="PaintWellColorPreview_Click" Cursor="Hand"/>
+                                            <Button Content="Pick Color" Width="80" Click="PaintWellColorPreview_Click"/>
+                                        </StackPanel>
+
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                            <TextBlock Text="Dip Depth:" Width="70" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="PaintWellDipDepthBox" Width="60" 
+                                                     TextChanged="PaintWellDipDepthBox_TextChanged"/>
+                                            <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                                        </StackPanel>
+
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                            <TextBlock Text="Dwell Time:" Width="70" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="PaintWellDwellBox" Width="60" 
+                                                     TextChanged="PaintWellDwellBox_TextChanged"/>
+                                            <TextBlock Text="ms" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                                        </StackPanel>
+
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                            <TextBlock Text="Refresh:" Width="70" VerticalAlignment="Center"/>
+                                            <TextBox x:Name="PaintWellRefreshBox" Width="60" 
+                                                     TextChanged="PaintWellRefreshBox_TextChanged"/>
+                                            <TextBlock Text="mm (0=manual)" Margin="5,0,0,0" VerticalAlignment="Center" FontSize="10"/>
+                                        </StackPanel>
+
+                                        <Button Content="Apply Color to Selection" Margin="0,5,0,0" 
+                                                Click="ApplyPaintToSelection_Click"
+                                                ToolTip="Apply this paint well's color to selected strokes"/>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Expander>
                     </GroupBox>
 
 

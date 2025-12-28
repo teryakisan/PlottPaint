@@ -8,6 +8,14 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using NVSPlotter.Models;
 
+// Avoid ambiguity with System.Drawing and System.Windows.Forms types
+using Brushes = System.Windows.Media.Brushes;
+using Color = System.Windows.Media.Color;
+using Rectangle = System.Windows.Shapes.Rectangle;
+using Point = System.Windows.Point;
+using Panel = System.Windows.Controls.Panel;
+using Cursors = System.Windows.Input.Cursors;
+
 namespace NVSPlotter.Services;
 
 /// <summary>
@@ -603,7 +611,10 @@ public sealed class SelectionController
             doc.Strokes[idx] = new LineStroke(
                 new PointMm(original.A.X + dx, original.A.Y + dy),
                 new PointMm(original.B.X + dx, original.B.Y + dy)
-            );
+            )
+            {
+                PaintWellId = original.PaintWellId
+            };
         }
 
         UpdateSelectionBounds(doc.Strokes);
@@ -719,7 +730,7 @@ public sealed class SelectionController
             newBounds.Top + (original.B.Y - oldBounds.Top) * scaleY
         );
 
-        return new LineStroke(newA, newB);
+        return new LineStroke(newA, newB) { PaintWellId = original.PaintWellId };
     }
 
     // ===== ROTATE =====
@@ -755,7 +766,7 @@ public sealed class SelectionController
     {
         var newA = RotatePoint(original.A, center, angle);
         var newB = RotatePoint(original.B, center, angle);
-        return new LineStroke(newA, newB);
+        return new LineStroke(newA, newB) { PaintWellId = original.PaintWellId };
     }
 
     private static PointMm RotatePoint(PointMm point, PointMm center, double angle)

@@ -4,6 +4,10 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 
+// Avoid ambiguity with System.Drawing and System.Windows.Forms types
+using Point = System.Windows.Point;
+using MouseEventArgs = System.Windows.Input.MouseEventArgs;
+
 namespace NVSPlotter.Services;
 
 public enum ImageHandle

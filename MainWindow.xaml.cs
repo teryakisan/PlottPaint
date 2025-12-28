@@ -22,6 +22,29 @@ using System.Windows.Shapes;
 using System.Windows.Threading;
 using System.Configuration;
 
+// Avoid ambiguity with System.Drawing and System.Windows.Forms types
+using Color = System.Windows.Media.Color;
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
+using Rectangle = System.Windows.Shapes.Rectangle;
+using Point = System.Windows.Point;
+using Size = System.Windows.Size;
+using Panel = System.Windows.Controls.Panel;
+using Button = System.Windows.Controls.Button;
+using CheckBox = System.Windows.Controls.CheckBox;
+using ComboBox = System.Windows.Controls.ComboBox;
+using ListBox = System.Windows.Controls.ListBox;
+using TextBox = System.Windows.Controls.TextBox;
+using Image = System.Windows.Controls.Image;
+using Cursor = System.Windows.Input.Cursor;
+using Cursors = System.Windows.Input.Cursors;
+using MouseEventArgs = System.Windows.Input.MouseEventArgs;
+using KeyEventArgs = System.Windows.Input.KeyEventArgs;
+using Clipboard = System.Windows.Clipboard;
+using MessageBox = System.Windows.MessageBox;
+using OpenFileDialog = Microsoft.Win32.OpenFileDialog;
+using SaveFileDialog = Microsoft.Win32.SaveFileDialog;
+
 namespace NVSPlotter
 {
     public partial class MainWindow : Window
@@ -59,6 +82,7 @@ namespace NVSPlotter
         private readonly MeasurementOverlay _measurementOverlay;
         private readonly ShapeDrawingController _shapeController;
         private readonly SelectionController _selectionController;
+        private readonly PaintWellController _paintWellController;
 
         // Undo
         private readonly Stack<LineStroke> _undo = new();
@@ -140,9 +164,15 @@ namespace NVSPlotter
             _shapeController = new ShapeDrawingController(
                 DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
                 stroke => { _doc.Strokes.Add(stroke); _lastGcode = ""; },
-                RenderAll);
+                RenderAll,
+                () => _paintWellController?.ActiveColorWell?.Id);
 
             _selectionController = new SelectionController(
+                DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
+                () => _doc,
+                RenderAll);
+
+            _paintWellController = new PaintWellController(
                 DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
                 () => _doc,
                 RenderAll);
@@ -151,6 +181,7 @@ namespace NVSPlotter
              UpdateConnStatus();
              InitializeSafeMarginBox();
              InitializeConsoleWindow();
+             UpdatePaintWellsUI();
         }
 
         private void FilterControlSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -631,6 +662,10 @@ namespace NVSPlotter
             {
                 _selectionController.Cancel();
             }
+            if (_paintWellController.IsCreating || _paintWellController.IsDragging)
+            {
+                _paintWellController.Cancel();
+            }
             _shapeController.CancelAll();
             if (_measurementOverlay.IsMeasuring)
             {
@@ -656,6 +691,17 @@ namespace NVSPlotter
             {
                 var hover = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
                 UpdateWorkingAreaCrosshair(hover);
+            }
+
+            // Paint well tool handling
+            if (_paintWellController.IsCreating || _paintWellController.IsDragging)
+            {
+                var paintPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                if (_paintWellController.HandleMouseMove(paintPoint))
+                {
+                    e.Handled = true;
+                    return;
+                }
             }
 
             if (_isPanning && e.MiddleButton == MouseButtonState.Pressed)
@@ -711,6 +757,16 @@ namespace NVSPlotter
             var rawPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
             var point = ApplySnapping(rawPoint, out _, out _, out _);
 
+            // Paint well tool
+            if (tool == ToolMode.PaintWell)
+            {
+                if (_paintWellController.HandleMouseDown(point, Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift)))
+                {
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             // Selection tool
             if (tool == ToolMode.Select)
             {
@@ -765,6 +821,19 @@ namespace NVSPlotter
             {
                 CompleteWorkingAreaDrag(e);
                 return;
+            }
+
+            // Paint well tool handling
+            if (_paintWellController.IsCreating || _paintWellController.IsDragging)
+            {
+                var paintPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                if (_paintWellController.HandleMouseUp(paintPoint))
+                {
+                    UpdatePaintWellsUI();
+                    _lastGcode = ""; // Invalidate G-code cache
+                    e.Handled = true;
+                    return;
+                }
             }
 
             // Selection tool handling
@@ -1326,6 +1395,12 @@ namespace NVSPlotter
             {
                 _selectionController.ClearSelection();
             }
+
+            // Cancel paint well operations when switching away
+            if (tool != ToolMode.PaintWell && (_paintWellController.IsCreating || _paintWellController.IsDragging))
+            {
+                _paintWellController.Cancel();
+            }
         }
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -1785,18 +1860,39 @@ namespace NVSPlotter
                 DrawCanvas.Children.Add(workRect);
             }
 
-            // Existing strokes
+            // Paint wells (render before strokes so strokes appear on top)
+            _paintWellController.RenderPaintWells();
+
+            // Existing strokes - with paint well colors if painting mode is enabled
+            var paintModeEnabled = IsPaintModeEnabled;
             for (int i = 0; i < _doc.Strokes.Count; i++)
             {
                 var s = _doc.Strokes[i];
                 var isSelected = _selectionController.IsSelected(i);
+                
+                // Determine stroke color
+                Brush strokeBrush;
+                if (isSelected)
+                {
+                    strokeBrush = Brushes.DodgerBlue;
+                }
+                else if (paintModeEnabled && s.PaintWellId.HasValue)
+                {
+                    var color = _paintWellController.GetStrokeColor(s);
+                    strokeBrush = new SolidColorBrush(color);
+                }
+                else
+                {
+                    strokeBrush = Brushes.Black;
+                }
+
                 var ln = new Line
                 {
                     X1 = s.A.X,
                     Y1 = s.A.Y,
                     X2 = s.B.X,
                     Y2 = s.B.Y,
-                    Stroke = isSelected ? Brushes.DodgerBlue : Brushes.Black,
+                    Stroke = strokeBrush,
                     StrokeThickness = isSelected ? 2.0 : 1.2,
                     SnapsToDevicePixels = true,
                     IsHitTestVisible = false
@@ -1809,10 +1905,8 @@ namespace NVSPlotter
             // Selection visuals (bounding box, handles)
             _selectionController.RenderSelectionVisuals();
 
-            AppendLog($"Doc: {_doc.WidthMm:0} x {_doc.HeightMm:0} mm, strokes={_doc.Strokes.Count}");
+            AppendLog($"Doc: {_doc.WidthMm:0} x {_doc.HeightMm:0} mm, strokes={_doc.Strokes.Count}, paintWells={_doc.PaintWells.Count}");
             AppendLog($"Bed: X={_bedX:0.###} Y={_bedY:0.###} {(_bedFromGrbl ? "(from $$)" : "(default)")}, margin={SafeMarginMm:0.###}mm");
-            //AppendLog($"$23={_homingDirMask} => HomeAtMax: X={_homeAtMaxX}, Y={_homeAtMaxY}, homed={_isHomed}");
-            //AppendLog("Work convention: X ALWAYS positive, Y ALWAYS negative.");
 
             UpdateZoomHost();
         }
@@ -2115,6 +2209,7 @@ namespace NVSPlotter
             var zUp = ParseDouble(ZUpBox.Text, 10);
             var zDown = ParseDouble(ZDownBox.Text, 2);
             var optimize = OptimizeCheck.IsChecked == true;
+            var paintModeEnabled = IsPaintModeEnabled;
 
             // Hardware Z is inverted: flip the commanded values
             var zUpCmd = -zUp;
@@ -2128,11 +2223,23 @@ namespace NVSPlotter
 
             AppendLog($"G-code fit={fit.Mode}, scale={fit.Scale:0.###}, usableBed=({_bedX - 2 * SafeMarginMm:0.###} x {_bedY - 2 * SafeMarginMm:0.###})");
             AppendLog("G-code convention: X>=0, Y<=0");
+            if (paintModeEnabled && _doc.PaintWells.Count > 0)
+            {
+                AppendLog($"Paint mode: {_doc.PaintWells.Count} paint well(s) defined");
+            }
 
             var sb = new StringBuilder(64 * 1024);
             sb.AppendLine("; NVSPlotter");
             sb.AppendLine("; Units: mm");
             sb.AppendLine("; Work convention: X positive, Y negative");
+            if (paintModeEnabled && _doc.PaintWells.Count > 0)
+            {
+                sb.AppendLine("; PAINTING MODE ENABLED");
+                foreach (var well in _doc.PaintWells)
+                {
+                    sb.AppendLine($"; Paint Well: {well.Name} at ({well.Center.X:0.#}, {well.Center.Y:0.#}), dip={well.DipDepth:0.#}mm, dwell={well.DwellTimeMs}ms");
+                }
+            }
             sb.AppendLine("G21");           // mm
             sb.AppendLine("G90");           // absolute
             sb.AppendLine("G54");
@@ -2141,8 +2248,29 @@ namespace NVSPlotter
             sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
 
             const double joinTol = 0.01; // mm
-            var paths = BuildPaths(strokes, joinTol);
 
+            if (paintModeEnabled && _doc.PaintWells.Count > 0)
+            {
+                // PAINTING MODE: Group strokes by paint well, insert paint refresh sequences
+                BuildPaintingModeGcode(sb, strokes, fit, zUpCmd, zDownCmd, feedXY, joinTol);
+            }
+            else
+            {
+                // NORMAL MODE: Build paths without paint considerations
+                var paths = BuildPaths(strokes, joinTol);
+                BuildNormalGcode(sb, paths, fit, zUpCmd, zDownCmd, feedXY);
+            }
+
+            sb.AppendLine("G0 X0 Y0"); // back to home (work origin)
+            sb.AppendLine("M2");
+
+            _lastGcode = sb.ToString();
+            AppendLog($"Built G-code: lines={_lastGcode.Split('\n').Length}");
+            return _lastGcode;
+        }
+
+        private void BuildNormalGcode(StringBuilder sb, List<List<LineStroke>> paths, FitSpec fit, double zUpCmd, double zDownCmd, double feedXY)
+        {
             foreach (var path in paths)
             {
                 if (path.Count == 0) continue;
@@ -2170,42 +2298,147 @@ namespace NVSPlotter
 
                 sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
             }
+        }
 
-            sb.AppendLine("G0 X0 Y0"); // back to home (work origin)
-            sb.AppendLine("M2");
-
-            _lastGcode = sb.ToString();
-            AppendLog($"Built G-code: lines={_lastGcode.Split('\n').Length}");
-            return _lastGcode;
-
-            static List<List<LineStroke>> BuildPaths(List<LineStroke> input, double tol)
+        private void BuildPaintingModeGcode(StringBuilder sb, List<LineStroke> strokes, FitSpec fit, double zUpCmd, double zDownCmd, double feedXY, double joinTol)
+        {
+            // Group strokes by paint well
+            var strokesByWell = new Dictionary<Guid?, List<LineStroke>>();
+            foreach (var stroke in strokes)
             {
-                var result = new List<List<LineStroke>>();
-                List<LineStroke>? current = null;
-
-                foreach (var stroke in input)
+                if (!strokesByWell.ContainsKey(stroke.PaintWellId))
                 {
-                    if (current == null)
-                    {
-                        current = new List<LineStroke> { stroke };
-                        result.Add(current);
-                        continue;
-                    }
+                    strokesByWell[stroke.PaintWellId] = new List<LineStroke>();
+                }
+                strokesByWell[stroke.PaintWellId].Add(stroke);
+            }
 
-                    var prev = current[^1];
-                    if (Utility.Distance(prev.B, stroke.A) <= tol)
-                    {
-                        current.Add(stroke);
-                    }
-                    else
-                    {
-                        current = new List<LineStroke> { stroke };
-                        result.Add(current);
-                    }
+            // Track distance traveled per well for refresh intervals (in mm)
+            var distancePerWell = new Dictionary<Guid, double>();
+
+            // Process each paint well group
+            foreach (var kvp in strokesByWell)
+            {
+                var wellId = kvp.Key;
+                var wellStrokes = kvp.Value;
+                var well = wellId.HasValue ? _doc.PaintWells.FirstOrDefault(w => w.Id == wellId) : null;
+
+                if (well != null)
+                {
+                    sb.AppendLine($"; === Paint Well: {well.Name} ({wellStrokes.Count} strokes) ===");
+                    
+                    // Initial paint dip for this color
+                    GeneratePaintDipSequence(sb, well, fit, zUpCmd, feedXY);
+                    distancePerWell[well.Id] = 0;
+                }
+                else
+                {
+                    sb.AppendLine($"; === No Paint Well (black, {wellStrokes.Count} strokes) ===");
                 }
 
-                return result;
+                // Build paths for this well's strokes
+                var paths = BuildPaths(wellStrokes, joinTol);
+
+                foreach (var path in paths)
+                {
+                    if (path.Count == 0) continue;
+
+                    var first = path[0];
+                    var startWork = BedToWork(DocToBed(first.A, fit));
+
+                    sb.AppendLine($"G0 X{Fmt(startWork.X)} Y{Fmt(startWork.Y)}");
+                    sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
+
+                    bool firstMove = true;
+                    PointMm lastPosition = startWork;
+
+                    foreach (var seg in path)
+                    {
+                        var endWork = BedToWork(DocToBed(seg.B, fit));
+                        
+                        if (firstMove)
+                        {
+                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
+                            firstMove = false;
+                        }
+                        else
+                        {
+                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
+                        }
+
+                        // Calculate stroke length
+                        var strokeLength = Math.Sqrt(
+                            Math.Pow(endWork.X - lastPosition.X, 2) + 
+                            Math.Pow(endWork.Y - lastPosition.Y, 2));
+
+                        lastPosition = endWork;
+
+                        // Check if we need to refresh paint based on distance traveled
+                        if (well != null && well.RefreshDistanceMm > 0)
+                        {
+                            distancePerWell[well.Id] += strokeLength;
+                            if (distancePerWell[well.Id] >= well.RefreshDistanceMm)
+                            {
+                                // Lift, go dip, return, lower
+                                sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift for paint refresh (traveled {distancePerWell[well.Id]:F1}mm)");
+                                GeneratePaintDipSequence(sb, well, fit, zUpCmd, feedXY);
+                                sb.AppendLine($"G0 X{Fmt(lastPosition.X)} Y{Fmt(lastPosition.Y)} ; Return to last position");
+                                sb.AppendLine($"G0 Z{Fmt(zDownCmd)} ; Lower to continue drawing");
+                                distancePerWell[well.Id] = 0;
+                            }
+                        }
+                    }
+
+                    sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
+                }
             }
+        }
+
+        private void GeneratePaintDipSequence(StringBuilder sb, PaintWell well, FitSpec fit, double zUpCmd, double feedXY)
+        {
+            var wellCenter = BedToWork(DocToBed(well.Center, fit));
+            var dipDepthCmd = -(well.DipDepth); // Negate for hardware
+
+            sb.AppendLine($"; Dip in paint well: {well.Name}");
+            sb.AppendLine($"G0 X{Fmt(wellCenter.X)} Y{Fmt(wellCenter.Y)} ; Move to paint well");
+            sb.AppendLine($"G0 Z{Fmt(dipDepthCmd)} ; Dip into paint");
+            
+            if (well.DwellTimeMs > 0)
+            {
+                // G4 P<milliseconds> for dwell
+                sb.AppendLine($"G4 P{well.DwellTimeMs} ; Dwell in paint");
+            }
+            
+            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift from paint well");
+        }
+
+        private static List<List<LineStroke>> BuildPaths(List<LineStroke> input, double tol)
+        {
+            var result = new List<List<LineStroke>>();
+            List<LineStroke>? current = null;
+
+            foreach (var stroke in input)
+            {
+                if (current == null)
+                {
+                    current = new List<LineStroke> { stroke };
+                    result.Add(current);
+                    continue;
+                }
+
+                var prev = current[^1];
+                if (Utility.Distance(prev.B, stroke.A) <= tol)
+                {
+                    current.Add(stroke);
+                }
+                else
+                {
+                    current = new List<LineStroke> { stroke };
+                    result.Add(current);
+                }
+            }
+
+            return result;
         }
 
  
@@ -2300,6 +2533,353 @@ namespace NVSPlotter
 
             AppendLog("Not connected to GRBL.");
             return false;
+        }
+
+        // ===== PAINTING MODE / PAINT WELLS =====
+
+        private bool IsPaintModeEnabled => FindName("PaintModeEnabledCheck") is CheckBox cb && cb.IsChecked == true;
+
+        private bool _suppressPaintWellUIUpdate;
+
+        private void PaintModeEnabledCheck_Click(object sender, RoutedEventArgs e)
+        {
+            _lastGcode = ""; // Invalidate G-code cache
+            RenderAll();
+        }
+
+        private void UpdatePaintWellsUI()
+        {
+            if (_suppressPaintWellUIUpdate) return;
+
+            _suppressPaintWellUIUpdate = true;
+            try
+            {
+                // Update paint wells list
+                if (FindName("PaintWellsList") is ListBox list)
+                {
+                    var selectedId = (_paintWellController.SelectedWell)?.Id;
+                    list.ItemsSource = null;
+                    list.ItemsSource = _doc.PaintWells;
+                    
+                    if (selectedId.HasValue)
+                    {
+                        var selected = _doc.PaintWells.FirstOrDefault(w => w.Id == selectedId);
+                        if (selected != null) list.SelectedItem = selected;
+                    }
+                }
+
+                // Update active paint well combo
+                if (FindName("ActivePaintWellCombo") is ComboBox combo)
+                {
+                    var activeId = _paintWellController.ActiveColorWell?.Id;
+                    combo.ItemsSource = null;
+                    combo.ItemsSource = _doc.PaintWells;
+                    
+                    if (activeId.HasValue)
+                    {
+                        var active = _doc.PaintWells.FirstOrDefault(w => w.Id == activeId);
+                        if (active != null) combo.SelectedItem = active;
+                    }
+                }
+
+                // Update selected well properties
+                UpdateSelectedWellPropertiesUI();
+            }
+            finally
+            {
+                _suppressPaintWellUIUpdate = false;
+            }
+        }
+
+        private void UpdateSelectedWellPropertiesUI()
+        {
+            var well = _paintWellController.SelectedWell;
+
+            if (FindName("PaintWellNameBox") is TextBox nameBox)
+            {
+                nameBox.Text = well?.Name ?? "";
+                nameBox.IsEnabled = well != null;
+            }
+
+            if (FindName("PaintWellColorPreview") is Rectangle colorPreview)
+            {
+                colorPreview.Fill = well != null ? new SolidColorBrush(well.Color) : Brushes.Transparent;
+            }
+
+            if (FindName("PaintWellDipDepthBox") is TextBox dipBox)
+            {
+                dipBox.Text = well?.DipDepth.ToString("0.##", CultureInfo.InvariantCulture) ?? "";
+                dipBox.IsEnabled = well != null;
+            }
+
+            if (FindName("PaintWellDwellBox") is TextBox dwellBox)
+            {
+                dwellBox.Text = well?.DwellTimeMs.ToString() ?? "";
+                dwellBox.IsEnabled = well != null;
+            }
+
+            if (FindName("PaintWellRefreshBox") is TextBox refreshBox)
+            {
+                refreshBox.Text = well?.RefreshDistanceMm.ToString("0") ?? "";
+                refreshBox.IsEnabled = well != null;
+            }
+        }
+
+        private void ActivePaintWellCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressPaintWellUIUpdate) return;
+            if (sender is not ComboBox combo) return;
+
+            var well = combo.SelectedItem as PaintWell;
+            _paintWellController.SetActiveColor(well);
+        }
+
+        private void ClearActivePaintWell_Click(object sender, RoutedEventArgs e)
+        {
+            _paintWellController.SetActiveColor(null);
+            if (FindName("ActivePaintWellCombo") is ComboBox combo)
+            {
+                combo.SelectedItem = null;
+            }
+        }
+
+        private void PaintWellsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_suppressPaintWellUIUpdate) return;
+            if (sender is not ListBox list) return;
+
+            var well = list.SelectedItem as PaintWell;
+            _paintWellController.SelectWell(well);
+            UpdateSelectedWellPropertiesUI();
+        }
+
+        private void AddPaintWellBtn_Click(object sender, RoutedEventArgs e)
+        {
+            // Switch to PaintWell tool so user can draw the well on canvas
+            if (FindName("ToolCombo") is ComboBox toolCombo)
+            {
+                foreach (ComboBoxItem item in toolCombo.Items)
+                {
+                    if (item.Tag?.ToString() == "PaintWell")
+                    {
+                        toolCombo.SelectedItem = item;
+                        break;
+                    }
+                }
+            }
+            AppendLog("Select PaintWell tool: Draw a rectangle on canvas to create a paint well.");
+        }
+
+        private void RemovePaintWellBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var selected = _paintWellController.SelectedWell;
+            if (selected == null)
+            {
+                AppendLog("No paint well selected.");
+                return;
+            }
+
+            _paintWellController.RemoveWell(selected.Id);
+            _lastGcode = "";
+            UpdatePaintWellsUI();
+            AppendLog($"Removed paint well: {selected.Name}");
+        }
+
+        private void ClearPaintWellsBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (_doc.PaintWells.Count == 0) return;
+
+            var result = MessageBox.Show(
+                "Clear all paint wells? Stroke color assignments will also be cleared.",
+                "Clear Paint Wells",
+                MessageBoxButton.YesNo,
+                MessageBoxImage.Question);
+
+            if (result == MessageBoxResult.Yes)
+            {
+                _paintWellController.ClearAll();
+                _lastGcode = "";
+                UpdatePaintWellsUI();
+                AppendLog("Cleared all paint wells.");
+            }
+        }
+
+        private void QuickSetupPaintWellsBtn_Click(object sender, RoutedEventArgs e)
+        {
+            // Clear existing wells if any
+            if (_doc.PaintWells.Count > 0)
+            {
+                var result = MessageBox.Show(
+                    "This will clear existing paint wells. Continue?",
+                    "Quick Setup",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result != MessageBoxResult.Yes) return;
+
+                _paintWellController.ClearAll();
+            }
+
+            // Create RGB paint wells - positioned at top-left area of canvas
+            // Default size: 60mm x 40mm, spaced 10mm apart
+            const double wellWidth = 60;
+            const double wellHeight = 40;
+            const double spacing = 10;
+            const double startX = 20;
+            const double startY = 20;
+
+            // Red well
+            _paintWellController.CreateWell(
+                new System.Windows.Rect(startX, startY, wellWidth, wellHeight),
+                System.Windows.Media.Colors.Red,
+                "Red");
+
+            // Green well (below red)
+            _paintWellController.CreateWell(
+                new System.Windows.Rect(startX, startY + wellHeight + spacing, wellWidth, wellHeight),
+                System.Windows.Media.Colors.Green,
+                "Green");
+
+            // Blue well (below green)
+            _paintWellController.CreateWell(
+                new System.Windows.Rect(startX, startY + (wellHeight + spacing) * 2, wellWidth, wellHeight),
+                System.Windows.Media.Colors.Blue,
+                "Blue");
+
+            _lastGcode = "";
+            UpdatePaintWellsUI();
+            RenderAll();
+            AppendLog("Created RGB paint wells (Red, Green, Blue).");
+        }
+
+        private void PaintWellNameBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_suppressPaintWellUIUpdate) return;
+            if (sender is not TextBox tb) return;
+            if (_paintWellController.SelectedWell == null) return;
+
+            _paintWellController.UpdateSelectedWell(name: tb.Text);
+            _lastGcode = "";
+
+            // Refresh the list display
+            _suppressPaintWellUIUpdate = true;
+            if (FindName("PaintWellsList") is ListBox list)
+            {
+                list.Items.Refresh();
+            }
+            if (FindName("ActivePaintWellCombo") is ComboBox combo)
+            {
+                combo.Items.Refresh();
+            }
+            _suppressPaintWellUIUpdate = false;
+        }
+
+        private void PaintWellColorPreview_Click(object sender, RoutedEventArgs e)
+        {
+            if (_paintWellController.SelectedWell == null)
+            {
+                AppendLog("No paint well selected.");
+                return;
+            }
+
+            // Simple color picker using Windows color dialog
+            var colorDialog = new System.Windows.Forms.ColorDialog
+            {
+                Color = System.Drawing.Color.FromArgb(
+                    _paintWellController.SelectedWell.Color.A,
+                    _paintWellController.SelectedWell.Color.R,
+                    _paintWellController.SelectedWell.Color.G,
+                    _paintWellController.SelectedWell.Color.B),
+                FullOpen = true
+            };
+
+            if (colorDialog.ShowDialog() == System.Windows.Forms.DialogResult.OK)
+            {
+                var newColor = Color.FromArgb(
+                    colorDialog.Color.A,
+                    colorDialog.Color.R,
+                    colorDialog.Color.G,
+                    colorDialog.Color.B);
+
+                _paintWellController.UpdateSelectedWell(color: newColor);
+                _lastGcode = "";
+                UpdateSelectedWellPropertiesUI();
+
+                // Refresh lists
+                _suppressPaintWellUIUpdate = true;
+                if (FindName("PaintWellsList") is ListBox list) list.Items.Refresh();
+                if (FindName("ActivePaintWellCombo") is ComboBox combo) combo.Items.Refresh();
+                _suppressPaintWellUIUpdate = false;
+            }
+        }
+
+        private void PaintWellDipDepthBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_suppressPaintWellUIUpdate) return;
+            if (sender is not TextBox tb) return;
+            if (_paintWellController.SelectedWell == null) return;
+
+            var value = ParseDouble(tb.Text, _paintWellController.SelectedWell.DipDepth);
+            if (value > 0)
+            {
+                _paintWellController.UpdateSelectedWell(dipDepth: value);
+                _lastGcode = "";
+            }
+        }
+
+        private void PaintWellDwellBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_suppressPaintWellUIUpdate) return;
+            if (sender is not TextBox tb) return;
+            if (_paintWellController.SelectedWell == null) return;
+
+            if (int.TryParse(tb.Text, out var value) && value >= 0)
+            {
+                _paintWellController.UpdateSelectedWell(dwellTimeMs: value);
+                _lastGcode = "";
+            }
+        }
+
+        private void PaintWellRefreshBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_suppressPaintWellUIUpdate) return;
+            if (sender is not TextBox tb) return;
+            if (_paintWellController.SelectedWell == null) return;
+
+            if (double.TryParse(tb.Text, out var value) && value >= 0)
+            {
+                _paintWellController.UpdateSelectedWell(refreshDistanceMm: value);
+                _lastGcode = "";
+            }
+        }
+
+        private void ApplyPaintToSelection_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_selectionController.HasSelection)
+            {
+                AppendLog("No strokes selected. Use the Select tool to select strokes first.");
+                return;
+            }
+
+            var well = _paintWellController.SelectedWell;
+            if (well == null)
+            {
+                AppendLog("No paint well selected in the list.");
+                return;
+            }
+
+            // Apply the selected well to all selected strokes
+            foreach (var idx in _selectionController.SelectedIndices)
+            {
+                if (idx >= 0 && idx < _doc.Strokes.Count)
+                {
+                    _doc.Strokes[idx].PaintWellId = well.Id;
+                }
+            }
+
+            _lastGcode = "";
+            RenderAll();
+            AppendLog($"Applied '{well.Name}' color to {_selectionController.SelectedIndices.Count} stroke(s).");
         }
 
     }

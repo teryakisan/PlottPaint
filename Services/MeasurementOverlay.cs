@@ -5,6 +5,10 @@ using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;
 
+// Avoid ambiguity with System.Drawing and System.Windows.Forms types
+using Brushes = System.Windows.Media.Brushes;
+using Panel = System.Windows.Controls.Panel;
+
 namespace NVSPlotter.Services;
 
 public sealed class MeasurementOverlay

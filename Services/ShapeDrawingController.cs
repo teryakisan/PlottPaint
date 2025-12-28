@@ -9,9 +9,16 @@ using NVSPlotter.Models;
 using NVSPlotter.Properties;
 using NVSPlotter.Util;
 
+// Avoid ambiguity with System.Drawing and System.Windows.Forms types
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
+using Rectangle = System.Windows.Shapes.Rectangle;
+using Point = System.Windows.Point;
+using Panel = System.Windows.Controls.Panel;
+
 namespace NVSPlotter.Services;
 
-public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> commitStroke, Action requestRender)
+public sealed class ShapeDrawingController
 {
     private readonly Utility _util = new();
 
@@ -20,9 +27,10 @@ public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> com
     private const double HANDLE_SIZE = 8.0;
     private static int CIRCLE_SEGMENTS => Settings.Default.circleSegments;
 
-    private readonly Canvas _canvas = canvas ?? throw new ArgumentNullException(nameof(canvas));
-    private readonly Action<LineStroke> _commitStroke = commitStroke ?? throw new ArgumentNullException(nameof(commitStroke));
-    private readonly Action _requestRender = requestRender ?? throw new ArgumentNullException(nameof(requestRender));
+    private readonly Canvas _canvas;
+    private readonly Action<LineStroke> _commitStroke;
+    private readonly Action _requestRender;
+    private readonly Func<Guid?> _getActivePaintWellId;
 
     private bool _isDrawing;
     private bool _isPolylineActive;
@@ -49,6 +57,14 @@ public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> com
     public bool IsDrawing => _isDrawing;
     public bool IsPolylineActive => _isPolylineActive;
     public bool IsBezierActive => _isBezierActive;
+
+    public ShapeDrawingController(Canvas canvas, Action<LineStroke> commitStroke, Action requestRender, Func<Guid?>? getActivePaintWellId = null)
+    {
+        _canvas = canvas ?? throw new ArgumentNullException(nameof(canvas));
+        _commitStroke = commitStroke ?? throw new ArgumentNullException(nameof(commitStroke));
+        _requestRender = requestRender ?? throw new ArgumentNullException(nameof(requestRender));
+        _getActivePaintWellId = getActivePaintWellId ?? (() => null);
+    }
 
     public void BeginDraw(ToolMode tool, PointMm start)
     {
@@ -196,7 +212,11 @@ public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> com
     private void AddStroke(PointMm a, PointMm b)
     {
         if (Utility.Distance(a, b) < MIN_DIST) return;
-        _commitStroke(new LineStroke(a, b));
+        var stroke = new LineStroke(a, b)
+        {
+            PaintWellId = _getActivePaintWellId()
+        };
+        _commitStroke(stroke);
     }
 
   

@@ -19,6 +19,13 @@ using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 
+// Avoid ambiguity with System.Drawing and System.Windows.Forms types
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
+using Color = System.Windows.Media.Color;
+using Rectangle = System.Windows.Shapes.Rectangle;
+using Application = System.Windows.Application;
+
 namespace NVSPlotter.Services
 {
     internal class RulerFactory

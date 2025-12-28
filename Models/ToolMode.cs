@@ -14,5 +14,6 @@ public enum ToolMode
     Text,
     Select,
     Crop,
-    ImageAlign
+    ImageAlign,
+    PaintWell
 }
