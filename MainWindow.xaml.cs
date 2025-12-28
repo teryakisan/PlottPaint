@@ -768,7 +768,6 @@ namespace NVSPlotter
             {
                 var endMm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
                 _shapeController.CompleteDraw(endMm);
-                RenderAll();
                 e.Handled = true;
                 return;
             }
