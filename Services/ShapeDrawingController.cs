@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Web;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
 using System.Windows.Shapes;
@@ -15,6 +16,8 @@ public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> com
     private readonly Utility _util = new();
 
     private const double MIN_DIST = 0.25;
+    private const int BEZIER_SEGMENTS = 48;
+    private const double HANDLE_SIZE = 8.0;
     private static int CIRCLE_SEGMENTS => Settings.Default.circleSegments;
 
     private readonly Canvas _canvas = canvas ?? throw new ArgumentNullException(nameof(canvas));
@@ -29,8 +32,23 @@ public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> com
     private Line? _previewLine;
     private Shape? _previewShape;
 
+    // Bezier state: three-click interaction
+    // Click 1: P0 (start), Click 2: P3 (end), Click 3: control point (symmetric)
+    private bool _isBezierActive;
+    private int _bezierClickCount;
+    private PointMm _bezierP0;  // Start point
+    private PointMm _bezierP3;  // End point
+    private PointMm _bezierControl; // User-controlled point that defines both P1 and P2
+    private Path? _bezierPreviewPath;
+    private Ellipse? _bezierHandleP0;
+    private Ellipse? _bezierHandleP3;
+    private Ellipse? _bezierHandleControl;
+    private Line? _bezierControlLine1;
+    private Line? _bezierControlLine2;
+
     public bool IsDrawing => _isDrawing;
     public bool IsPolylineActive => _isPolylineActive;
+    public bool IsBezierActive => _isBezierActive;
 
     public void BeginDraw(ToolMode tool, PointMm start)
     {
@@ -58,6 +76,12 @@ public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> com
 
     public bool Update(PointMm current)
     {
+        if (_isBezierActive)
+        {
+            UpdateBezierPreview(current);
+            return true;
+        }
+
         if (_isDrawing)
         {
             switch (_activeTool)
@@ -163,7 +187,10 @@ public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> com
     {
         _isDrawing = false;
         _isPolylineActive = false;
+        _isBezierActive = false;
+        _bezierClickCount = 0;
         CancelPreview();
+        CancelBezierPreview();
     }
 
     private void AddStroke(PointMm a, PointMm b)
@@ -350,6 +377,323 @@ public sealed class ShapeDrawingController(Canvas canvas, Action<LineStroke> com
         {
             _canvas.Children.Remove(_previewShape);
             _previewShape = null;
+        }
+
+        if (_canvas.IsMouseCaptured)
+        {
+            _canvas.ReleaseMouseCapture();
+        }
+    }
+
+    // ===== BEZIER TOOL =====
+
+    /// <summary>
+    /// Handles click interactions for the Bezier tool.
+    /// Click 1: Set start point (P0)
+    /// Click 2: Set end point (P3)
+    /// Click 3: Confirm control point and finalize curve
+    /// </summary>
+    public void HandleBezierClick(PointMm point)
+    {
+        if (!_isBezierActive)
+        {
+            // First click: set start point
+            _isBezierActive = true;
+            _activeTool = ToolMode.Bezier;
+            _bezierClickCount = 1;
+            _bezierP0 = point;
+            _bezierP3 = point;
+            _bezierControl = point;
+            BeginBezierPreview();
+            _canvas.CaptureMouse();
+            return;
+        }
+
+        _bezierClickCount++;
+
+        if (_bezierClickCount == 2)
+        {
+            // Second click: set end point
+            _bezierP3 = point;
+            // Control point defaults to midpoint, will be adjusted by mouse move
+            _bezierControl = new PointMm(
+                (_bezierP0.X + _bezierP3.X) / 2.0,
+                (_bezierP0.Y + _bezierP3.Y) / 2.0
+            );
+            UpdateBezierPreview(_bezierControl);
+        }
+        else if (_bezierClickCount >= 3)
+        {
+            // Third click: finalize
+            FinalizeBezier();
+        }
+    }
+
+    public bool TryFinishBezier()
+    {
+        if (!_isBezierActive) return false;
+        if (_bezierClickCount >= 2)
+        {
+            FinalizeBezier();
+        }
+        else
+        {
+            CancelBezier();
+        }
+        return true;
+    }
+
+    public void CancelBezier()
+    {
+        _isBezierActive = false;
+        _bezierClickCount = 0;
+        _activeTool = ToolMode.Line;
+        CancelBezierPreview();
+    }
+
+    private void BeginBezierPreview()
+    {
+        // Create the curve path
+        _bezierPreviewPath = new Path
+        {
+            Stroke = Brushes.OrangeRed,
+            StrokeThickness = 1.5,
+            StrokeDashArray = [3, 2],
+            Fill = Brushes.Transparent,
+            SnapsToDevicePixels = true
+        };
+        _canvas.Children.Add(_bezierPreviewPath);
+        Panel.SetZIndex(_bezierPreviewPath, 15);
+
+        // Create handle for P0 (start)
+        _bezierHandleP0 = CreateBezierHandle(Brushes.LimeGreen);
+        _canvas.Children.Add(_bezierHandleP0);
+        Panel.SetZIndex(_bezierHandleP0, 16);
+        PositionHandle(_bezierHandleP0, _bezierP0);
+    }
+
+    private void UpdateBezierPreview(PointMm current)
+    {
+        if (_bezierPreviewPath == null) return;
+
+        if (_bezierClickCount == 1)
+        {
+            // Before second click: show line from P0 to cursor (P3 candidate)
+            _bezierP3 = current;
+            _bezierControl = new PointMm(
+                (_bezierP0.X + current.X) / 2.0,
+                (_bezierP0.Y + current.Y) / 2.0
+            );
+        }
+        else if (_bezierClickCount >= 2)
+        {
+            // After second click: mouse controls the control point
+            _bezierControl = current;
+        }
+
+        // Compute P1 and P2 from single control point (quadratic-like behavior via symmetric cubic)
+        var (p1, p2) = ComputeControlPoints(_bezierP0, _bezierP3, _bezierControl);
+
+        // Update path geometry
+        var geometry = new PathGeometry();
+        var figure = new PathFigure
+        {
+            StartPoint = new Point(_bezierP0.X, _bezierP0.Y),
+            IsClosed = false
+        };
+        figure.Segments.Add(new BezierSegment(
+            new Point(p1.X, p1.Y),
+            new Point(p2.X, p2.Y),
+            new Point(_bezierP3.X, _bezierP3.Y),
+            true));
+        geometry.Figures.Add(figure);
+        _bezierPreviewPath.Data = geometry;
+
+        // Update/create handles
+        if (_bezierClickCount >= 1)
+        {
+            PositionHandle(_bezierHandleP0, _bezierP0);
+
+            // Show P3 handle after first click
+            if (_bezierHandleP3 == null)
+            {
+                _bezierHandleP3 = CreateBezierHandle(Brushes.OrangeRed);
+                _canvas.Children.Add(_bezierHandleP3);
+                Panel.SetZIndex(_bezierHandleP3, 16);
+            }
+            PositionHandle(_bezierHandleP3, _bezierP3);
+        }
+
+        if (_bezierClickCount >= 2)
+        {
+            // Show control point handle and guide lines
+            if (_bezierHandleControl == null)
+            {
+                _bezierHandleControl = CreateBezierHandle(Brushes.DodgerBlue);
+                _canvas.Children.Add(_bezierHandleControl);
+                Panel.SetZIndex(_bezierHandleControl, 16);
+            }
+            PositionHandle(_bezierHandleControl, _bezierControl);
+
+            // Control lines from endpoints to control point
+            if (_bezierControlLine1 == null)
+            {
+                _bezierControlLine1 = CreateControlLine();
+                _canvas.Children.Add(_bezierControlLine1);
+                Panel.SetZIndex(_bezierControlLine1, 14);
+            }
+            _bezierControlLine1.X1 = _bezierP0.X;
+            _bezierControlLine1.Y1 = _bezierP0.Y;
+            _bezierControlLine1.X2 = _bezierControl.X;
+            _bezierControlLine1.Y2 = _bezierControl.Y;
+
+            if (_bezierControlLine2 == null)
+            {
+                _bezierControlLine2 = CreateControlLine();
+                _canvas.Children.Add(_bezierControlLine2);
+                Panel.SetZIndex(_bezierControlLine2, 14);
+            }
+            _bezierControlLine2.X1 = _bezierP3.X;
+            _bezierControlLine2.Y1 = _bezierP3.Y;
+            _bezierControlLine2.X2 = _bezierControl.X;
+            _bezierControlLine2.Y2 = _bezierControl.Y;
+        }
+    }
+
+    private static (PointMm P1, PointMm P2) ComputeControlPoints(PointMm p0, PointMm p3, PointMm control)
+    {
+        // For a symmetric curve, we compute P1 and P2 such that the curve
+        // passes through (or near) the control point at t=0.5
+        // Using quadratic-to-cubic conversion: P1 = P0 + 2/3*(C - P0), P2 = P3 + 2/3*(C - P3)
+        // where C is the quadratic control point
+        var p1 = new PointMm(
+            p0.X + (2.0 / 3.0) * (control.X - p0.X),
+            p0.Y + (2.0 / 3.0) * (control.Y - p0.Y)
+        );
+        var p2 = new PointMm(
+            p3.X + (2.0 / 3.0) * (control.X - p3.X),
+            p3.Y + (2.0 / 3.0) * (control.Y - p3.Y)
+        );
+        return (p1, p2);
+    }
+
+    private static Ellipse CreateBezierHandle(Brush fill)
+    {
+        return new Ellipse
+        {
+            Width = HANDLE_SIZE,
+            Height = HANDLE_SIZE,
+            Fill = fill,
+            Stroke = Brushes.White,
+            StrokeThickness = 1.5,
+            SnapsToDevicePixels = true,
+            IsHitTestVisible = false
+        };
+    }
+
+    private static Line CreateControlLine()
+    {
+        return new Line
+        {
+            Stroke = Brushes.DodgerBlue,
+            StrokeThickness = 1,
+            StrokeDashArray = [2, 2],
+            SnapsToDevicePixels = true,
+            IsHitTestVisible = false
+        };
+    }
+
+    private static void PositionHandle(Ellipse? handle, PointMm point)
+    {
+        if (handle == null) return;
+        Canvas.SetLeft(handle, point.X - HANDLE_SIZE / 2.0);
+        Canvas.SetTop(handle, point.Y - HANDLE_SIZE / 2.0);
+    }
+
+    private void FinalizeBezier()
+    {
+        if (!_isBezierActive) return;
+
+        var (p1, p2) = ComputeControlPoints(_bezierP0, _bezierP3, _bezierControl);
+
+        // Tessellate the cubic Bezier into line segments
+        var samples = SampleCubicBezier(_bezierP0, p1, p2, _bezierP3, BEZIER_SEGMENTS);
+
+        PointMm? prev = null;
+        foreach (var pt in samples)
+        {
+            if (prev is PointMm p)
+            {
+                AddStroke(p, pt);
+            }
+            prev = pt;
+        }
+
+        CancelBezierPreview();
+        _isBezierActive = false;
+        _bezierClickCount = 0;
+        _activeTool = ToolMode.Line;
+        _requestRender();
+    }
+
+    private static IEnumerable<PointMm> SampleCubicBezier(PointMm p0, PointMm p1, PointMm p2, PointMm p3, int segments)
+    {
+        for (int i = 0; i <= segments; i++)
+        {
+            double t = (double)i / segments;
+            double u = 1.0 - t;
+
+            // Cubic Bezier formula: B(t) = (1-t)³P0 + 3(1-t)²tP1 + 3(1-t)t²P2 + t³P3
+            double x = u * u * u * p0.X
+                     + 3 * u * u * t * p1.X
+                     + 3 * u * t * t * p2.X
+                     + t * t * t * p3.X;
+
+            double y = u * u * u * p0.Y
+                     + 3 * u * u * t * p1.Y
+                     + 3 * u * t * t * p2.Y
+                     + t * t * t * p3.Y;
+
+            yield return new PointMm(x, y);
+        }
+    }
+
+    private void CancelBezierPreview()
+    {
+        if (_bezierPreviewPath != null)
+        {
+            _canvas.Children.Remove(_bezierPreviewPath);
+            _bezierPreviewPath = null;
+        }
+
+        if (_bezierHandleP0 != null)
+        {
+            _canvas.Children.Remove(_bezierHandleP0);
+            _bezierHandleP0 = null;
+        }
+
+        if (_bezierHandleP3 != null)
+        {
+            _canvas.Children.Remove(_bezierHandleP3);
+            _bezierHandleP3 = null;
+        }
+
+        if (_bezierHandleControl != null)
+        {
+            _canvas.Children.Remove(_bezierHandleControl);
+            _bezierHandleControl = null;
+        }
+
+        if (_bezierControlLine1 != null)
+        {
+            _canvas.Children.Remove(_bezierControlLine1);
+            _bezierControlLine1 = null;
+        }
+
+        if (_bezierControlLine2 != null)
+        {
+            _canvas.Children.Remove(_bezierControlLine2);
+            _bezierControlLine2 = null;
         }
 
         if (_canvas.IsMouseCaptured)

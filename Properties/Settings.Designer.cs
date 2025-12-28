@@ -58,5 +58,17 @@ namespace NVSPlotter.Properties {
                 this["circleSegments"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("50")]
+        public double safeMarginMm {
+            get {
+                return ((double)(this["safeMarginMm"]));
+            }
+            set {
+                this["safeMarginMm"] = value;
+            }
+        }
     }
 }

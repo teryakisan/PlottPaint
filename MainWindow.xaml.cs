@@ -58,6 +58,7 @@ namespace NVSPlotter
         // Drawing state
         private readonly MeasurementOverlay _measurementOverlay;
         private readonly ShapeDrawingController _shapeController;
+        private readonly SelectionController _selectionController;
 
         // Undo
         private readonly Stack<LineStroke> _undo = new();
@@ -87,9 +88,15 @@ namespace NVSPlotter
 
         private bool _isHomed = false;
 
-        private const double SAFE_MARGIN_MM = 50.0;
+        private const double SAFE_MARGIN_MM = 50.0; // Default fallback, actual value from Settings
+        private double SafeMarginMm => Settings.Default.safeMarginMm;
+
+        // Snap indicator visual
+        private Ellipse? _snapIndicator;
+        private const double SNAP_INDICATOR_SIZE = 10.0;
 
         private readonly DispatcherTimer _filterThrottle;
+        private ConsoleWindow? _consoleWindow;
 
         public MainWindow()
         {
@@ -106,12 +113,10 @@ namespace NVSPlotter
 
             InitializeComponent();
 
-            DrawCanvas.RenderTransform = _zoom;
-            DrawCanvas.RenderTransformOrigin = new Point(0, 0);
+            DrawCanvas.LayoutTransform = _zoom;
             if (RulerCanvas != null)
             {
-                RulerCanvas.RenderTransform = _zoom;
-                RulerCanvas.RenderTransformOrigin = new Point(0, 0);
+                RulerCanvas.LayoutTransform = _zoom;
             }
             CanvasHost.LayoutTransform = _canvasRotation;
 
@@ -137,8 +142,15 @@ namespace NVSPlotter
                 stroke => { _doc.Strokes.Add(stroke); _lastGcode = ""; },
                 RenderAll);
 
+            _selectionController = new SelectionController(
+                DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
+                () => _doc,
+                RenderAll);
+
              RenderAll();
              UpdateConnStatus();
+             InitializeSafeMarginBox();
+             InitializeConsoleWindow();
         }
 
         private void FilterControlSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -216,31 +228,18 @@ namespace NVSPlotter
             if (!IsLoaded) return;
             if (CanvasHost == null || CanvasScroll == null || DrawCanvas == null) return;
 
-            var z = _zoom.ScaleX;
-            if (z <= 0) z = 1;
+            const double canvasPadding = 20.0; // Fixed padding around the canvas
 
-            var scaledW = _doc.WidthMm * z;
-            var scaledH = _doc.HeightMm * z;
-
-            var hostW = Math.Max(CanvasScroll.ViewportWidth, scaledW);
-            var hostH = Math.Max(CanvasScroll.ViewportHeight, scaledH);
-
-            if (double.IsNaN(hostW) || double.IsInfinity(hostW) || hostW <= 0) hostW = scaledW;
-            if (double.IsNaN(hostH) || double.IsInfinity(hostH) || hostH <= 0) hostH = scaledH;
-
-            CanvasHost.Width = hostW;
-            CanvasHost.Height = hostH;
-
-            var left = (hostW - scaledW) / 2.0;
-            var top = (hostH - scaledH) / 2.0;
-
-            if (left < 0) left = 0;
-            if (top < 0) top = 0;
-
-            var margin = new Thickness(left, top, 0, 0);
+            // With LayoutTransform, the canvas size is automatically scaled for layout purposes.
+            // We just need to set the margin for padding around the canvas.
+            var margin = new Thickness(canvasPadding, canvasPadding, canvasPadding, canvasPadding);
             DrawCanvas.Margin = margin;
             if (RulerCanvas != null)
                 RulerCanvas.Margin = margin;
+
+            // Clear any fixed size on CanvasHost - let it size to content
+            CanvasHost.Width = double.NaN;
+            CanvasHost.Height = double.NaN;
         }
 
         // ----------------------------
@@ -279,8 +278,9 @@ namespace NVSPlotter
             var viewportH = CanvasScroll.ViewportHeight;
             if (viewportW <= 0 || viewportH <= 0) return;
 
-            var zx = viewportW / _doc.WidthMm;
-            var zy = viewportH / _doc.HeightMm;
+            const double rulerThickness = 18.0;
+            var zx = viewportW / (_doc.WidthMm + rulerThickness);
+            var zy = viewportH / (_doc.HeightMm + rulerThickness);
             var z = Math.Clamp(Math.Min(zx, zy) * 0.95, ZoomSlider.Minimum, ZoomSlider.Maximum);
             ZoomSlider.Value = z;
         }
@@ -577,38 +577,11 @@ namespace NVSPlotter
         {
             if (z <= 0) z = 1;
 
-            var old = _zoom.ScaleX;
-            if (old <= 0) old = 1;
-
-            // Keep viewport center fixed during zoom
-            var cx = CanvasScroll.ViewportWidth / 2.0;
-            var cy = CanvasScroll.ViewportHeight / 2.0;
-
-            // If viewport not ready yet, just set zoom and center host.
-            if (cx <= 0 || cy <= 0)
-            {
-                _zoom.ScaleX = z;
-                _zoom.ScaleY = z;
-                if (ZoomLabel != null) ZoomLabel.Text = $"{(int)Math.Round(z * 100)}%";
-                UpdateZoomHost();
-                return;
-            }
-
-            var contentCenterX = (CanvasScroll.HorizontalOffset + cx) / old;
-            var contentCenterY = (CanvasScroll.VerticalOffset + cy) / old;
-
             _zoom.ScaleX = z;
             _zoom.ScaleY = z;
             if (ZoomLabel != null) ZoomLabel.Text = $"{(int)Math.Round(z * 100)}%";
 
             UpdateZoomHost();
-            CanvasScroll.UpdateLayout();
-
-            var newOffX = contentCenterX * z - cx;
-            var newOffY = contentCenterY * z - cy;
-
-            CanvasScroll.ScrollToHorizontalOffset(newOffX);
-            CanvasScroll.ScrollToVerticalOffset(newOffY);
         }
 
         // ----------------------------
@@ -639,6 +612,8 @@ namespace NVSPlotter
 
         private void DrawCanvas_MouseLeave(object sender, MouseEventArgs e)
         {
+            RemoveSnapIndicator();
+
             if (_isPanning)
             {
                 _isPanning = false;
@@ -651,6 +626,10 @@ namespace NVSPlotter
             if (_imageManipulator.IsManipulating)
             {
                 _imageManipulator.End();
+            }
+            if (_selectionController.IsActive)
+            {
+                _selectionController.Cancel();
             }
             _shapeController.CancelAll();
             if (_measurementOverlay.IsMeasuring)
@@ -690,6 +669,17 @@ namespace NVSPlotter
                 return;
             }
 
+            // Selection tool handling
+            if (_selectionController.IsActive)
+            {
+                var selPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                if (_selectionController.HandleMouseMove(selPoint))
+                {
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             if (_measurementOverlay.IsMeasuring)
             {
                 var measurePoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
@@ -698,7 +688,10 @@ namespace NVSPlotter
                 return;
             }
  
-            var mm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+            var rawMm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+            var mm = ApplySnapping(rawMm, out var snappedTo, out var snapType, out var gridSnapped);
+            UpdateSnapIndicator(snappedTo, snapType, gridSnapped ? mm : null);
+
             if (_shapeController.Update(mm))
             {
                 e.Handled = true;
@@ -715,11 +708,29 @@ namespace NVSPlotter
             }
 
             var tool = GetCurrentTool();
+            var rawPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+            var point = ApplySnapping(rawPoint, out _, out _, out _);
+
+            // Selection tool
+            if (tool == ToolMode.Select)
+            {
+                var shiftHeld = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+                if (_selectionController.HandleMouseDown(point, shiftHeld))
+                {
+                    e.Handled = true;
+                    return;
+                }
+            }
+
+            if (tool == ToolMode.Bezier)
+            {
+                _shapeController.HandleBezierClick(point);
+                e.Handled = true;
+                return;
+            }
 
             if (tool == ToolMode.Polyline)
             {
-                var point = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)))
-;
                 _shapeController.HandlePolylineClick(point, e.ClickCount >= 2);
                 e.Handled = true;
                 return;
@@ -727,8 +738,7 @@ namespace NVSPlotter
 
             if (tool == ToolMode.Measure)
             {
-                var start = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-                _measurementOverlay.Begin(start);
+                _measurementOverlay.Begin(point);
                 DrawCanvas.CaptureMouse();
                 e.Handled = true;
                 return;
@@ -736,13 +746,14 @@ namespace NVSPlotter
 
             if (tool == ToolMode.Pan || _isPanning) return; // Pan tool
 
-            var startPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-            _shapeController.BeginDraw(tool, startPoint);
+            _shapeController.BeginDraw(tool, point);
             e.Handled = true;
         }
 
         private void DrawCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
+            RemoveSnapIndicator();
+
             if (_imageManipulator.IsManipulating)
             {
                 _imageManipulator.End();
@@ -756,9 +767,20 @@ namespace NVSPlotter
                 return;
             }
 
+            // Selection tool handling
+            if (_selectionController.IsActive)
+            {
+                var selPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                _selectionController.HandleMouseUp(selPoint);
+                _lastGcode = ""; // Invalidate G-code cache after transform
+                e.Handled = true;
+                return;
+            }
+
             if (_measurementOverlay.IsMeasuring)
             {
-                var measureEnd = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var rawEnd = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var measureEnd = ApplySnapping(rawEnd, out _, out _, out _);
                 _measurementOverlay.Complete(measureEnd, Utility.Distance);
                 e.Handled = true;
                 return;
@@ -766,7 +788,8 @@ namespace NVSPlotter
 
             if (_shapeController.IsDrawing)
             {
-                var endMm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var rawEnd = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var endMm = ApplySnapping(rawEnd, out _, out _, out _);
                 _shapeController.CompleteDraw(endMm);
                 e.Handled = true;
                 return;
@@ -802,6 +825,438 @@ namespace NVSPlotter
             return new PointMm(x, y);
         }
 
+        // ===== ENDPOINT SNAPPING =====
+
+        private enum SnapType { None, Start, End }
+
+        private bool IsSnapEnabled => FindName("SnapEnabledCheck") is CheckBox cb && cb.IsChecked == true;
+
+        private double GetSnapRadius()
+        {
+            if (FindName("SnapRadiusBox") is not TextBox tb) return 5.0;
+            return ParseDouble(tb.Text, 5.0);
+        }
+
+        /// <summary>
+        /// Snaps a point to the nearest stroke endpoint if within snap radius.
+        /// Returns the snapped point (or original if no snap), and sets snapType to indicate
+        /// whether it snapped to a line start (A) or end (B).
+        /// </summary>
+        private PointMm SnapToEndpoint(PointMm raw, out PointMm? snappedTo, out SnapType snapType)
+        {
+            snappedTo = null;
+            snapType = SnapType.None;
+            if (!IsSnapEnabled) return raw;
+
+            var radius = GetSnapRadius();
+            if (radius <= 0) return raw;
+
+            double bestDist = double.MaxValue;
+            PointMm? bestPoint = null;
+            SnapType bestSnapType = SnapType.None;
+
+            foreach (var stroke in _doc.Strokes)
+            {
+                var distA = Utility.Distance(raw, stroke.A);
+                if (distA < bestDist && distA <= radius)
+                {
+                    bestDist = distA;
+                    bestPoint = stroke.A;
+                    bestSnapType = SnapType.Start;
+                }
+
+                var distB = Utility.Distance(raw, stroke.B);
+                if (distB < bestDist && distB <= radius)
+                {
+                    bestDist = distB;
+                    bestPoint = stroke.B;
+                    bestSnapType = SnapType.End;
+                }
+            }
+
+            if (bestPoint is PointMm pt)
+            {
+                snappedTo = pt;
+                snapType = bestSnapType;
+                return pt;
+            }
+
+            return raw;
+        }
+
+        /// <summary>
+        /// Overload for cases where snap type isn't needed.
+        /// </summary>
+        private PointMm SnapToEndpoint(PointMm raw, out PointMm? snappedTo)
+        {
+            return SnapToEndpoint(raw, out snappedTo, out _);
+        }
+
+        private void UpdateSnapIndicator(PointMm? snapPoint, SnapType snapType, PointMm? gridSnapPoint = null)
+        {
+            if (DrawCanvas == null) return;
+
+            // Determine what to show: endpoint snap takes priority, then grid snap
+            PointMm? displayPoint = snapPoint ?? gridSnapPoint;
+
+            if (displayPoint == null)
+            {
+                RemoveSnapIndicator();
+                return;
+            }
+
+            // Colors: Green for start, Blue for end, Orange for grid
+            Brush fillBrush;
+            Brush strokeBrush;
+            if (snapPoint != null)
+            {
+                if (snapType == SnapType.Start)
+                {
+                    fillBrush = new SolidColorBrush(Color.FromArgb(128, 0, 200, 0));
+                    strokeBrush = Brushes.LimeGreen;
+                }
+                else
+                {
+                    fillBrush = new SolidColorBrush(Color.FromArgb(128, 30, 90, 180));
+                    strokeBrush = new SolidColorBrush(Color.FromRgb(50, 120, 200)); // Mid blue
+                }
+            }
+            else
+            {
+                // Grid snap - orange/yellow color
+                fillBrush = new SolidColorBrush(Color.FromArgb(128, 255, 165, 0));
+                strokeBrush = Brushes.Orange;
+            }
+
+            if (_snapIndicator == null)
+            {
+                _snapIndicator = new Ellipse
+                {
+                    Width = SNAP_INDICATOR_SIZE,
+                    Height = SNAP_INDICATOR_SIZE,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true,
+                    StrokeThickness = 2
+                };
+                DrawCanvas.Children.Add(_snapIndicator);
+                Panel.SetZIndex(_snapIndicator, 20);
+            }
+
+            _snapIndicator.Fill = fillBrush;
+            _snapIndicator.Stroke = strokeBrush;
+
+            Canvas.SetLeft(_snapIndicator, displayPoint.Value.X - SNAP_INDICATOR_SIZE / 2.0);
+            Canvas.SetTop(_snapIndicator, displayPoint.Value.Y - SNAP_INDICATOR_SIZE / 2.0);
+        }
+
+        private void RemoveSnapIndicator()
+        {
+            if (DrawCanvas != null && _snapIndicator != null)
+            {
+                DrawCanvas.Children.Remove(_snapIndicator);
+                _snapIndicator = null;
+            }
+        }
+
+        // ===== GRID / GUIDES =====
+
+        private bool IsGridVisible => FindName("ShowGridCheck") is CheckBox cb && cb.IsChecked == true;
+        private bool IsSnapToGridEnabled => FindName("SnapToGridCheck") is CheckBox cb && cb.IsChecked == true;
+
+        private double GetGridSpacing()
+        {
+            if (FindName("GridSpacingBox") is not TextBox tb) return 10.0;
+            var spacing = ParseDouble(tb.Text, 10.0);
+            return Math.Clamp(spacing, 1.0, 500.0); // Clamp to reasonable range
+        }
+
+        private void ShowGridCheck_Click(object sender, RoutedEventArgs e)
+        {
+            RenderAll();
+        }
+
+        private void GridSpacingBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded) return;
+            if (IsGridVisible)
+            {
+                RenderAll();
+            }
+        }
+
+        private void InitializeSafeMarginBox()
+        {
+            if (FindName("SafeMarginBox") is TextBox tb)
+            {
+                tb.Text = Settings.Default.safeMarginMm.ToString("0.##", CultureInfo.InvariantCulture);
+            }
+        }
+
+        private void InitializeConsoleWindow()
+        {
+            _consoleWindow = new ConsoleWindow();
+            
+            // Close console window when main window closes
+            Closed += (s, e) => _consoleWindow?.ForceClose();
+        }
+
+        private void ShowConsoleBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (_consoleWindow == null)
+            {
+                InitializeConsoleWindow();
+            }
+
+            if (_consoleWindow!.IsVisible)
+            {
+                _consoleWindow.Hide();
+            }
+            else
+            {
+                // Set owner when showing (main window is now visible)
+                if (_consoleWindow.Owner == null)
+                {
+                    _consoleWindow.Owner = this;
+                    // Position to the right of the main window
+                    _consoleWindow.Left = Left + Width + 10;
+                    _consoleWindow.Top = Top;
+                }
+                _consoleWindow.Show();
+                _consoleWindow.Activate();
+            }
+        }
+
+        private void SafeMarginBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded) return;
+            if (sender is not TextBox tb) return;
+
+            var value = ParseDouble(tb.Text, Settings.Default.safeMarginMm);
+            value = Math.Clamp(value, 0, 500); // Reasonable range
+
+            if (Math.Abs(value - Settings.Default.safeMarginMm) > 0.001)
+            {
+                Settings.Default.safeMarginMm = value;
+                Settings.Default.Save();
+                _lastGcode = ""; // Invalidate G-code cache
+                RenderAll(); // Redraw to update margin overlay
+            }
+        }
+
+        private void ShowMarginOverlayCheck_Click(object sender, RoutedEventArgs e)
+        {
+            RenderAll();
+        }
+
+        private bool IsMarginOverlayVisible => FindName("ShowMarginOverlayCheck") is CheckBox cb && cb.IsChecked == true;
+
+        /// <summary>
+        /// Draws a transparent overlay showing the safe margin zones around the edges.
+        /// </summary>
+        private void DrawSafeMarginOverlay()
+        {
+            if (DrawCanvas == null) return;
+            if (!IsMarginOverlayVisible) return;
+
+            var margin = SafeMarginMm;
+            if (margin <= 0) return;
+
+            const double rulerThickness = 18.0; // Must match ruler thickness
+
+            var marginBrush = new SolidColorBrush(Color.FromArgb(40, 255, 100, 100)); // Semi-transparent red
+            var marginStroke = new SolidColorBrush(Color.FromArgb(80, 200, 50, 50)); // Slightly more opaque border
+
+            // Document area starts after ruler offset
+            var docLeft = rulerThickness;
+            var docTop = rulerThickness;
+            var docWidth = _doc.WidthMm;
+            var docHeight = _doc.HeightMm;
+
+            // Top margin zone
+            if (margin < docHeight)
+            {
+                var topRect = new Rectangle
+                {
+                    Width = docWidth,
+                    Height = Math.Min(margin, docHeight),
+                    Fill = marginBrush,
+                    Stroke = marginStroke,
+                    StrokeThickness = 0.5,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(topRect, docLeft);
+                Canvas.SetTop(topRect, docTop);
+                Panel.SetZIndex(topRect, 1);
+                DrawCanvas.Children.Add(topRect);
+            }
+
+            // Bottom margin zone
+            if (margin < docHeight)
+            {
+                var bottomRect = new Rectangle
+                {
+                    Width = docWidth,
+                    Height = Math.Min(margin, docHeight),
+                    Fill = marginBrush,
+                    Stroke = marginStroke,
+                    StrokeThickness = 0.5,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(bottomRect, docLeft);
+                Canvas.SetTop(bottomRect, docTop + docHeight - margin);
+                Panel.SetZIndex(bottomRect, 1);
+                DrawCanvas.Children.Add(bottomRect);
+            }
+
+            // Left margin zone (between top and bottom margins)
+            var verticalHeight = Math.Max(0, docHeight - 2 * margin);
+            if (margin < docWidth && verticalHeight > 0)
+            {
+                var leftRect = new Rectangle
+                {
+                    Width = Math.Min(margin, docWidth),
+                    Height = verticalHeight,
+                    Fill = marginBrush,
+                    Stroke = marginStroke,
+                    StrokeThickness = 0.5,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(leftRect, docLeft);
+                Canvas.SetTop(leftRect, docTop + margin);
+                Panel.SetZIndex(leftRect, 1);
+                DrawCanvas.Children.Add(leftRect);
+            }
+
+            // Right margin zone (between top and bottom margins)
+            if (margin < docWidth && verticalHeight > 0)
+            {
+                var rightRect = new Rectangle
+                {
+                    Width = Math.Min(margin, docWidth),
+                    Height = verticalHeight,
+                    Fill = marginBrush,
+                    Stroke = marginStroke,
+                    StrokeThickness = 0.5,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(rightRect, docLeft + docWidth - margin);
+                Canvas.SetTop(rightRect, docTop + margin);
+                Panel.SetZIndex(rightRect, 1);
+                DrawCanvas.Children.Add(rightRect);
+            }
+
+            // Draw a dashed inner border to clearly show the safe area boundary
+            var safeAreaBorder = new Rectangle
+            {
+                Width = Math.Max(0, docWidth - 2 * margin),
+                Height = Math.Max(0, docHeight - 2 * margin),
+                Stroke = new SolidColorBrush(Color.FromRgb(200, 100, 100)),
+                StrokeThickness = 1,
+                StrokeDashArray = [4, 2],
+                Fill = Brushes.Transparent,
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            Canvas.SetLeft(safeAreaBorder, docLeft + margin);
+            Canvas.SetTop(safeAreaBorder, docTop + margin);
+            Panel.SetZIndex(safeAreaBorder, 1);
+            DrawCanvas.Children.Add(safeAreaBorder);
+        }
+
+        /// <summary>
+        /// Draws the grid on the canvas if enabled.
+        /// </summary>
+        private void DrawGrid()
+        {
+            if (DrawCanvas == null || !IsGridVisible) return;
+
+            var spacing = GetGridSpacing();
+            if (spacing <= 0) return;
+
+            var gridBrush = new SolidColorBrush(Color.FromRgb(200, 200, 200)); // Medium gray for visibility
+            const double gridThickness = 1.0; // Thicker lines visible at all zoom levels
+            const double rulerThickness = 18.0;
+
+            // Draw vertical lines - offset by ruler thickness to align with ruler ticks
+            for (double x = 0; x <= _doc.WidthMm; x += spacing)
+            {
+                var line = new Line
+                {
+                    X1 = rulerThickness + x,
+                    Y1 = rulerThickness,
+                    X2 = rulerThickness + x,
+                    Y2 = rulerThickness + _doc.HeightMm,
+                    Stroke = gridBrush,
+                    StrokeThickness = gridThickness,
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
+                Panel.SetZIndex(line, 2);
+                DrawCanvas.Children.Add(line);
+            }
+
+            // Draw horizontal lines - offset by ruler thickness to align with ruler ticks
+            for (double y = 0; y <= _doc.HeightMm; y += spacing)
+            {
+                var line = new Line
+                {
+                    X1 = rulerThickness,
+                    Y1 = rulerThickness + y,
+                    X2 = rulerThickness + _doc.WidthMm,
+                    Y2 = rulerThickness + y,
+                    Stroke = gridBrush,
+                    StrokeThickness = gridThickness,
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
+                Panel.SetZIndex(line, 2);
+                DrawCanvas.Children.Add(line);
+            }
+        }
+
+        /// <summary>
+        /// Snaps a point to the nearest grid intersection if snap-to-grid is enabled.
+        /// </summary>
+        private PointMm SnapToGrid(PointMm raw)
+        {
+            if (!IsSnapToGridEnabled) return raw;
+
+            var spacing = GetGridSpacing();
+            if (spacing <= 0) return raw;
+
+            var snappedX = Math.Round(raw.X / spacing) * spacing;
+            var snappedY = Math.Round(raw.Y / spacing) * spacing;
+
+            return new PointMm(snappedX, snappedY);
+        }
+
+        /// <summary>
+        /// Combined snapping: endpoints first (higher priority), then grid.
+        /// Returns the final snapped point and snap info for indicator display.
+        /// </summary>
+        private PointMm ApplySnapping(PointMm raw, out PointMm? endpointSnap, out SnapType snapType, out bool gridSnapped)
+        {
+            // First try endpoint snapping (higher priority)
+            var result = SnapToEndpoint(raw, out endpointSnap, out snapType);
+
+            // If no endpoint snap, try grid snap
+            if (endpointSnap == null && IsSnapToGridEnabled)
+            {
+                var gridSnap = SnapToGrid(raw);
+                gridSnapped = gridSnap.X != raw.X || gridSnap.Y != raw.Y;
+                return gridSnap;
+            }
+
+            gridSnapped = false;
+            return result;
+        }
+
         private PointMm GetCurrentCanvasPointerOrCenter()
         {
             if (CanvasScroll != null && DrawCanvas != null)
@@ -828,6 +1283,12 @@ namespace NVSPlotter
                 return;
             }
 
+            if (_shapeController.TryFinishBezier())
+            {
+                e.Handled = true;
+                return;
+            }
+
             if (_shapeController.TryFinishPolyline())
             {
                 e.Handled = true;
@@ -849,17 +1310,69 @@ namespace NVSPlotter
             {
                 _shapeController.FinishPolyline();
             }
-            if (_shapeController.IsDrawing && tool != ToolMode.Polyline)
+
+            if (tool != ToolMode.Bezier && _shapeController.IsBezierActive)
+            {
+                _shapeController.CancelBezier();
+            }
+
+            if (_shapeController.IsDrawing && tool != ToolMode.Polyline && tool != ToolMode.Bezier)
             {
                 _shapeController.CancelAll();
+            }
+
+            // Clear selection when switching away from Select tool
+            if (tool != ToolMode.Select && _selectionController.HasSelection)
+            {
+                _selectionController.ClearSelection();
             }
         }
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // Selection tool: Escape cancels, Delete removes selected strokes
+            if (GetCurrentTool() == ToolMode.Select)
+            {
+                if (e.Key == Key.Escape)
+                {
+                    if (_selectionController.IsActive)
+                    {
+                        _selectionController.Cancel();
+                    }
+                    else if (_selectionController.HasSelection)
+                    {
+                        _selectionController.ClearSelection();
+                    }
+                    e.Handled = true;
+                    return;
+                }
+
+                if (e.Key == Key.Delete && _selectionController.HasSelection)
+                {
+                    _selectionController.DeleteSelection();
+                    _lastGcode = "";
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             if (_measurementOverlay.IsMeasuring && e.Key == Key.Escape)
             {
                 _measurementOverlay.Reset();
+                e.Handled = true;
+                return;
+            }
+
+            if (_shapeController.IsBezierActive && (e.Key == Key.Escape || e.Key == Key.Enter || e.Key == Key.Return))
+            {
+                if (e.Key == Key.Escape)
+                {
+                    _shapeController.CancelBezier();
+                }
+                else
+                {
+                    _shapeController.TryFinishBezier();
+                }
                 e.Handled = true;
                 return;
             }
@@ -880,11 +1393,7 @@ namespace NVSPlotter
 
         private void AppendLog(string message)
         {
-            if (ConsoleBox == null) return;
-
-            var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
-            ConsoleBox.AppendText(line + Environment.NewLine);
-            ConsoleBox.ScrollToEnd();
+            _consoleWindow?.AppendLog(message);
         }
 
         private void RefreshPorts()
@@ -1101,16 +1610,12 @@ namespace NVSPlotter
             if (RulerCanvas == null) return;
 
             const double rulerThickness = 18.0;
-            const double minorStep = 1.0;
             const double majorStep = 10.0;
             double labelStep = 50.0;
 
             Brush rulerFill = new SolidColorBrush(Color.FromRgb(248, 248, 248));
             Brush borderBrush = Brushes.LightGray;
             Brush tickBrush = Brushes.Gray;
-
-            double ox = rulerThickness; // document X offset (top ruler starts after corner)
-            double oy = rulerThickness; // document Y offset (left ruler starts after corner)
 
             Rectangle CreateBackground(double width, double height)
             {
@@ -1125,91 +1630,96 @@ namespace NVSPlotter
                 };
             }
 
-            // Corner block so the rulers don't overlap each other
+            // Corner block
             var corner = CreateBackground(rulerThickness, rulerThickness);
             Canvas.SetLeft(corner, 0);
             Canvas.SetTop(corner, 0);
             RulerCanvas.Children.Add(corner);
 
-            // Top ruler (shifted right by corner width)
-            var topBackground = CreateBackground(_doc.WidthMm-rulerThickness, rulerThickness);
-            Canvas.SetLeft(topBackground, ox);
+            // Top ruler background (starts at rulerThickness to not overlap corner)
+            var topBackground = CreateBackground(_doc.WidthMm, rulerThickness);
+            Canvas.SetLeft(topBackground, rulerThickness);
             Canvas.SetTop(topBackground, 0);
             RulerCanvas.Children.Add(topBackground);
 
-            // Left ruler (shifted down by corner height)
-            var leftBackground = CreateBackground(rulerThickness, _doc.HeightMm-rulerThickness);
+            // Left ruler background (starts at rulerThickness to not overlap corner)
+            var leftBackground = CreateBackground(rulerThickness, _doc.HeightMm);
             Canvas.SetLeft(leftBackground, 0);
-            Canvas.SetTop(leftBackground, oy);
+            Canvas.SetTop(leftBackground, rulerThickness);
             RulerCanvas.Children.Add(leftBackground);
 
-            void AddVerticalTick(double x)
+            // Vertical ticks on top ruler - position matches document coordinates
+            var gridSpacing = GetGridSpacing();
+            for (double x = 0; x <= _doc.WidthMm; x += gridSpacing)
             {
-                bool isMajor = Math.Abs(x % majorStep) < 0.0001;
-                bool showLabel = isMajor && Math.Abs(x % labelStep) < 0.0001;
+                bool isMajor = Math.Abs(x % majorStep) < 0.0001 || x == 0;
+                bool showLabel = Math.Abs(x % labelStep) < 0.0001;
                 double len = isMajor ? rulerThickness : rulerThickness / 2.5;
 
-                double cx = ox + x;
+                // Draw tick at position that aligns with grid (offset by ruler corner)
+                double cx = rulerThickness + x;
 
                 var line = new Line
                 {
                     X1 = cx,
                     X2 = cx,
-                    Y1 = 0,
-                    Y2 = len,
+                    Y1 = rulerThickness - len,
+                    Y2 = rulerThickness,
                     Stroke = tickBrush,
-                    StrokeThickness = 0.6,
+                    StrokeThickness = isMajor ? 1.0 : 0.6,
                     SnapsToDevicePixels = true,
                     IsHitTestVisible = false
                 };
                 RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
                 RulerCanvas.Children.Add(line);
 
-                if (showLabel)
+                if (showLabel && x > 0)
                 {
                     var label = CreateRulerLabel(x, rotate: false);
-                    Canvas.SetLeft(label, cx + 2);
+                    // Measure text width to center label on tick mark
+                    label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    var textWidth = label.DesiredSize.Width;
+                    Canvas.SetLeft(label, cx - textWidth / 2);
                     Canvas.SetTop(label, 1);
                     RulerCanvas.Children.Add(label);
                 }
             }
 
-            void AddHorizontalTick(double y)
+            // Horizontal ticks on left ruler - position matches document coordinates
+            for (double y = 0; y <= _doc.HeightMm; y += gridSpacing)
             {
-                bool isMajor = Math.Abs(y % majorStep) < 0.0001;
-                bool showLabel = isMajor && Math.Abs(y % labelStep) < 0.0001;
+                bool isMajor = Math.Abs(y % majorStep) < 0.0001 || y == 0;
+                bool showLabel = Math.Abs(y % labelStep) < 0.0001;
                 double len = isMajor ? rulerThickness : rulerThickness / 2.5;
 
-                double cy = oy + y;
+                // Draw tick at position that aligns with grid (offset by ruler corner)
+                double cy = rulerThickness + y;
 
                 var line = new Line
                 {
-                    X1 = 0,
-                    X2 = len,
+                    X1 = rulerThickness - len,
+                    X2 = rulerThickness,
                     Y1 = cy,
                     Y2 = cy,
                     Stroke = tickBrush,
-                    StrokeThickness = 0.6,
+                    StrokeThickness = isMajor ? 1.0 : 0.6,
                     SnapsToDevicePixels = true,
                     IsHitTestVisible = false
                 };
                 RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
                 RulerCanvas.Children.Add(line);
 
-                if (showLabel)
+                if (showLabel && y > 0)
                 {
                     var label = CreateRulerLabel(y, rotate: true);
+                    // Measure text to center label on tick mark (after rotation, width becomes height)
+                    label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+                    var textHeight = label.DesiredSize.Height; // After -90° rotation, this is the visual width
                     Canvas.SetLeft(label, 1);
-                    Canvas.SetTop(label, cy + 2);
+                    Canvas.SetTop(label, cy - textHeight / 2);
                     RulerCanvas.Children.Add(label);
                 }
             }
-
-            for (double x = 0; x <= _doc.WidthMm; x += minorStep)
-                AddVerticalTick(x);
-
-            for (double y = 0; y <= _doc.HeightMm; y += minorStep)
-                AddHorizontalTick(y);
         }
 
         private static TextBlock CreateRulerLabel(double value, bool rotate)
@@ -1236,13 +1746,15 @@ namespace NVSPlotter
             DrawCanvas.Children.Clear();
             RulerCanvas.Children.Clear();
 
-            // Size canvas to page
-            DrawCanvas.Width = _doc.WidthMm;
-            DrawCanvas.Height = _doc.HeightMm;
-            RulerCanvas.Width = _doc.WidthMm;
-            RulerCanvas.Height = _doc.HeightMm;
+            const double rulerThickness = 18.0;
 
-            // Page border
+            // Size canvas to page + ruler thickness
+            DrawCanvas.Width = _doc.WidthMm + rulerThickness;
+            DrawCanvas.Height = _doc.HeightMm + rulerThickness;
+            RulerCanvas.Width = _doc.WidthMm + rulerThickness;
+            RulerCanvas.Height = _doc.HeightMm + rulerThickness;
+
+            // Page border (offset by ruler thickness)
             var pageRect = new Rectangle
             {
                 Width = _doc.WidthMm,
@@ -1252,11 +1764,13 @@ namespace NVSPlotter
                 Fill = Brushes.White
             };
             DrawCanvas.Children.Add(pageRect);
-            Canvas.SetLeft(pageRect, 0);
-            Canvas.SetTop(pageRect, 0);
+            Canvas.SetLeft(pageRect, rulerThickness);
+            Canvas.SetTop(pageRect, rulerThickness);
             Panel.SetZIndex(pageRect, 0);
 
+            DrawGrid();
             DrawRulers();
+            DrawSafeMarginOverlay();
             RenderReferenceImage();
 
             // Working area overlay (visual only)
@@ -1272,16 +1786,18 @@ namespace NVSPlotter
             }
 
             // Existing strokes
-            foreach (var s in _doc.Strokes)
+            for (int i = 0; i < _doc.Strokes.Count; i++)
             {
+                var s = _doc.Strokes[i];
+                var isSelected = _selectionController.IsSelected(i);
                 var ln = new Line
                 {
                     X1 = s.A.X,
                     Y1 = s.A.Y,
                     X2 = s.B.X,
                     Y2 = s.B.Y,
-                    Stroke = Brushes.Black,
-                    StrokeThickness = 1.2,
+                    Stroke = isSelected ? Brushes.DodgerBlue : Brushes.Black,
+                    StrokeThickness = isSelected ? 2.0 : 1.2,
                     SnapsToDevicePixels = true,
                     IsHitTestVisible = false
                 };
@@ -1290,8 +1806,11 @@ namespace NVSPlotter
                 DrawCanvas.Children.Add(ln);
             }
 
+            // Selection visuals (bounding box, handles)
+            _selectionController.RenderSelectionVisuals();
+
             AppendLog($"Doc: {_doc.WidthMm:0} x {_doc.HeightMm:0} mm, strokes={_doc.Strokes.Count}");
-            AppendLog($"Bed: X={_bedX:0.###} Y={_bedY:0.###} {(_bedFromGrbl ? "(from $$)" : "(default)")}, margin={SAFE_MARGIN_MM:0.###}mm");
+            AppendLog($"Bed: X={_bedX:0.###} Y={_bedY:0.###} {(_bedFromGrbl ? "(from $$)" : "(default)")}, margin={SafeMarginMm:0.###}mm");
             //AppendLog($"$23={_homingDirMask} => HomeAtMax: X={_homeAtMaxX}, Y={_homeAtMaxY}, homed={_isHomed}");
             //AppendLog("Work convention: X ALWAYS positive, Y ALWAYS negative.");
 
@@ -1605,9 +2124,9 @@ namespace NVSPlotter
             if (optimize) strokes = StrokeOptimizer.OptimizeNearest(strokes);
 
             // Fit doc into bed (with margin), possibly rotating CW to better fit.
-            var fit = ComputeFit(_doc.WidthMm, _doc.HeightMm, _bedX, _bedY, SAFE_MARGIN_MM);
+            var fit = ComputeFit(_doc.WidthMm, _doc.HeightMm, _bedX, _bedY, SafeMarginMm);
 
-            AppendLog($"G-code fit={fit.Mode}, scale={fit.Scale:0.###}, usableBed=({_bedX - 2 * SAFE_MARGIN_MM:0.###} x {_bedY - 2 * SAFE_MARGIN_MM:0.###})");
+            AppendLog($"G-code fit={fit.Mode}, scale={fit.Scale:0.###}, usableBed=({_bedX - 2 * SafeMarginMm:0.###} x {_bedY - 2 * SafeMarginMm:0.###})");
             AppendLog("G-code convention: X>=0, Y<=0");
 
             var sb = new StringBuilder(64 * 1024);
@@ -1743,8 +2262,8 @@ namespace NVSPlotter
             };
         }
 
-        private double ClampBedX(double x) => Math.Clamp(x, SAFE_MARGIN_MM, _bedX - SAFE_MARGIN_MM);
-        private double ClampBedY(double y) => Math.Clamp(y, SAFE_MARGIN_MM, _bedY - SAFE_MARGIN_MM);
+        private double ClampBedX(double x) => Math.Clamp(x, SafeMarginMm, _bedX - SafeMarginMm);
+        private double ClampBedY(double y) => Math.Clamp(y, SafeMarginMm, _bedY - SafeMarginMm);
 
         // Convert bed-local positive coords into WORK coords relative to home (0,0).
         // REQUIRED BY USER: X ALWAYS positive, Y ALWAYS negative.

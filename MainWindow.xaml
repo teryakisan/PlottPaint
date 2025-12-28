@@ -24,7 +24,7 @@
                             <StackPanel Margin="10">
                                 <StackPanel x:Name="Page" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Page:" Width="90" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="PagePresetCombo" Width="190" SelectionChanged="PagePresetCombo_SelectionChanged">
+                                    <ComboBox x:Name="PagePresetCombo" Width="203" SelectionChanged="PagePresetCombo_SelectionChanged">
                                         <ComboBoxItem Content="A0 Portrait (841 x 1189 mm)" IsSelected="True"/>
                                         <ComboBoxItem Content="A0 Landscape (1189 x 841 mm)"/>
                                     </ComboBox>
@@ -32,7 +32,7 @@
 
                                 <StackPanel x:Name="HomeCornere" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Home Corner:" Width="90" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="HomeCornerCombo" Width="190">
+                                    <ComboBox x:Name="HomeCornerCombo" Width="203">
                                         <ComboBoxItem Content="Top Right (common iDraw)" IsSelected="True"/>
                                         <ComboBoxItem Content="Top Left"/>
                                         <ComboBoxItem Content="Bottom Right"/>
@@ -42,7 +42,7 @@
 
                                 <StackPanel x:Name="Tools" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Tool:" Width="90" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="ToolCombo" Width="190" SelectedValuePath="Tag" SelectionChanged="ToolCombo_SelectionChanged">
+                                    <ComboBox x:Name="ToolCombo" Width="203" SelectedValuePath="Tag" SelectionChanged="ToolCombo_SelectionChanged">
                                         <ComboBoxItem Content="Line" Tag="Line" IsSelected="True"/>
                                         <ComboBoxItem Content="Pan (Middle Mouse also works)" Tag="Pan"/>
                                         <ComboBoxItem Content="Rectangle Tool" Tag="Rectangle"/>
@@ -59,6 +59,23 @@
                                     </ComboBox>
                                 </StackPanel>
 
+                                <StackPanel x:Name="SnapSettings" Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="Snap:" Width="68" VerticalAlignment="Center"/>
+                                    <CheckBox x:Name="SnapEnabledCheck" Content="Endpoints" IsChecked="True" VerticalAlignment="Center"/>
+                                    <TextBlock Text="Radius:" Margin="15,0,5,0" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="SnapRadiusBox" Width="40" Text="5" VerticalAlignment="Center"/>
+                                    <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <StackPanel x:Name="GridSettings" Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="Grid:" Width="68" VerticalAlignment="Center"/>
+                                    <CheckBox x:Name="ShowGridCheck" Content="Show" IsChecked="True" VerticalAlignment="Center" Click="ShowGridCheck_Click"/>
+                                    <CheckBox x:Name="SnapToGridCheck" Content="Snap" IsChecked="True" VerticalAlignment="Center" Margin="10,0,0,0"/>
+                                    <TextBlock Text="Size:" Margin="10,0,5,0" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="GridSpacingBox" Width="35" Text="5" VerticalAlignment="Center" TextChanged="GridSpacingBox_TextChanged"/>
+                                    <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+
                                 <StackPanel x:Name="MeasurementOut" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Measure:" Width="90" VerticalAlignment="Center"/>
                                     <TextBlock x:Name="MeasurementStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555" Text="—"/>
@@ -66,7 +83,7 @@
 
                                 <StackPanel x:Name="WorkingArea" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Working area:" Width="90" VerticalAlignment="Center"/>
-                                    <Button x:Name="DefineWorkingAreaBtn" Content="Define" Width="90" Click="DefineWorkingAreaBtn_Click"/>
+                                    <Button x:Name="DefineWorkingAreaBtn" Content="Define" Width="103" Click="DefineWorkingAreaBtn_Click"/>
                                     <Button x:Name="ClearWorkingAreaBtn" Content="Clear" Width="90" Margin="8,0,0,0" Click="ClearWorkingAreaBtn_Click"/>
 
                                 </StackPanel>
@@ -85,7 +102,7 @@
                                     <Button x:Name="ClearBtn" Content="Clear" Width="55" Click="ClearBtn_Click"/>
                                     <Button x:Name="UndoBtn" Content="Undo" Width="55" Click="UndoBtn_Click"/>
                                     <Button x:Name="FitBtn" Content="Fit" Width="77" Click="FitBtn_Click"/>
-                                    <Button x:Name="RotateCanvasBtn" Content="Rotate 90°" Width="95" Click="RotateCanvasBtn_Click" Height="30"/>
+                                    <Button x:Name="RotateCanvasBtn" Content="Rotate 90°" Width="101" Click="RotateCanvasBtn_Click" Height="30"/>
                                 </WrapPanel>
 
 
@@ -106,7 +123,7 @@
 
                                     <StackPanel x:Name="RefRotation" Orientation="Horizontal" Width="307" HorizontalAlignment="Left" Margin="0,0,0,5">
                                         <TextBlock Text="Rotation:" Width="90" VerticalAlignment="Center"/>
-                                        <Slider x:Name="ImageRotateSlider" Minimum="-180" Maximum="180" Value="0" Width="107"
+                                        <Slider x:Name="ImageRotateSlider" Minimum="-180" Maximum="180" Value="0" Width="93"
                                             ValueChanged="ImageRotateSlider_ValueChanged"/>
                                         <TextBlock x:Name="ImageRotateValue" Width="40" Margin="10,0,0,0" VerticalAlignment="Center" Text="0°"/>
                                         <Button x:Name="ImageRotateResetBtn" Content="Reset" Width="50" Margin="8,0,0,0" Click="ImageRotateResetBtn_Click"/>
@@ -114,7 +131,7 @@
 
                                     <StackPanel x:Name="RefImageFilter" Orientation="Horizontal" Margin="0,0,0,5">
                                         <TextBlock Text="Image filter:" Width="90" VerticalAlignment="Center"/>
-                                        <ComboBox x:Name="ImageFilterCombo" Width="190" SelectedValuePath="Tag" SelectionChanged="ImageFilterCombo_SelectionChanged" IsEnabled="False">
+                                        <ComboBox x:Name="ImageFilterCombo" Width="203" SelectedValuePath="Tag" SelectionChanged="ImageFilterCombo_SelectionChanged" IsEnabled="False">
                                             <ComboBoxItem Content="None" Tag="None" IsSelected="True"/>
                                             <ComboBoxItem Content="Grayscale" Tag="Grayscale"/>
                                             <ComboBoxItem Content="Sepia" Tag="Sepia"/>
@@ -154,7 +171,7 @@
                                             <ComboBoxItem Content="ReverseSobelEdge" Tag="ReverseSobelEdge"/>
                                         </ComboBox>
                                     </StackPanel>
-                                    <Slider x:Name="FilterControlSlider" TickFrequency="1" IsSnapToTickEnabled="True" Maximum="255" Minimum="1" TickPlacement="Both" ValueChanged="FilterControlSlider_ValueChanged"/>
+                                    <Slider x:Name="FilterControlSlider" TickFrequency="1" IsSnapToTickEnabled="True" Maximum="255" Minimum="1" TickPlacement="TopLeft" ValueChanged="FilterControlSlider_ValueChanged" Width="234" VerticalContentAlignment="Stretch" HorizontalContentAlignment="Stretch" HorizontalAlignment="Left"/>
                                 </StackPanel>
                             </Expander>
                         </StackPanel>
@@ -179,6 +196,14 @@
                                     <TextBlock Text="Z Down:" Width="90" VerticalAlignment="Center"/>
                                     <TextBox x:Name="ZDownBox" Width="173" Text="2"/>
                                     <TextBlock Text="mm" Margin="8,0,0,0" VerticalAlignment="Center"/>
+                                </StackPanel>
+
+                                <StackPanel x:Name="SafeMarginSetting" Orientation="Horizontal" Margin="0,0,0,8">
+                                    <TextBlock Text="Safe Margin:" Width="90" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="SafeMarginBox" Width="60" Text="50" TextChanged="SafeMarginBox_TextChanged"/>
+                                    <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                                    <CheckBox x:Name="ShowMarginOverlayCheck" Content="Show" IsChecked="True" 
+                                              Margin="10,0,0,0" VerticalAlignment="Center" Click="ShowMarginOverlayCheck_Click"/>
                                 </StackPanel>
 
                                 <CheckBox x:Name="OptimizeCheck" Content="Optimize stroke order"
@@ -218,7 +243,7 @@
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Port:" Width="90" VerticalAlignment="Center"/>
                                     <ComboBox x:Name="PortCombo" Width="113"/>
-                                    <Button Content="↻" Width="107" Margin="8,0,0,0" Click="RefreshPortsBtn_Click"/>
+                                    <Button Content="↻" Width="82" Margin="8,0,0,0" Click="RefreshPortsBtn_Click"/>
                                 </StackPanel>
 
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
@@ -227,21 +252,21 @@
                                         <ComboBoxItem Content="115200" IsSelected="True"/>
                                         <ComboBoxItem Content="250000"/>
                                     </ComboBox>
-                                    <Button x:Name="ConnectBtn" Content="Connect" Width="107" Margin="8,0,0,0" Click="ConnectBtn_Click"/>
+                                    <Button x:Name="ConnectBtn" Content="Connect" Width="82" Margin="8,0,0,0" Click="ConnectBtn_Click"/>
                                 </StackPanel>
 
                                 <WrapPanel Margin="0,0,0,10" Width="328">
                                     <Button Content="Auto Home ($H)" Width="178" Margin="0,0,8,8" Click="HomeBtn_Click"/>
-                                    <Button Content="$X Unlock" Width="132" Margin="0,0,8,8" Click="UnlockBtn_Click"/>
+                                    <Button Content="$X Unlock" Width="107" Margin="0,0,8,8" Click="UnlockBtn_Click"/>
                                     <Button Content="Reset" Width="178" Margin="0,0,8,8" Click="ResetBtn_Click"/>
-                                    <Button x:Name="SendBtn" Content="Send G-code" Width="132" Margin="0,0,8,8" Click="SendBtn_Click"/>
-                                    <Button x:Name="StopBtn" Content="Stop" Width="318" Margin="0,0,8,8" Click="StopBtn_Click"/>
+                                    <Button x:Name="SendBtn" Content="Send G-code" Width="107" Margin="0,0,8,8" Click="SendBtn_Click"/>
+                                    <Button x:Name="StopBtn" Content="Stop" Width="293" Margin="0,0,8,8" Click="StopBtn_Click"/>
                                 </WrapPanel>
 
-                                <StackPanel Orientation="Horizontal" Height="72">
+                                <StackPanel Orientation="Horizontal" Height="96">
                                     <TextBox x:Name="ManualCmdBox" Width="238" Margin="0,0,8,0"
-                                         ToolTip="Send a single GRBL line, e.g. G0 X10 Y10" Height="57" VerticalAlignment="Top"/>
-                                    <Button Content="Send" Width="72" Click="ManualSendBtn_Click" VerticalAlignment="Top"/>
+                                         ToolTip="Send a single GRBL line, e.g. G0 X10 Y10" Height="91" VerticalAlignment="Top"/>
+                                    <Button Content="Send" Width="42" Click="ManualSendBtn_Click" Height="24"/>
                                 </StackPanel>
 
                                 <TextBlock x:Name="ConnStatusLabel" Margin="0,10,0,0" Foreground="#444"/>
@@ -257,53 +282,36 @@
 
         <!-- RIGHT PANEL -->
         <Grid Grid.Column="1">
-            <Grid.RowDefinitions>
-                <RowDefinition Height="*"/>
-                <RowDefinition Height="220"/>
-            </Grid.RowDefinitions>
-
             <!-- CANVAS AREA -->
-            <Border Grid.Row="0" Background="#EEE">
-                <ScrollViewer x:Name="CanvasScroll"
-              SizeChanged="CanvasScroll_SizeChanged"
-              HorizontalScrollBarVisibility="Visible"
-              VerticalScrollBarVisibility="Visible">
-                    <Grid x:Name="CanvasHost" Background="Transparent">
-                        <Grid.RowDefinitions>
-                            <RowDefinition Height="112*"/>
-                            <RowDefinition Height="165*"/>
-                        </Grid.RowDefinitions>
-                        <Canvas x:Name="DrawCanvas" Background="Transparent"
-                MouseWheel="DrawCanvas_MouseWheel"
-                MouseDown="DrawCanvas_MouseDown"
-                MouseUp="DrawCanvas_MouseUp"
-                MouseMove="DrawCanvas_MouseMove"
-                MouseLeave="DrawCanvas_MouseLeave"
-                MouseRightButtonDown="DrawCanvas_MouseRightButtonDown"
-                MouseLeftButtonDown="DrawCanvas_MouseLeftButtonDown"
-                MouseLeftButtonUp="DrawCanvas_MouseLeftButtonUp"
-                Grid.RowSpan="2"/>
-                        <Canvas x:Name="RulerCanvas" IsHitTestVisible="False" Panel.ZIndex="10" Grid.RowSpan="2"/>
-                    </Grid>
-                </ScrollViewer>
-
-            </Border>
-
-            <!-- CONSOLE -->
-            <Border Grid.Row="1" BorderBrush="#DDD" BorderThickness="1,0,0,0" Background="#111">
-                <Grid Margin="10">
+            <Border Background="#EEE">
+                <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    <TextBox x:Name="ConsoleBox" Grid.Row="1"
-                             Background="#111" Foreground="#D7D7D7"
-                             FontFamily="Consolas"
-                             FontSize="12"
-                             IsReadOnly="True"
-                             TextWrapping="NoWrap"
-                             VerticalScrollBarVisibility="Auto"
-                             HorizontalScrollBarVisibility="Auto"/>
+                    
+                    <!-- Toolbar -->
+                    <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#F0F0F0" Height="28">
+                        <Button x:Name="ShowConsoleBtn" Content="📋 Console" Width="80" Margin="5,2" Click="ShowConsoleBtn_Click" ToolTip="Show/Hide Console Window"/>
+                    </StackPanel>
+                    
+                    <ScrollViewer x:Name="CanvasScroll" Grid.Row="1"
+                      SizeChanged="CanvasScroll_SizeChanged"
+                      HorizontalScrollBarVisibility="Visible"
+                      VerticalScrollBarVisibility="Visible">
+                        <Grid x:Name="CanvasHost" Background="Transparent">
+                            <Canvas x:Name="DrawCanvas" Background="Transparent"
+                    MouseWheel="DrawCanvas_MouseWheel"
+                    MouseDown="DrawCanvas_MouseDown"
+                    MouseUp="DrawCanvas_MouseUp"
+                    MouseMove="DrawCanvas_MouseMove"
+                    MouseLeave="DrawCanvas_MouseLeave"
+                    MouseRightButtonDown="DrawCanvas_MouseRightButtonDown"
+                    MouseLeftButtonDown="DrawCanvas_MouseLeftButtonDown"
+                    MouseLeftButtonUp="DrawCanvas_MouseLeftButtonUp"/>
+                            <Canvas x:Name="RulerCanvas" IsHitTestVisible="False" Panel.ZIndex="10"/>
+                        </Grid>
+                    </ScrollViewer>
                 </Grid>
             </Border>
         </Grid>
