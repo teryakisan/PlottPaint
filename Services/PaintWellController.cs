@@ -26,6 +26,7 @@ public sealed class PaintWellController
     private const double HANDLE_SIZE = 10.0;      // Visual size of handles in pixels
     private const double HANDLE_HIT_RADIUS = 8.0; // Hit test radius in mm (more generous)
     private const double MIN_WELL_SIZE = 10.0;
+    private const double RULER_THICKNESS = 18.0;  // Must match the ruler offset used in rendering
 
     private readonly Canvas _canvas;
     private readonly Func<PlotDocument> _getDocument;
@@ -151,10 +152,20 @@ public sealed class PaintWellController
     // ===== MOUSE HANDLING =====
 
     /// <summary>
+    /// Converts canvas coordinates (which include ruler offset) to document coordinates.
+    /// </summary>
+    private static PointMm CanvasToDocument(PointMm canvasPoint)
+    {
+        return new PointMm(canvasPoint.X - RULER_THICKNESS, canvasPoint.Y - RULER_THICKNESS);
+    }
+
+    /// <summary>
     /// Handles mouse down for the PaintWell tool mode.
     /// </summary>
-    public bool HandleMouseDown(PointMm point, bool isShiftHeld)
+    public bool HandleMouseDown(PointMm canvasPoint, bool isShiftHeld)
     {
+        // Convert from canvas coordinates (with ruler) to document coordinates
+        var point = CanvasToDocument(canvasPoint);
         var doc = _getDocument();
 
         // Check if clicking on an existing well's handle or body
@@ -195,8 +206,11 @@ public sealed class PaintWellController
     /// <summary>
     /// Handles mouse move for the PaintWell tool mode.
     /// </summary>
-    public bool HandleMouseMove(PointMm current)
+    public bool HandleMouseMove(PointMm canvasPoint)
     {
+        // Convert from canvas coordinates (with ruler) to document coordinates
+        var current = CanvasToDocument(canvasPoint);
+
         if (_isCreating)
         {
             UpdateCreatePreview(current);
@@ -215,8 +229,11 @@ public sealed class PaintWellController
     /// <summary>
     /// Handles mouse up for the PaintWell tool mode.
     /// </summary>
-    public bool HandleMouseUp(PointMm point)
+    public bool HandleMouseUp(PointMm canvasPoint)
     {
+        // Convert from canvas coordinates (with ruler) to document coordinates
+        var point = CanvasToDocument(canvasPoint);
+
         if (_isCreating)
         {
             CompleteCreate(point);
@@ -274,8 +291,9 @@ public sealed class PaintWellController
         };
         _canvas.Children.Add(_createPreview);
         Panel.SetZIndex(_createPreview, 25);
-        Canvas.SetLeft(_createPreview, start.X);
-        Canvas.SetTop(_createPreview, start.Y);
+        // Position with ruler offset for visual consistency
+        Canvas.SetLeft(_createPreview, RULER_THICKNESS + start.X);
+        Canvas.SetTop(_createPreview, RULER_THICKNESS + start.Y);
         _createPreview.Width = 0;
         _createPreview.Height = 0;
     }
@@ -289,8 +307,9 @@ public sealed class PaintWellController
         var width = Math.Abs(current.X - _createStart.X);
         var height = Math.Abs(current.Y - _createStart.Y);
 
-        Canvas.SetLeft(_createPreview, left);
-        Canvas.SetTop(_createPreview, top);
+        // Position with ruler offset for visual consistency
+        Canvas.SetLeft(_createPreview, RULER_THICKNESS + left);
+        Canvas.SetTop(_createPreview, RULER_THICKNESS + top);
         _createPreview.Width = width;
         _createPreview.Height = height;
     }
@@ -427,40 +446,115 @@ public sealed class PaintWellController
     // ===== RENDERING =====
 
     /// <summary>
+    /// Checks if a paint well is a "wash" type well (water cup for rinsing).
+    /// These are rendered as circles since they typically represent round cups.
+    /// </summary>
+    private static bool IsWashWell(PaintWell well)
+    {
+        var name = well.Name;
+        return name.Equals("Wash", StringComparison.OrdinalIgnoreCase) ||
+               name.Contains("wash", StringComparison.OrdinalIgnoreCase) ||
+               name.Contains("rinse", StringComparison.OrdinalIgnoreCase) ||
+               name.Contains("water", StringComparison.OrdinalIgnoreCase) ||
+               name.Contains("clean", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
     /// Renders all paint wells on the canvas.
     /// </summary>
-    public void RenderPaintWells()
+    /// <param name="canvasRotationAngle">Current canvas rotation angle (0, 90, 180, 270) to counter-rotate labels</param>
+    public void RenderPaintWells(double canvasRotationAngle = 0)
     {
         var doc = _getDocument();
         const double rulerThickness = 18.0;
+        const double centerIndicatorSize = 20.0; // Diameter of center indicator
 
         foreach (var well in doc.PaintWells)
         {
             var isSelected = well == _selectedWell;
             var isActive = well == _activeColorWell;
+            var isWashWell = IsWashWell(well);
 
-            // Paint well rectangle
-            var rect = new Rectangle
-            {
-                Width = well.Bounds.Width,
-                Height = well.Bounds.Height,
-                Fill = new SolidColorBrush(Color.FromArgb(80, well.Color.R, well.Color.G, well.Color.B)),
-                Stroke = new SolidColorBrush(well.Color),
-                StrokeThickness = isSelected ? 3 : (isActive ? 2.5 : 1.5),
-                SnapsToDevicePixels = true
-            };
+            // Calculate center and dimensions
+            var centerX = well.Bounds.Left + well.Bounds.Width / 2.0;
+            var centerY = well.Bounds.Top + well.Bounds.Height / 2.0;
 
-            if (isActive)
+            if (isWashWell)
             {
-                rect.StrokeDashArray = [6, 3];
+                // Render wash wells as circles (they're typically round cups)
+                // Use the smaller dimension as the diameter to fit within bounds
+                var diameter = Math.Min(well.Bounds.Width, well.Bounds.Height);
+                
+                var circle = new Ellipse
+                {
+                    Width = diameter,
+                    Height = diameter,
+                    Fill = new SolidColorBrush(Color.FromArgb(60, well.Color.R, well.Color.G, well.Color.B)),
+                    Stroke = new SolidColorBrush(well.Color),
+                    StrokeThickness = isSelected ? 6 : (isActive ? 5 : 4), // Wide stroke for cup appearance
+                    SnapsToDevicePixels = true
+                };
+
+                if (isActive)
+                {
+                    circle.StrokeDashArray = [6, 3];
+                }
+
+                // Center the circle within the bounds
+                Canvas.SetLeft(circle, rulerThickness + centerX - diameter / 2);
+                Canvas.SetTop(circle, rulerThickness + centerY - diameter / 2);
+                Panel.SetZIndex(circle, 8);
+                _canvas.Children.Add(circle);
+            }
+            else
+            {
+                // Regular paint well rectangle
+                var rect = new Rectangle
+                {
+                    Width = well.Bounds.Width,
+                    Height = well.Bounds.Height,
+                    Fill = new SolidColorBrush(Color.FromArgb(80, well.Color.R, well.Color.G, well.Color.B)),
+                    Stroke = new SolidColorBrush(well.Color),
+                    StrokeThickness = isSelected ? 3 : (isActive ? 2.5 : 1.5),
+                    SnapsToDevicePixels = true
+                };
+
+                if (isActive)
+                {
+                    rect.StrokeDashArray = [6, 3];
+                }
+
+                Canvas.SetLeft(rect, rulerThickness + well.Bounds.Left);
+                Canvas.SetTop(rect, rulerThickness + well.Bounds.Top);
+                Panel.SetZIndex(rect, 8);
+                _canvas.Children.Add(rect);
             }
 
-            Canvas.SetLeft(rect, rulerThickness + well.Bounds.Left);
-            Canvas.SetTop(rect, rulerThickness + well.Bounds.Top);
-            Panel.SetZIndex(rect, 8);
-            _canvas.Children.Add(rect);
+            // Create a darker shade of the well color for the center indicator border
+            var darkerColor = Color.FromArgb(
+                255,
+                (byte)Math.Max(0, well.Color.R - 60),
+                (byte)Math.Max(0, well.Color.G - 60),
+                (byte)Math.Max(0, well.Color.B - 60));
+            
+            // Center indicator - shows where the brush will dip
+            var centerIndicator = new Ellipse
+            {
+                Width = centerIndicatorSize,
+                Height = centerIndicatorSize,
+                Fill = Brushes.Transparent,
+                Stroke = new SolidColorBrush(darkerColor),
+                StrokeThickness = 4,
+                SnapsToDevicePixels = true,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(centerIndicator, rulerThickness + centerX - centerIndicatorSize / 2);
+            Canvas.SetTop(centerIndicator, rulerThickness + centerY - centerIndicatorSize / 2);
+            Panel.SetZIndex(centerIndicator, 9);
+            _canvas.Children.Add(centerIndicator);
 
-            // Label with name
+            // Label with name - positioned at top-left of well
+            // Labels rotate with the canvas, which keeps them associated with their wells
             var label = new TextBlock
             {
                 Text = well.Name,
@@ -471,12 +565,17 @@ public sealed class PaintWellController
                 Padding = new Thickness(2, 1, 2, 1),
                 IsHitTestVisible = false
             };
-            Canvas.SetLeft(label, rulerThickness + well.Bounds.Left + 2);
-            Canvas.SetTop(label, rulerThickness + well.Bounds.Top + 2);
+            
+            // Position label at the top-left of the well bounds
+            double labelX = rulerThickness + well.Bounds.Left + 4;
+            double labelY = rulerThickness + well.Bounds.Top + 4;
+            
+            Canvas.SetLeft(label, labelX);
+            Canvas.SetTop(label, labelY);
             Panel.SetZIndex(label, 9);
             _canvas.Children.Add(label);
 
-            // Draw resize handles if selected
+            // Draw resize handles if selected (always at rectangle corners for consistent resizing)
             if (isSelected)
             {
                 DrawHandle(well.Bounds.Left, well.Bounds.Top, well.Color, rulerThickness);
@@ -526,7 +625,7 @@ public sealed class PaintWellController
     /// <summary>
     /// Updates the properties of the selected well.
     /// </summary>
-    public void UpdateSelectedWell(string? name = null, Color? color = null, double? dipDepth = null, int? dwellTimeMs = null, double? refreshDistanceMm = null)
+    public void UpdateSelectedWell(string? name = null, Color? color = null, double? dipDepth = null, int? dwellTimeMs = null, double? refreshDistanceMinMm = null, double? refreshDistanceMaxMm = null)
     {
         if (_selectedWell == null) return;
 
@@ -534,7 +633,8 @@ public sealed class PaintWellController
         if (color.HasValue) _selectedWell.Color = color.Value;
         if (dipDepth.HasValue) _selectedWell.DipDepth = dipDepth.Value;
         if (dwellTimeMs.HasValue) _selectedWell.DwellTimeMs = dwellTimeMs.Value;
-        if (refreshDistanceMm.HasValue) _selectedWell.RefreshDistanceMm = refreshDistanceMm.Value;
+        if (refreshDistanceMinMm.HasValue) _selectedWell.RefreshDistanceMinMm = refreshDistanceMinMm.Value;
+        if (refreshDistanceMaxMm.HasValue) _selectedWell.RefreshDistanceMaxMm = refreshDistanceMaxMm.Value;
 
         _requestRender();
     }

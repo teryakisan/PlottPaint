@@ -21,6 +21,8 @@ using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
 using System.Windows.Threading;
 using System.Configuration;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 
 // Avoid ambiguity with System.Drawing and System.Windows.Forms types
 using Color = System.Windows.Media.Color;
@@ -122,6 +124,9 @@ namespace NVSPlotter
         private readonly DispatcherTimer _filterThrottle;
         private ConsoleWindow? _consoleWindow;
 
+        // Project file state
+        private string? _currentProjectPath;
+
         public MainWindow()
         {
             _filterThrottle = new DispatcherTimer
@@ -144,7 +149,9 @@ namespace NVSPlotter
             }
             CanvasHost.LayoutTransform = _canvasRotation;
 
-            if (ZoomLabel != null) ZoomLabel.Text = "100%";
+            // Apply initial zoom from slider value (don't hardcode 100%)
+            SetZoom(ZoomSlider.Value);
+            
             UpdateWorkingAreaStatus();
             UpdateReferenceUiState();
             RefreshPorts();
@@ -1892,8 +1899,10 @@ namespace NVSPlotter
                 DrawCanvas.Children.Add(workRect);
             }
 
+
             // Paint wells (render before strokes so strokes appear on top)
-            _paintWellController.RenderPaintWells();
+            // Pass canvas rotation angle so labels can counter-rotate to stay upright
+            _paintWellController.RenderPaintWells(_canvasRotation.Angle);
 
             // Existing strokes - with paint well colors if painting mode is enabled
             var paintModeEnabled = IsPaintModeEnabled;
@@ -2336,150 +2345,281 @@ namespace NVSPlotter
 
         private void BuildPaintingModeGcode(StringBuilder sb, List<LineStroke> strokes, FitSpec fit, double zUpCmd, double zDownCmd, double feedXY, double joinTol)
         {
-            // Group strokes by paint well
-            var strokesByWell = new Dictionary<Guid?, List<LineStroke>>();
-            foreach (var stroke in strokes)
+            // Process strokes in DRAWING ORDER (not grouped by color)
+            // This allows wash/wipe between color changes
+            
+            Guid? currentWellId = null;
+            PaintWell? currentWell = null;
+            double distanceTraveled = 0;
+            double currentRefreshTarget = 0; // Randomized target for next refresh
+            var random = new Random(); // For natural-looking refresh intervals
+            
+            // Helper to get a random refresh distance within the well's range
+            double GetRandomRefreshDistance(PaintWell well)
             {
-                if (!strokesByWell.ContainsKey(stroke.PaintWellId))
-                {
-                    strokesByWell[stroke.PaintWellId] = new List<LineStroke>();
-                }
-                strokesByWell[stroke.PaintWellId].Add(stroke);
+                var min = well.RefreshDistanceMinMm;
+                var max = well.RefreshDistanceMaxMm;
+                if (max <= min || max <= 0) return max; // No range, use max
+                return min + random.NextDouble() * (max - min);
             }
+            
+            // Check if auto wash/wipe is enabled
+            var autoWashWipeEnabled = FindName("AutoWashWipeCheck") is CheckBox cb && cb.IsChecked == true;
+            
+            // Find wash and wipe wells by name (case-insensitive)
+            var washWell = _doc.PaintWells.FirstOrDefault(w => 
+                w.Name.Equals("Wash", StringComparison.OrdinalIgnoreCase) ||
+                w.Name.Contains("wash", StringComparison.OrdinalIgnoreCase) ||
+                w.Name.Contains("rinse", StringComparison.OrdinalIgnoreCase) ||
+                w.Name.Contains("clean", StringComparison.OrdinalIgnoreCase));
+            
+            var wipeWell = _doc.PaintWells.FirstOrDefault(w => 
+                w.Name.Equals("Wipe", StringComparison.OrdinalIgnoreCase) ||
+                w.Name.Contains("wipe", StringComparison.OrdinalIgnoreCase) ||
+                w.Name.Contains("dry", StringComparison.OrdinalIgnoreCase) ||
+                w.Name.Contains("towel", StringComparison.OrdinalIgnoreCase));
 
-            // Track distance traveled per well for refresh intervals (in mm)
-            var distancePerWell = new Dictionary<Guid, double>();
+            sb.AppendLine("; Processing strokes in drawing order with color change sequences");
+            sb.AppendLine($"; Auto wash/wipe: {(autoWashWipeEnabled ? "ENABLED" : "DISABLED")}");
+            if (washWell != null) sb.AppendLine($"; Wash well: {washWell.Name} (swirl pattern)");
+            if (wipeWell != null) sb.AppendLine($"; Wipe well: {wipeWell.Name} (zig-zag pattern)");
 
-            // Process each paint well group
-            foreach (var kvp in strokesByWell)
+            // Build continuous paths from strokes while respecting color boundaries
+            var paths = BuildPathsWithColorBoundaries(strokes, joinTol);
+            
+            foreach (var path in paths)
             {
-                var wellId = kvp.Key;
-                var wellStrokes = kvp.Value;
-                var well = wellId.HasValue ? _doc.PaintWells.FirstOrDefault(w => w.Id == wellId) : null;
+                if (path.Count == 0) continue;
 
-                if (well != null)
+                var pathWellId = path[0].PaintWellId;
+                var pathWell = pathWellId.HasValue ? _doc.PaintWells.FirstOrDefault(w => w.Id == pathWellId) : null;
+                
+                // Check if color changed - need to do wash/wipe/dip sequence
+                if (pathWellId != currentWellId)
                 {
-                    sb.AppendLine($"; === Paint Well: {well.Name} ({wellStrokes.Count} strokes) ===");
-                    
-                    // Initial paint dip for this color
-                    GeneratePaintDipSequence(sb, well, fit, zUpCmd, feedXY);
-                    distancePerWell[well.Id] = 0;
-                }
-                else
-                {
-                    sb.AppendLine($"; === No Paint Well (black, {wellStrokes.Count} strokes) ===");
-                }
-
-                // Build paths for this well's strokes
-                var paths = BuildPaths(wellStrokes, joinTol);
-
-                foreach (var path in paths)
-                {
-                    if (path.Count == 0) continue;
-
-                    var first = path[0];
-                    var startWork = BedToWork(DocToBed(first.A, fit));
-
-                    sb.AppendLine($"G0 X{Fmt(startWork.X)} Y{Fmt(startWork.Y)}");
-                    sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
-
-                    bool firstMove = true;
-                    PointMm lastPosition = startWork;
-
-                    foreach (var seg in path)
+                    // Color is changing!
+                    if (currentWell != null && autoWashWipeEnabled)
                     {
-                        var endWork = BedToWork(DocToBed(seg.B, fit));
+                        sb.AppendLine($"; === Color change: {currentWell.Name} -> {pathWell?.Name ?? "Black"} ===");
                         
-                        // Calculate total stroke length
-                        var totalStrokeLength = Math.Sqrt(
-                            Math.Pow(endWork.X - lastPosition.X, 2) + 
-                            Math.Pow(endWork.Y - lastPosition.Y, 2));
-
-                        // For paint refresh: check if we need to break this segment into smaller parts
-                        if (well != null && well.RefreshDistanceMm > 0 && totalStrokeLength > 0.1)
+                        // Wash sequence with swirl pattern (if wash well exists and we had a previous color)
+                        if (washWell != null)
                         {
-                            // Calculate how much distance remains before refresh is needed
-                            var distanceUntilRefresh = well.RefreshDistanceMm - distancePerWell[well.Id];
+                            sb.AppendLine("; Wash brush with swirl pattern");
+                            GenerateWashSwirlPattern(sb, washWell, fit, zUpCmd, feedXY);
+                        }
+                        
+                        // Wipe sequence with zig-zag pattern (if wipe well exists)
+                        if (wipeWell != null)
+                        {
+                            sb.AppendLine("; Wipe brush with zig-zag pattern");
+                            GenerateWipeZigZagPattern(sb, wipeWell, fit, zUpCmd, zDownCmd, feedXY);
+                        }
+                    }
+                    else if (currentWell != null)
+                    {
+                        sb.AppendLine($"; === Color change: {currentWell.Name} -> {pathWell?.Name ?? "Black"} (auto wash/wipe disabled) ===");
+                    }
+                    
+                    // Dip in new color (if it's a paint well, not black)
+                    if (pathWell != null)
+                    {
+                        sb.AppendLine($"; === Paint Well: {pathWell.Name} ===");
+                        GeneratePaintDipSequence(sb, pathWell, fit, zUpCmd, feedXY);
+                        // Set randomized refresh target for this color
+                        currentRefreshTarget = GetRandomRefreshDistance(pathWell);
+                        sb.AppendLine($"; Next refresh at ~{currentRefreshTarget:F0}mm (range: {pathWell.RefreshDistanceMinMm:F0}-{pathWell.RefreshDistanceMaxMm:F0}mm)");
+                    }
+                    else
+                    {
+                        sb.AppendLine("; === No Paint Well (black) ===");
+                        currentRefreshTarget = 0;
+                    }
+                    
+                    currentWellId = pathWellId;
+                    currentWell = pathWell;
+                    distanceTraveled = 0;
+                }
+
+                // Draw this path
+                var first = path[0];
+                var startWork = BedToWork(DocToBed(first.A, fit));
+
+                sb.AppendLine($"G0 X{Fmt(startWork.X)} Y{Fmt(startWork.Y)}");
+                sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
+
+                bool firstMove = true;
+                PointMm lastPosition = startWork;
+
+                foreach (var seg in path)
+                {
+                    var endWork = BedToWork(DocToBed(seg.B, fit));
+                    
+                    // Calculate stroke length
+                    var strokeLength = Math.Sqrt(
+                        Math.Pow(endWork.X - lastPosition.X, 2) + 
+                        Math.Pow(endWork.Y - lastPosition.Y, 2));
+
+                    // Check for paint refresh (within same color) - use randomized target
+                    if (currentWell != null && currentRefreshTarget > 0 && strokeLength > 0.1)
+                    {
+                        var segmentStart = lastPosition;
+                        var segmentEnd = endWork;
+                        var remainingLength = strokeLength;
+                        
+                        while (remainingLength > 0.1)
+                        {
+                            var distanceUntilRefresh = currentRefreshTarget - distanceTraveled;
                             
-                            // If this segment would exceed the refresh distance, break it up
-                            var segmentStart = lastPosition;
-                            var segmentEnd = endWork;
-                            var remainingLength = totalStrokeLength;
-                            
-                            while (remainingLength > 0.1)
+                            if (remainingLength <= distanceUntilRefresh)
                             {
-                                distanceUntilRefresh = well.RefreshDistanceMm - distancePerWell[well.Id];
-                                
-                                if (remainingLength <= distanceUntilRefresh)
+                                // Complete this segment without refresh
+                                if (firstMove)
                                 {
-                                    // Can complete this segment without refresh
-                                    if (firstMove)
-                                    {
-                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} F{Fmt(feedXY)}");
-                                        firstMove = false;
-                                    }
-                                    else
-                                    {
-                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)}");
-                                    }
-                                    distancePerWell[well.Id] += remainingLength;
-                                    lastPosition = segmentEnd;
-                                    remainingLength = 0;
+                                    sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} F{Fmt(feedXY)}");
+                                    firstMove = false;
                                 }
                                 else
                                 {
-                                    // Need to stop partway through for refresh
-                                    var ratio = distanceUntilRefresh / remainingLength;
-                                    var breakPoint = new PointMm(
-                                        segmentStart.X + (segmentEnd.X - segmentStart.X) * ratio,
-                                        segmentStart.Y + (segmentEnd.Y - segmentStart.Y) * ratio);
-                                    
-                                    // Draw to the break point
+                                    sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)}");
+                                }
+                                distanceTraveled += remainingLength;
+                                lastPosition = segmentEnd;
+                                remainingLength = 0;
+                            }
+                            else
+                            {
+                                // Need to stop partway for refresh
+                                // But if remaining distance after this refresh would be less than half the max,
+                                // skip the refresh and continue (avoids robotic appearance)
+                                var remainingAfterRefresh = remainingLength - distanceUntilRefresh;
+                                var skipThreshold = currentWell.RefreshDistanceMaxMm / 2.0;
+                                
+                                if (remainingAfterRefresh < skipThreshold && remainingAfterRefresh > 0.1)
+                                {
+                                    // Skip this refresh, just complete the segment
                                     if (firstMove)
                                     {
-                                        sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} F{Fmt(feedXY)}");
+                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} F{Fmt(feedXY)} ; Skip refresh, only {remainingAfterRefresh:F0}mm left");
                                         firstMove = false;
                                     }
                                     else
                                     {
-                                        sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)}");
+                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} ; Skip refresh, only {remainingAfterRefresh:F0}mm left");
                                     }
-                                    
-                                    distancePerWell[well.Id] += distanceUntilRefresh;
-                                    
-                                    // Refresh paint
-                                    sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift for paint refresh (traveled {distancePerWell[well.Id]:F1}mm)");
-                                    GeneratePaintDipSequence(sb, well, fit, zUpCmd, feedXY);
-                                    sb.AppendLine($"G0 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} ; Return to last position");
-                                    sb.AppendLine($"G0 Z{Fmt(zDownCmd)} ; Lower to continue drawing");
-                                    distancePerWell[well.Id] = 0;
-                                    
-                                    // Update for next iteration
-                                    remainingLength -= distanceUntilRefresh;
-                                    segmentStart = breakPoint;
-                                    lastPosition = breakPoint;
+                                    distanceTraveled += remainingLength;
+                                    lastPosition = segmentEnd;
+                                    remainingLength = 0;
+                                    continue;
                                 }
+                                
+                                var ratio = distanceUntilRefresh / remainingLength;
+                                var breakPoint = new PointMm(
+                                    segmentStart.X + (segmentEnd.X - segmentStart.X) * ratio,
+                                    segmentStart.Y + (segmentEnd.Y - segmentStart.Y) * ratio);
+                                
+                                if (firstMove)
+                                {
+                                    sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} F{Fmt(feedXY)}");
+                                    firstMove = false;
+                                }
+                                else
+                                {
+                                    sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)}");
+                                }
+                                
+                                distanceTraveled += distanceUntilRefresh;
+                                
+                                // Refresh paint (same color, no wash/wipe needed)
+                                sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift for paint refresh (traveled {distanceTraveled:F1}mm)");
+                                GeneratePaintDipSequence(sb, currentWell, fit, zUpCmd, feedXY);
+                                sb.AppendLine($"G0 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} ; Return to position");
+                                sb.AppendLine($"G0 Z{Fmt(zDownCmd)} ; Lower to continue");
+                                
+                                // Reset distance and get NEW random target for natural variation
+                                distanceTraveled = 0;
+                                currentRefreshTarget = GetRandomRefreshDistance(currentWell);
+                                sb.AppendLine($"; Next refresh at ~{currentRefreshTarget:F0}mm");
+                                
+                                remainingLength -= distanceUntilRefresh;
+                                segmentStart = breakPoint;
+                                lastPosition = breakPoint;
                             }
+                        }
+                    }
+                    else
+                    {
+                        // No refresh tracking - just draw
+                        if (firstMove)
+                        {
+                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
+                            firstMove = false;
                         }
                         else
                         {
-                            // No paint well or no refresh needed - just draw the segment
-                            if (firstMove)
-                            {
-                                sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
-                                firstMove = false;
-                            }
-                            else
-                            {
-                                sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
-                            }
-                            lastPosition = endWork;
+                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
                         }
+                        
+                        if (currentWell != null && currentRefreshTarget > 0)
+                        {
+                            distanceTraveled += strokeLength;
+                        }
+                        lastPosition = endWork;
                     }
+                }
 
-                    sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
+                sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
+            }
+        }
+
+        /// <summary>
+        /// Builds paths from strokes, breaking at color boundaries.
+        /// Strokes with the same color that are connected are grouped together.
+        /// When color changes, a new path starts.
+        /// </summary>
+        private static List<List<LineStroke>> BuildPathsWithColorBoundaries(List<LineStroke> input, double tol)
+        {
+            var result = new List<List<LineStroke>>();
+            List<LineStroke>? current = null;
+            Guid? currentColorId = null;
+
+            foreach (var stroke in input)
+            {
+                if (current == null)
+                {
+                    // Start first path
+                    current = new List<LineStroke> { stroke };
+                    currentColorId = stroke.PaintWellId;
+                    result.Add(current);
+                    continue;
+                }
+
+                // Check if color changed
+                if (stroke.PaintWellId != currentColorId)
+                {
+                    // Color changed - start new path
+                    current = new List<LineStroke> { stroke };
+                    currentColorId = stroke.PaintWellId;
+                    result.Add(current);
+                    continue;
+                }
+
+                // Same color - check if connected to previous stroke
+                var prev = current[^1];
+                if (Utility.Distance(prev.B, stroke.A) <= tol)
+                {
+                    // Connected - add to current path
+                    current.Add(stroke);
+                }
+                else
+                {
+                    // Not connected but same color - start new path (no wash/wipe needed)
+                    current = new List<LineStroke> { stroke };
+                    result.Add(current);
                 }
             }
+
+            return result;
         }
 
         private void GeneratePaintDipSequence(StringBuilder sb, PaintWell well, FitSpec fit, double zUpCmd, double feedXY)
@@ -2506,6 +2646,152 @@ namespace NVSPlotter
             
             // Re-assert feed rate after dwell to avoid "Feed rate not yet set" errors
             sb.AppendLine($"G0 Z{Fmt(zUpCmd)} F{Fmt(feedXY)} ; Lift from paint well");
+        }
+
+        /// <summary>
+        /// Generates a swirl/spiral pattern for washing the brush in a rinse well.
+        /// The pattern stays within the well bounds and makes multiple quick circular motions.
+        /// </summary>
+        private void GenerateWashSwirlPattern(StringBuilder sb, PaintWell washWell, FitSpec fit, double zUpCmd, double feedXY)
+        {
+            var wellCenter = BedToWork(DocToBed(washWell.Center, fit, clamp: false));
+            var dipDepthCmd = -washWell.DipDepth;
+            
+            // Wash wells are rendered as circles using the smaller dimension as diameter
+            // We need to stay INSIDE that circle to avoid knocking over the cup
+            var circleDiameter = Math.Min(washWell.Bounds.Width, washWell.Bounds.Height);
+            var circleRadius = circleDiameter / 2.0;
+            
+            // Use 60% of the radius for safety margin (stay well inside the cup)
+            var maxRadius = circleRadius * 0.6;
+            
+            // Number of swirl loops and segments per loop
+            const int numLoops = 3;
+            const int segmentsPerLoop = 12;
+            const double swirlFeedRate = 5000; // Fast swirl motion
+            
+            sb.AppendLine($"; === Wash swirl pattern in: {washWell.Name} ===");
+            sb.AppendLine($"; Circle diameter: {circleDiameter:F1}mm, safe swirl radius: {maxRadius:F1}mm");
+            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift before moving to wash well");
+            sb.AppendLine($"G0 X{Fmt(wellCenter.X)} Y{Fmt(wellCenter.Y)} ; Move to wash well center");
+            sb.AppendLine($"G0 Z{Fmt(dipDepthCmd)} ; Lower into wash");
+            
+            // Generate swirl pattern - spiral outward then inward
+            for (int loop = 0; loop < numLoops; loop++)
+            {
+                // Spiral outward
+                for (int seg = 0; seg <= segmentsPerLoop; seg++)
+                {
+                    var t = (double)seg / segmentsPerLoop;
+                    var radius = maxRadius * t; // Grow radius
+                    var angle = t * 2 * Math.PI; // One full rotation per spiral
+                    
+                    var x = wellCenter.X + radius * Math.Cos(angle);
+                    var y = wellCenter.Y + radius * Math.Sin(angle);
+                    
+                    if (seg == 0)
+                        sb.AppendLine($"G1 X{Fmt(x)} Y{Fmt(y)} F{Fmt(swirlFeedRate)}");
+                    else
+                        sb.AppendLine($"G1 X{Fmt(x)} Y{Fmt(y)}");
+                }
+                
+                // Spiral inward
+                for (int seg = segmentsPerLoop; seg >= 0; seg--)
+                {
+                    var t = (double)seg / segmentsPerLoop;
+                    var radius = maxRadius * t;
+                    var angle = (1 - t) * 2 * Math.PI + Math.PI; // Reverse direction
+                    
+                    var x = wellCenter.X + radius * Math.Cos(angle);
+                    var y = wellCenter.Y + radius * Math.Sin(angle);
+                    
+                    sb.AppendLine($"G1 X{Fmt(x)} Y{Fmt(y)}");
+                }
+            }
+            
+            // Return to center and lift
+            sb.AppendLine($"G0 X{Fmt(wellCenter.X)} Y{Fmt(wellCenter.Y)} ; Return to center");
+            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} F{Fmt(feedXY)} ; Lift from wash well");
+        }
+
+        /// <summary>
+        /// Generates a zig-zag wiping pattern for drying the brush on a paper towel.
+        /// The pattern stays within the well bounds and makes multiple back-and-forth passes.
+        /// </summary>
+        private void GenerateWipeZigZagPattern(StringBuilder sb, PaintWell wipeWell, FitSpec fit, double zUpCmd, double zDownCmd, double feedXY)
+        {
+            // Get the well bounds in work coordinates
+            var topLeft = BedToWork(DocToBed(new PointMm(wipeWell.Bounds.Left, wipeWell.Bounds.Top), fit, clamp: false));
+            var bottomRight = BedToWork(DocToBed(new PointMm(wipeWell.Bounds.Right, wipeWell.Bounds.Bottom), fit, clamp: false));
+            
+            // Calculate the actual bounds (work coords may be inverted)
+            var minX = Math.Min(topLeft.X, bottomRight.X);
+            var maxX = Math.Max(topLeft.X, bottomRight.X);
+            var minY = Math.Min(topLeft.Y, bottomRight.Y);
+            var maxY = Math.Max(topLeft.Y, bottomRight.Y);
+            
+            // Add margin to stay inside the well
+            var margin = 10.0; // 10mm margin from edges
+            minX += margin;
+            maxX -= margin;
+            minY += margin;
+            maxY -= margin;
+            
+            // Ensure we have valid bounds
+            if (maxX <= minX || maxY <= minY)
+            {
+                // Well too small, fall back to simple dip
+                GeneratePaintDipSequence(sb, wipeWell, fit, zUpCmd, feedXY);
+                return;
+            }
+            
+            // Zig-zag parameters
+            const int numPasses = 4; // Number of back-and-forth passes
+            const double wipeFeedRate = 4000; // Moderate speed for wiping
+            var dipDepthCmd = -wipeWell.DipDepth;
+            var stepY = (maxY - minY) / (numPasses * 2 - 1); // Vertical step between zig-zag lines
+            
+            sb.AppendLine($"; === Wipe zig-zag pattern in: {wipeWell.Name} ===");
+            
+            // Move to starting position (top-left of wipe area)
+            var startX = minX;
+            var startY = maxY;
+            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift before moving to wipe area");
+            sb.AppendLine($"G0 X{Fmt(startX)} Y{Fmt(startY)} ; Move to wipe start");
+            sb.AppendLine($"G0 Z{Fmt(dipDepthCmd)} ; Lower onto wipe surface");
+            
+            // Generate zig-zag pattern
+            var currentY = startY;
+            var goingRight = true;
+            
+            for (int pass = 0; pass < numPasses * 2; pass++)
+            {
+                if (goingRight)
+                {
+                    // Move right
+                    sb.AppendLine(pass == 0 
+                        ? $"G1 X{Fmt(maxX)} Y{Fmt(currentY)} F{Fmt(wipeFeedRate)}"
+                        : $"G1 X{Fmt(maxX)} Y{Fmt(currentY)}");
+                }
+                else
+                {
+                    // Move left
+                    sb.AppendLine($"G1 X{Fmt(minX)} Y{Fmt(currentY)}");
+                }
+                
+                // Step down for next pass (except on last pass)
+                if (pass < numPasses * 2 - 1)
+                {
+                    currentY -= stepY;
+                    currentY = Math.Max(currentY, minY); // Don't go below minY
+                    sb.AppendLine($"G1 X{Fmt(goingRight ? maxX : minX)} Y{Fmt(currentY)}");
+                }
+                
+                goingRight = !goingRight;
+            }
+            
+            // Lift from wipe surface
+            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} F{Fmt(feedXY)} ; Lift from wipe surface");
         }
 
         private static List<List<LineStroke>> BuildPaths(List<LineStroke> input, double tol)
@@ -2727,10 +3013,16 @@ namespace NVSPlotter
                 dwellBox.IsEnabled = well != null;
             }
 
-            if (FindName("PaintWellRefreshBox") is TextBox refreshBox)
+            if (FindName("PaintWellRefreshMinBox") is TextBox refreshMinBox)
             {
-                refreshBox.Text = well?.RefreshDistanceMm.ToString("0") ?? "";
-                refreshBox.IsEnabled = well != null;
+                refreshMinBox.Text = well?.RefreshDistanceMinMm.ToString("0") ?? "";
+                refreshMinBox.IsEnabled = well != null;
+            }
+
+            if (FindName("PaintWellRefreshMaxBox") is TextBox refreshMaxBox)
+            {
+                refreshMaxBox.Text = well?.RefreshDistanceMaxMm.ToString("0") ?? "";
+                refreshMaxBox.IsEnabled = well != null;
             }
         }
 
@@ -2829,12 +3121,12 @@ namespace NVSPlotter
                 _paintWellController.ClearAll();
             }
 
-            // Create RGB paint wells - positioned at bottom of canvas, evenly distributed
-            // Size: 180mm x 120mm (3x original), margin from edges
-            const double wellWidth = 180;
-            const double wellHeight = 120;
+            // Create paint wells - positioned at bottom of canvas, evenly distributed
+            // 5 wells: Red, Green, Blue, Wash (black), Wipe (light gray)
+            const double wellWidth = 140;
+            const double wellHeight = 100;
             const double marginFromEdge = 20;
-            const int numWells = 3;
+            const int numWells = 5;
 
             // Calculate spacing to evenly distribute wells across the bottom
             double availableWidth = _doc.WidthMm - (2 * marginFromEdge);
@@ -2847,28 +3139,40 @@ namespace NVSPlotter
             // Position at bottom of canvas
             double startY = _doc.HeightMm - wellHeight - marginFromEdge;
 
-            // Red well (left)
+            // Red well
             _paintWellController.CreateWell(
                 new System.Windows.Rect(marginFromEdge, startY, wellWidth, wellHeight),
                 System.Windows.Media.Colors.Red,
                 "Red");
 
-            // Green well (center)
+            // Green well
             _paintWellController.CreateWell(
-                new System.Windows.Rect(marginFromEdge + wellWidth + spacing, startY, wellWidth, wellHeight),
+                new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 1, startY, wellWidth, wellHeight),
                 System.Windows.Media.Colors.Green,
                 "Green");
 
-            // Blue well (right)
+            // Blue well
             _paintWellController.CreateWell(
                 new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 2, startY, wellWidth, wellHeight),
                 System.Windows.Media.Colors.Blue,
                 "Blue");
 
+            // Wash well (black - for cleaning/washing brush)
+            _paintWellController.CreateWell(
+                new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 3, startY, wellWidth, wellHeight),
+                System.Windows.Media.Colors.Black,
+                "Wash");
+
+            // Wipe well (light gray - for wiping/drying brush)
+            _paintWellController.CreateWell(
+                new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 4, startY, wellWidth, wellHeight),
+                System.Windows.Media.Color.FromRgb(192, 192, 192),
+                "Wipe");
+
             _lastGcode = "";
             UpdatePaintWellsUI();
             RenderAll();
-            AppendLog($"Created RGB paint wells at bottom ({wellWidth}x{wellHeight}mm each).");
+            AppendLog($"Created 5 paint wells at bottom: Red, Green, Blue, Wash, Wipe ({wellWidth}x{wellHeight}mm each).");
         }
 
         private void PaintWellNameBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -2959,7 +3263,7 @@ namespace NVSPlotter
             }
         }
 
-        private void PaintWellRefreshBox_TextChanged(object sender, TextChangedEventArgs e)
+        private void PaintWellRefreshMinBox_TextChanged(object sender, TextChangedEventArgs e)
         {
             if (_suppressPaintWellUIUpdate) return;
             if (sender is not TextBox tb) return;
@@ -2967,7 +3271,20 @@ namespace NVSPlotter
 
             if (double.TryParse(tb.Text, out var value) && value >= 0)
             {
-                _paintWellController.UpdateSelectedWell(refreshDistanceMm: value);
+                _paintWellController.UpdateSelectedWell(refreshDistanceMinMm: value);
+                _lastGcode = "";
+            }
+        }
+
+        private void PaintWellRefreshMaxBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_suppressPaintWellUIUpdate) return;
+            if (sender is not TextBox tb) return;
+            if (_paintWellController.SelectedWell == null) return;
+
+            if (double.TryParse(tb.Text, out var value) && value >= 0)
+            {
+                _paintWellController.UpdateSelectedWell(refreshDistanceMaxMm: value);
                 _lastGcode = "";
             }
         }
@@ -2999,6 +3316,233 @@ namespace NVSPlotter
             _lastGcode = "";
             RenderAll();
             AppendLog($"Applied '{well.Name}' color to {_selectionController.SelectedIndices.Count} stroke(s).");
+        }
+
+        // ===== PROJECT FILE OPERATIONS =====
+
+        private static readonly JsonSerializerOptions _jsonOptions = new()
+        {
+            WriteIndented = true,
+            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+        };
+
+        private void NewProjectBtn_Click(object sender, RoutedEventArgs e)
+        {
+            // Confirm if there are unsaved changes
+            if (_doc.Strokes.Count > 0 || _doc.PaintWells.Count > 0)
+            {
+                var result = MessageBox.Show(
+                    "Create a new project? Any unsaved changes will be lost.",
+                    "New Project",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Question);
+
+                if (result != MessageBoxResult.Yes) return;
+            }
+
+            // Reset document
+            _doc = new PlotDocument(Settings.Default.bedX, Settings.Default.bedY);
+            _undo.Clear();
+            _lastGcode = "";
+            _currentProjectPath = null;
+            _imageService.Clear();
+            _workingAreaManager.Clear();
+            _selectionController.ClearSelection();
+            _paintWellController.ClearAll();
+
+            UpdatePaintWellsUI();
+            UpdateReferenceUiState();
+            UpdateWorkingAreaStatus();
+            UpdateWindowTitle();
+            RenderAll();
+
+            AppendLog("New project created.");
+        }
+
+        private void OpenProjectBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new OpenFileDialog
+            {
+                Filter = "NVS Plotter Project (*.nvsp)|*.nvsp|All files (*.*)|*.*",
+                Title = "Open Project"
+            };
+
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    LoadProjectFromFile(dlg.FileName);
+                }
+                catch (Exception ex)
+                {
+                    AppendLog($"Failed to open project: {ex.Message}");
+                    MessageBox.Show($"Failed to open project:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        private void SaveProjectBtn_Click(object sender, RoutedEventArgs e)
+        {
+            if (string.IsNullOrEmpty(_currentProjectPath))
+            {
+                // No existing path, use Save As
+                SaveAsProjectBtn_Click(sender, e);
+            }
+            else
+            {
+                try
+                {
+                    SaveProjectToFile(_currentProjectPath);
+                }
+                catch (Exception ex)
+                {
+                    AppendLog($"Failed to save project: {ex.Message}");
+                    MessageBox.Show($"Failed to save project:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        private void SaveAsProjectBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var dlg = new SaveFileDialog
+            {
+                Filter = "NVS Plotter Project (*.nvsp)|*.nvsp|All files (*.*)|*.*",
+                Title = "Save Project As",
+                FileName = string.IsNullOrEmpty(_currentProjectPath) 
+                    ? "project.nvsp" 
+                    : System.IO.Path.GetFileName(_currentProjectPath)
+            };
+
+            if (dlg.ShowDialog() == true)
+            {
+                try
+                {
+                    SaveProjectToFile(dlg.FileName);
+                    _currentProjectPath = dlg.FileName;
+                    UpdateWindowTitle();
+                }
+                catch (Exception ex)
+                {
+                    AppendLog($"Failed to save project: {ex.Message}");
+                    MessageBox.Show($"Failed to save project:\n{ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                }
+            }
+        }
+
+        private void SaveProjectToFile(string filePath)
+        {
+            var projectFile = new ProjectFile
+            {
+                Version = 1,
+                WidthMm = _doc.WidthMm,
+                HeightMm = _doc.HeightMm
+            };
+
+            // Convert strokes to serializable format
+            foreach (var stroke in _doc.Strokes)
+            {
+                projectFile.Strokes.Add(new StrokeData
+                {
+                    Ax = stroke.A.X,
+                    Ay = stroke.A.Y,
+                    Bx = stroke.B.X,
+                    By = stroke.B.Y,
+                    PaintWellId = stroke.PaintWellId
+                });
+            }
+
+            // Convert paint wells to serializable format
+            foreach (var well in _doc.PaintWells)
+            {
+                projectFile.PaintWells.Add(new PaintWellData
+                {
+                    Id = well.Id,
+                    Name = well.Name,
+                    ColorA = well.Color.A,
+                    ColorR = well.Color.R,
+                    ColorG = well.Color.G,
+                    ColorB = well.Color.B,
+                    BoundsLeft = well.Bounds.Left,
+                    BoundsTop = well.Bounds.Top,
+                    BoundsWidth = well.Bounds.Width,
+                    BoundsHeight = well.Bounds.Height,
+                    DipDepth = well.DipDepth,
+                    DwellTimeMs = well.DwellTimeMs,
+                    RefreshDistanceMinMm = well.RefreshDistanceMinMm,
+                    RefreshDistanceMaxMm = well.RefreshDistanceMaxMm
+                });
+            }
+
+            var json = JsonSerializer.Serialize(projectFile, _jsonOptions);
+            File.WriteAllText(filePath, json, Encoding.UTF8);
+
+            AppendLog($"Project saved: {filePath} ({_doc.Strokes.Count} strokes, {_doc.PaintWells.Count} paint wells)");
+        }
+
+        private void LoadProjectFromFile(string filePath)
+        {
+            var json = File.ReadAllText(filePath, Encoding.UTF8);
+            var projectFile = JsonSerializer.Deserialize<ProjectFile>(json, _jsonOptions);
+
+            if (projectFile == null)
+            {
+                throw new InvalidOperationException("Failed to parse project file.");
+            }
+
+            // Create new document with loaded dimensions
+            _doc = new PlotDocument(projectFile.WidthMm, projectFile.HeightMm);
+
+            // Load paint wells first (strokes reference them by ID)
+            foreach (var wellData in projectFile.PaintWells)
+            {
+                var well = new PaintWell
+                {
+                    Id = wellData.Id,
+                    Name = wellData.Name,
+                    Color = Color.FromArgb(wellData.ColorA, wellData.ColorR, wellData.ColorG, wellData.ColorB),
+                    Bounds = new Rect(wellData.BoundsLeft, wellData.BoundsTop, wellData.BoundsWidth, wellData.BoundsHeight),
+                    DipDepth = wellData.DipDepth,
+                    DwellTimeMs = wellData.DwellTimeMs,
+                    RefreshDistanceMinMm = wellData.RefreshDistanceMinMm,
+                    RefreshDistanceMaxMm = wellData.RefreshDistanceMaxMm
+                };
+                _doc.PaintWells.Add(well);
+            }
+
+            // Load strokes
+            foreach (var strokeData in projectFile.Strokes)
+            {
+                var stroke = new LineStroke(
+                    new PointMm(strokeData.Ax, strokeData.Ay),
+                    new PointMm(strokeData.Bx, strokeData.By),
+                    strokeData.PaintWellId);
+                _doc.Strokes.Add(stroke);
+            }
+
+            // Reset state
+            _undo.Clear();
+            _lastGcode = "";
+            _currentProjectPath = filePath;
+            _imageService.Clear();
+            _workingAreaManager.Clear();
+            _selectionController.ClearSelection();
+
+            // Update UI
+            UpdatePaintWellsUI();
+            UpdateReferenceUiState();
+            UpdateWorkingAreaStatus();
+            UpdateWindowTitle();
+            RenderAll();
+
+            AppendLog($"Project loaded: {filePath} ({_doc.Strokes.Count} strokes, {_doc.PaintWells.Count} paint wells)");
+        }
+
+        private void UpdateWindowTitle()
+        {
+            var projectName = string.IsNullOrEmpty(_currentProjectPath)
+                ? "Untitled"
+                : System.IO.Path.GetFileName(_currentProjectPath);
+            Title = $"NVS Plotter - {projectName}";
         }
 
     }

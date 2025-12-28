@@ -14,7 +14,7 @@ namespace NVSPlotter.Models;
 public sealed class PaintWell
 {
     /// <summary>Unique identifier for the paint well</summary>
-    public Guid Id { get; } = Guid.NewGuid();
+    public Guid Id { get; init; } = Guid.NewGuid();
 
     /// <summary>Display name for the paint well (e.g., "Red", "Blue #1")</summary>
     public string Name { get; set; } = "Untitled";
@@ -31,8 +31,20 @@ public sealed class PaintWell
     /// <summary>Dwell time at dip depth (ms) - how long to hold in paint</summary>
     public int DwellTimeMs { get; set; } = 500;
 
-    /// <summary>Distance in mm before requiring paint refresh (0 = manual/never)</summary>
-    public double RefreshDistanceMm { get; set; } = 500.0;
+    /// <summary>Minimum distance in mm before requiring paint refresh (0 = manual/never)</summary>
+    public double RefreshDistanceMinMm { get; set; } = 50.0;
+
+    /// <summary>Maximum distance in mm before requiring paint refresh</summary>
+    public double RefreshDistanceMaxMm { get; set; } = 150.0;
+
+    /// <summary>
+    /// Legacy property for backward compatibility. Gets/sets the max refresh distance.
+    /// </summary>
+    public double RefreshDistanceMm
+    {
+        get => RefreshDistanceMaxMm;
+        set => RefreshDistanceMaxMm = value;
+    }
 
     /// <summary>Gets the center point of the paint well bounds</summary>
     public PointMm Center => new(Bounds.Left + Bounds.Width / 2.0, Bounds.Top + Bounds.Height / 2.0);

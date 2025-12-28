@@ -25,12 +25,15 @@ using Brushes = System.Windows.Media.Brushes;
 using Color = System.Windows.Media.Color;
 using Rectangle = System.Windows.Shapes.Rectangle;
 using Application = System.Windows.Application;
+using Panel = System.Windows.Controls.Panel;
+using Size = System.Windows.Size;
 
 namespace NVSPlotter.Services
 {
     internal class RulerFactory
     {
         private MainWindow mw = (MainWindow)Application.Current.MainWindow;
+        
         public void DrawRulers()
         {
             if (mw.RulerCanvas == null) return;
@@ -145,6 +148,121 @@ namespace NVSPlotter.Services
 
             for (double y = 0; y <= mw._doc.HeightMm; y += minorStep)
                 AddHorizontalTick(y);
+                
+            // Draw home corner indicator
+            DrawHomeCornerIndicator(rulerThickness);
+        }
+        
+        /// <summary>
+        /// Draws a home indicator icon at the appropriate corner based on the home corner selection.
+        /// </summary>
+        private void DrawHomeCornerIndicator(double rulerThickness)
+        {
+            // Get home corner from combo box selection
+            int selectedIndex = mw.HomeCornerCombo?.SelectedIndex ?? 0;
+            
+            // Determine which corner based on selection:
+            // 0 = Top Right (common iDraw)
+            // 1 = Top Left
+            // 2 = Bottom Right
+            // 3 = Bottom Left
+            bool isRight = selectedIndex == 0 || selectedIndex == 2;
+            bool isTop = selectedIndex == 0 || selectedIndex == 1;
+            
+            // Calculate corner position
+            double docWidth = mw._doc.WidthMm;
+            double docHeight = mw._doc.HeightMm;
+            
+            // Home indicator size and offset
+            const double indicatorSize = 30.0;
+            const double cornerOffset = 10.0;
+            
+            double centerX, centerY;
+            
+            if (isRight)
+                centerX = rulerThickness + docWidth - cornerOffset - indicatorSize / 2;
+            else
+                centerX = rulerThickness + cornerOffset + indicatorSize / 2;
+                
+            if (isTop)
+                centerY = rulerThickness + cornerOffset + indicatorSize / 2;
+            else
+                centerY = rulerThickness + docHeight - cornerOffset - indicatorSize / 2;
+            
+            // Draw home indicator - a house-like icon or circle with 'H'
+            // Outer circle (border)
+            var outerCircle = new Ellipse
+            {
+                Width = indicatorSize,
+                Height = indicatorSize,
+                Fill = new SolidColorBrush(Color.FromArgb(180, 255, 255, 255)),
+                Stroke = Brushes.DarkGreen,
+                StrokeThickness = 3,
+                SnapsToDevicePixels = true,
+                IsHitTestVisible = false
+            };
+            Canvas.SetLeft(outerCircle, centerX - indicatorSize / 2);
+            Canvas.SetTop(outerCircle, centerY - indicatorSize / 2);
+            Panel.SetZIndex(outerCircle, 20);
+            mw.RulerCanvas.Children.Add(outerCircle);
+            
+            // Inner "H" label for Home
+            var homeLabel = new TextBlock
+            {
+                Text = "⌂",  // House symbol (Unicode)
+                FontSize = 18,
+                FontWeight = FontWeights.Bold,
+                Foreground = Brushes.DarkGreen,
+                IsHitTestVisible = false,
+                TextAlignment = TextAlignment.Center
+            };
+            
+            // Measure the text to center it properly
+            homeLabel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var textSize = homeLabel.DesiredSize;
+            
+            Canvas.SetLeft(homeLabel, centerX - textSize.Width / 2);
+            Canvas.SetTop(homeLabel, centerY - textSize.Height / 2 - 1); // Slight adjustment for visual centering
+            Panel.SetZIndex(homeLabel, 21);
+            mw.RulerCanvas.Children.Add(homeLabel);
+            
+            // Add corner lines pointing to the exact corner
+            double cornerX = isRight ? rulerThickness + docWidth : rulerThickness;
+            double cornerY = isTop ? rulerThickness : rulerThickness + docHeight;
+            
+            // Draw small corner bracket lines
+            const double bracketLength = 15.0;
+            const double bracketOffset = 3.0;
+            
+            // Horizontal part of bracket
+            var hLine = new Line
+            {
+                X1 = cornerX + (isRight ? -bracketOffset : bracketOffset),
+                Y1 = cornerY + (isTop ? bracketOffset : -bracketOffset),
+                X2 = cornerX + (isRight ? -bracketLength : bracketLength),
+                Y2 = cornerY + (isTop ? bracketOffset : -bracketOffset),
+                Stroke = Brushes.DarkGreen,
+                StrokeThickness = 2.5,
+                SnapsToDevicePixels = true,
+                IsHitTestVisible = false
+            };
+            Panel.SetZIndex(hLine, 20);
+            mw.RulerCanvas.Children.Add(hLine);
+            
+            // Vertical part of bracket
+            var vLine = new Line
+            {
+                X1 = cornerX + (isRight ? -bracketOffset : bracketOffset),
+                Y1 = cornerY + (isTop ? bracketOffset : -bracketOffset),
+                X2 = cornerX + (isRight ? -bracketOffset : bracketOffset),
+                Y2 = cornerY + (isTop ? bracketLength : -bracketLength),
+                Stroke = Brushes.DarkGreen,
+                StrokeThickness = 2.5,
+                SnapsToDevicePixels = true,
+                IsHitTestVisible = false
+            };
+            Panel.SetZIndex(vLine, 20);
+            mw.RulerCanvas.Children.Add(vLine);
         }
 
         public static TextBlock CreateRulerLabel(double value, bool rotate)
