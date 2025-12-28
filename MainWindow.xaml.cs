@@ -1086,10 +1086,42 @@ namespace NVSPlotter
                 if (_consoleWindow.Owner == null)
                 {
                     _consoleWindow.Owner = this;
-                    // Position to the right of the main window
-                    _consoleWindow.Left = Left + Width + 10;
-                    _consoleWindow.Top = Top;
                 }
+                
+                // Position to the right of the main window, but ensure it's on-screen
+                var desiredLeft = Left + Width + 10;
+                var desiredTop = Top;
+                
+                // Get the working area of the screen (excludes taskbar)
+                var screen = System.Windows.SystemParameters.WorkArea;
+                
+                // If the console would be off the right edge, position it to the left of the main window
+                if (desiredLeft + _consoleWindow.Width > screen.Right)
+                {
+                    desiredLeft = Left - _consoleWindow.Width - 10;
+                }
+                
+                // If still off-screen (left edge), just put it at the left edge of the screen
+                if (desiredLeft < screen.Left)
+                {
+                    desiredLeft = screen.Left;
+                }
+                
+                // Ensure top is on-screen
+                if (desiredTop < screen.Top)
+                {
+                    desiredTop = screen.Top;
+                }
+                
+                // Ensure bottom is on-screen
+                if (desiredTop + _consoleWindow.Height > screen.Bottom)
+                {
+                    desiredTop = screen.Bottom - _consoleWindow.Height;
+                }
+                
+                _consoleWindow.Left = desiredLeft;
+                _consoleWindow.Top = desiredTop;
+                
                 _consoleWindow.Show();
                 _consoleWindow.Activate();
             }
@@ -2136,7 +2168,9 @@ namespace NVSPlotter
                 foreach (var line in lines)
                 {
                     token.ThrowIfCancellationRequested();
-                    await _grbl!.SendLineWaitOkAsync(line, TimeSpan.FromSeconds(20), token);
+                    // Use generous timeout - long moves and dwell commands can take a while
+                    // Some firmware doesn't send 'ok' until the move is complete
+                    await _grbl!.SendLineWaitOkAsync(line, TimeSpan.FromSeconds(120), token);
                     sent++;
                     if (sent % 25 == 0) AppendLog($"Progress: {sent}/{lines.Count}");
                 }
@@ -2356,36 +2390,90 @@ namespace NVSPlotter
                     {
                         var endWork = BedToWork(DocToBed(seg.B, fit));
                         
-                        if (firstMove)
-                        {
-                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
-                            firstMove = false;
-                        }
-                        else
-                        {
-                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
-                        }
-
-                        // Calculate stroke length
-                        var strokeLength = Math.Sqrt(
+                        // Calculate total stroke length
+                        var totalStrokeLength = Math.Sqrt(
                             Math.Pow(endWork.X - lastPosition.X, 2) + 
                             Math.Pow(endWork.Y - lastPosition.Y, 2));
 
-                        lastPosition = endWork;
-
-                        // Check if we need to refresh paint based on distance traveled
-                        if (well != null && well.RefreshDistanceMm > 0)
+                        // For paint refresh: check if we need to break this segment into smaller parts
+                        if (well != null && well.RefreshDistanceMm > 0 && totalStrokeLength > 0.1)
                         {
-                            distancePerWell[well.Id] += strokeLength;
-                            if (distancePerWell[well.Id] >= well.RefreshDistanceMm)
+                            // Calculate how much distance remains before refresh is needed
+                            var distanceUntilRefresh = well.RefreshDistanceMm - distancePerWell[well.Id];
+                            
+                            // If this segment would exceed the refresh distance, break it up
+                            var segmentStart = lastPosition;
+                            var segmentEnd = endWork;
+                            var remainingLength = totalStrokeLength;
+                            
+                            while (remainingLength > 0.1)
                             {
-                                // Lift, go dip, return, lower
-                                sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift for paint refresh (traveled {distancePerWell[well.Id]:F1}mm)");
-                                GeneratePaintDipSequence(sb, well, fit, zUpCmd, feedXY);
-                                sb.AppendLine($"G0 X{Fmt(lastPosition.X)} Y{Fmt(lastPosition.Y)} ; Return to last position");
-                                sb.AppendLine($"G0 Z{Fmt(zDownCmd)} ; Lower to continue drawing");
-                                distancePerWell[well.Id] = 0;
+                                distanceUntilRefresh = well.RefreshDistanceMm - distancePerWell[well.Id];
+                                
+                                if (remainingLength <= distanceUntilRefresh)
+                                {
+                                    // Can complete this segment without refresh
+                                    if (firstMove)
+                                    {
+                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} F{Fmt(feedXY)}");
+                                        firstMove = false;
+                                    }
+                                    else
+                                    {
+                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)}");
+                                    }
+                                    distancePerWell[well.Id] += remainingLength;
+                                    lastPosition = segmentEnd;
+                                    remainingLength = 0;
+                                }
+                                else
+                                {
+                                    // Need to stop partway through for refresh
+                                    var ratio = distanceUntilRefresh / remainingLength;
+                                    var breakPoint = new PointMm(
+                                        segmentStart.X + (segmentEnd.X - segmentStart.X) * ratio,
+                                        segmentStart.Y + (segmentEnd.Y - segmentStart.Y) * ratio);
+                                    
+                                    // Draw to the break point
+                                    if (firstMove)
+                                    {
+                                        sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} F{Fmt(feedXY)}");
+                                        firstMove = false;
+                                    }
+                                    else
+                                    {
+                                        sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)}");
+                                    }
+                                    
+                                    distancePerWell[well.Id] += distanceUntilRefresh;
+                                    
+                                    // Refresh paint
+                                    sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift for paint refresh (traveled {distancePerWell[well.Id]:F1}mm)");
+                                    GeneratePaintDipSequence(sb, well, fit, zUpCmd, feedXY);
+                                    sb.AppendLine($"G0 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} ; Return to last position");
+                                    sb.AppendLine($"G0 Z{Fmt(zDownCmd)} ; Lower to continue drawing");
+                                    distancePerWell[well.Id] = 0;
+                                    
+                                    // Update for next iteration
+                                    remainingLength -= distanceUntilRefresh;
+                                    segmentStart = breakPoint;
+                                    lastPosition = breakPoint;
+                                }
                             }
+                        }
+                        else
+                        {
+                            // No paint well or no refresh needed - just draw the segment
+                            if (firstMove)
+                            {
+                                sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
+                                firstMove = false;
+                            }
+                            else
+                            {
+                                sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
+                            }
+                            lastPosition = endWork;
                         }
                     }
 
@@ -2396,20 +2484,28 @@ namespace NVSPlotter
 
         private void GeneratePaintDipSequence(StringBuilder sb, PaintWell well, FitSpec fit, double zUpCmd, double feedXY)
         {
-            var wellCenter = BedToWork(DocToBed(well.Center, fit));
-            var dipDepthCmd = -(well.DipDepth); // Negate for hardware
+            // Paint wells should NOT be clamped to safe margin - they're physical locations
+            // that may be outside the drawing area
+            var wellCenter = BedToWork(DocToBed(well.Center, fit, clamp: false));
+            // DipDepth is how deep to go into paint (positive value like 5mm)
+            // We negate it to get the Z command (negative Z = down into paint)
+            var dipDepthCmd = -well.DipDepth;
 
             sb.AppendLine($"; Dip in paint well: {well.Name}");
+            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift before moving to paint well");
             sb.AppendLine($"G0 X{Fmt(wellCenter.X)} Y{Fmt(wellCenter.Y)} ; Move to paint well");
             sb.AppendLine($"G0 Z{Fmt(dipDepthCmd)} ; Dip into paint");
             
             if (well.DwellTimeMs > 0)
             {
-                // G4 P<milliseconds> for dwell
-                sb.AppendLine($"G4 P{well.DwellTimeMs} ; Dwell in paint");
+                // GRBL 1.1 uses G4 P<seconds> (not milliseconds!)
+                // Convert ms to seconds for the dwell command
+                var dwellSeconds = well.DwellTimeMs / 1000.0;
+                sb.AppendLine($"G4 P{Fmt(dwellSeconds)} ; Dwell in paint ({well.DwellTimeMs}ms)");
             }
             
-            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift from paint well");
+            // Re-assert feed rate after dwell to avoid "Feed rate not yet set" errors
+            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} F{Fmt(feedXY)} ; Lift from paint well");
         }
 
         private static List<List<LineStroke>> BuildPaths(List<LineStroke> input, double tol)
@@ -2467,32 +2563,45 @@ namespace NVSPlotter
         // Map doc point into bed coordinates (origin = bed min/min corner), inside margins.
         private PointMm DocToBed(PointMm p, FitSpec fit)
         {
+            return DocToBed(p, fit, clamp: true);
+        }
+
+        private PointMm DocToBed(PointMm p, FitSpec fit, bool clamp)
+        {
             var m = fit.Margin;
             var s = fit.Scale;
 
-            return fit.Mode switch
+            double x, y;
+
+            switch (fit.Mode)
             {
-                FitMode.None =>
-                    new PointMm(
-                        ClampBedX(m + p.X * s),
-                        ClampBedY(m + p.Y * s)
-                    ),
+                case FitMode.RotateCW:
+                    // CW rotation about doc:
+                    // x' = y
+                    // y' = docW - x
+                    x = m + p.Y * s;
+                    y = m + (fit.DocW - p.X) * s;
+                    break;
 
-                // CW rotation about doc:
-                // x' = y
-                // y' = docW - x
-                FitMode.RotateCW =>
-                    new PointMm(
-                        ClampBedX(m + p.Y * s),
-                        ClampBedY(m + (fit.DocW - p.X) * s)
-                    ),
+                default:
+                    x = m + p.X * s;
+                    y = m + p.Y * s;
+                    break;
+            }
 
-                _ =>
-                    new PointMm(
-                        ClampBedX(m + p.X * s),
-                        ClampBedY(m + p.Y * s)
-                    )
-            };
+            if (clamp)
+            {
+                x = ClampBedX(x);
+                y = ClampBedY(y);
+            }
+            else
+            {
+                // Still clamp to physical bed limits (0 to bed size), just not the safe margin
+                x = Math.Clamp(x, 0, _bedX);
+                y = Math.Clamp(y, 0, _bedY);
+            }
+
+            return new PointMm(x, y);
         }
 
         private double ClampBedX(double x) => Math.Clamp(x, SafeMarginMm, _bedX - SafeMarginMm);
@@ -2720,36 +2829,46 @@ namespace NVSPlotter
                 _paintWellController.ClearAll();
             }
 
-            // Create RGB paint wells - positioned at top-left area of canvas
-            // Default size: 60mm x 40mm, spaced 10mm apart
-            const double wellWidth = 60;
-            const double wellHeight = 40;
-            const double spacing = 10;
-            const double startX = 20;
-            const double startY = 20;
+            // Create RGB paint wells - positioned at bottom of canvas, evenly distributed
+            // Size: 180mm x 120mm (3x original), margin from edges
+            const double wellWidth = 180;
+            const double wellHeight = 120;
+            const double marginFromEdge = 20;
+            const int numWells = 3;
 
-            // Red well
+            // Calculate spacing to evenly distribute wells across the bottom
+            double availableWidth = _doc.WidthMm - (2 * marginFromEdge);
+            double totalWellsWidth = numWells * wellWidth;
+            double spacing = (availableWidth - totalWellsWidth) / (numWells - 1);
+            
+            // If spacing is negative, wells are too big - reduce spacing to minimum
+            if (spacing < 10) spacing = 10;
+
+            // Position at bottom of canvas
+            double startY = _doc.HeightMm - wellHeight - marginFromEdge;
+
+            // Red well (left)
             _paintWellController.CreateWell(
-                new System.Windows.Rect(startX, startY, wellWidth, wellHeight),
+                new System.Windows.Rect(marginFromEdge, startY, wellWidth, wellHeight),
                 System.Windows.Media.Colors.Red,
                 "Red");
 
-            // Green well (below red)
+            // Green well (center)
             _paintWellController.CreateWell(
-                new System.Windows.Rect(startX, startY + wellHeight + spacing, wellWidth, wellHeight),
+                new System.Windows.Rect(marginFromEdge + wellWidth + spacing, startY, wellWidth, wellHeight),
                 System.Windows.Media.Colors.Green,
                 "Green");
 
-            // Blue well (below green)
+            // Blue well (right)
             _paintWellController.CreateWell(
-                new System.Windows.Rect(startX, startY + (wellHeight + spacing) * 2, wellWidth, wellHeight),
+                new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 2, startY, wellWidth, wellHeight),
                 System.Windows.Media.Colors.Blue,
                 "Blue");
 
             _lastGcode = "";
             UpdatePaintWellsUI();
             RenderAll();
-            AppendLog("Created RGB paint wells (Red, Green, Blue).");
+            AppendLog($"Created RGB paint wells at bottom ({wellWidth}x{wellHeight}mm each).");
         }
 
         private void PaintWellNameBox_TextChanged(object sender, TextChangedEventArgs e)
