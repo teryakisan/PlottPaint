@@ -24,7 +24,7 @@ public sealed class ShapeDrawingController
 
     private const double MIN_DIST = 0.25;
     private const int BEZIER_SEGMENTS = 48;
-    private const double HANDLE_SIZE = 8.0;
+    private const double HANDLE_SIZE = 10.0;
     private static int CIRCLE_SEGMENTS => Settings.Default.circleSegments;
 
     private readonly Canvas _canvas;
