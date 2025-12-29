@@ -65,6 +65,14 @@ public sealed class WorkingAreaManager
         IsDragging = false;
     }
 
+    public void SetArea(Rect area)
+    {
+        DefinedArea = area;
+        PreviewArea = null;
+        IsDefining = false;
+        IsDragging = false;
+    }
+
     public string GetStatusText()
     {
         if (IsDefining)

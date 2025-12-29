@@ -40,12 +40,14 @@
                                     </ComboBox>
                                 </StackPanel>
 
-                                <StackPanel x:Name="Tools" Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="Tool:" Width="90" VerticalAlignment="Center"/>
+                                <StackPanel x:Name="Tools" Orientation="Horizontal" Margin="0,0,0,8" Visibility="Collapsed">
+                                    <!-- Tool selection moved to floating Tools panel -->
+                                    <TextBlock Text="Tool:" Width="110" VerticalAlignment="Center"/>
                                     <ComboBox x:Name="ToolCombo" Width="203" SelectedValuePath="Tag" SelectionChanged="ToolCombo_SelectionChanged">
                                         <ComboBoxItem Content="Paint Well Tool" Tag="PaintWell"  IsSelected="True"/>
                                         <ComboBoxItem Content="Line" Tag="Line"/>
                                         <ComboBoxItem Content="Pan (Middle Mouse also works)" Tag="Pan"/>
+                                        <ComboBoxItem Content="Zoom Tool" Tag="Zoom"/>
                                         <ComboBoxItem Content="Rectangle Tool" Tag="Rectangle"/>
                                         <ComboBoxItem Content="Circle Tool" Tag="Circle"/>
                                         <ComboBoxItem Content="Polyline Tool" Tag="Polyline"/>

@@ -95,6 +95,13 @@ namespace NVSPlotter
         private double _panStartH;
         private double _panStartV;
 
+        // Zoom tool drag state
+        private bool _isZoomDragging;
+        private Point _zoomDragStart;
+        private double _zoomDragStartZoom;
+        private Point _zoomDragCanvasPoint; // Point on canvas to zoom around
+        private Point _zoomDragViewportOffset; // Where in viewport the click occurred
+
         // G-code cache
         private string _lastGcode = "";
 
@@ -123,6 +130,7 @@ namespace NVSPlotter
 
         private readonly DispatcherTimer _filterThrottle;
         private ConsoleWindow? _consoleWindow;
+        private ToolsWindow? _toolsWindow;
 
         // Project file state
         private string? _currentProjectPath;
@@ -188,6 +196,7 @@ namespace NVSPlotter
              UpdateConnStatus();
              InitializeSafeMarginBox();
              InitializeConsoleWindow();
+             InitializeToolsWindow();
              UpdatePaintWellsUI();
         }
 
@@ -622,6 +631,48 @@ namespace NVSPlotter
             UpdateZoomHost();
         }
 
+        /// <summary>
+        /// Zooms the canvas while keeping a specific point (in canvas coordinates) visually stationary
+        /// at the same viewport location where the user clicked.
+        /// </summary>
+        private void ZoomAroundPoint(double newZoom, Point canvasPoint)
+        {
+            if (newZoom <= 0) newZoom = ZoomSlider.Minimum;
+            newZoom = Math.Clamp(newZoom, ZoomSlider.Minimum, ZoomSlider.Maximum);
+
+            var oldZoom = _zoom.ScaleX;
+            
+            // Skip tiny changes to reduce jitter
+            if (Math.Abs(oldZoom - newZoom) < 0.005) return;
+
+            // Account for canvas padding/margin
+            const double canvasPadding = 20.0;
+
+            // Calculate where the canvas point now appears in scaled coordinates (including padding)
+            var scaledCanvasX = (canvasPoint.X * newZoom) + (canvasPadding * newZoom);
+            var scaledCanvasY = (canvasPoint.Y * newZoom) + (canvasPadding * newZoom);
+
+            // The scroll offset needed to put that point at the stored viewport position
+            var newScrollX = scaledCanvasX - _zoomDragViewportOffset.X;
+            var newScrollY = scaledCanvasY - _zoomDragViewportOffset.Y;
+
+            // Clamp to valid range (can't scroll to negative)
+            newScrollX = Math.Max(0, newScrollX);
+            newScrollY = Math.Max(0, newScrollY);
+
+            // Apply the new zoom
+            _zoom.ScaleX = newZoom;
+            _zoom.ScaleY = newZoom;
+            ZoomSlider.Value = newZoom;
+            if (ZoomLabel != null) ZoomLabel.Text = $"{(int)Math.Round(newZoom * 100)}%";
+
+            UpdateZoomHost();
+
+            // Apply scroll immediately for responsiveness
+            CanvasScroll.ScrollToHorizontalOffset(newScrollX);
+            CanvasScroll.ScrollToVerticalOffset(newScrollY);
+        }
+
         // ----------------------------
         // Canvas: Draw / Pan
         // ----------------------------
@@ -655,6 +706,11 @@ namespace NVSPlotter
             if (_isPanning)
             {
                 _isPanning = false;
+                DrawCanvas.ReleaseMouseCapture();
+            }
+            if (_isZoomDragging)
+            {
+                _isZoomDragging = false;
                 DrawCanvas.ReleaseMouseCapture();
             }
             if (_workingAreaManager.IsDragging)
@@ -718,6 +774,24 @@ namespace NVSPlotter
                 var dy = cur.Y - _panStartMouse.Y;
                 CanvasScroll.ScrollToHorizontalOffset(_panStartH - dx);
                 CanvasScroll.ScrollToVerticalOffset(_panStartV - dy);
+                e.Handled = true;
+                return;
+            }
+
+            // Zoom tool dragging - drag up to zoom in, down to zoom out
+            if (_isZoomDragging && e.LeftButton == MouseButtonState.Pressed)
+            {
+                var cur = e.GetPosition(CanvasScroll);
+                var dy = _zoomDragStart.Y - cur.Y; // Inverted: drag up = positive = zoom in
+                
+                // Sensitivity: 200 pixels of drag = double/half zoom
+                const double sensitivity = 200.0;
+                var zoomFactor = 1.0 + (dy / sensitivity);
+                var newZoom = Math.Clamp(_zoomDragStartZoom * zoomFactor, ZoomSlider.Minimum, ZoomSlider.Maximum);
+                
+                // Apply zoom centered on the original mouse position
+                ZoomAroundPoint(newZoom, _zoomDragCanvasPoint);
+                
                 e.Handled = true;
                 return;
             }
@@ -809,6 +883,21 @@ namespace NVSPlotter
 
             if (tool == ToolMode.Pan || _isPanning) return; // Pan tool
 
+            // Zoom tool - begin zoom drag
+            if (tool == ToolMode.Zoom)
+            {
+                _isZoomDragging = true;
+                _zoomDragStart = e.GetPosition(CanvasScroll);
+                _zoomDragStartZoom = ZoomSlider.Value;
+                // Store the canvas point we're zooming around (mouse position on canvas)
+                _zoomDragCanvasPoint = e.GetPosition(DrawCanvas);
+                // Store where in the viewport the click occurred (relative to viewport, not content)
+                _zoomDragViewportOffset = _zoomDragStart;
+                DrawCanvas.CaptureMouse();
+                e.Handled = true;
+                return;
+            }
+
             _shapeController.BeginDraw(tool, point);
             e.Handled = true;
         }
@@ -816,6 +905,15 @@ namespace NVSPlotter
         private void DrawCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
             RemoveSnapIndicator();
+
+            // Zoom tool drag complete
+            if (_isZoomDragging)
+            {
+                _isZoomDragging = false;
+                DrawCanvas.ReleaseMouseCapture();
+                e.Handled = true;
+                return;
+            }
 
             if (_imageManipulator.IsManipulating)
             {
@@ -874,6 +972,13 @@ namespace NVSPlotter
 
         private ToolMode GetCurrentTool()
         {
+            // Use the floating tools window if available
+            if (_toolsWindow != null)
+            {
+                return _toolsWindow.CurrentTool;
+            }
+
+            // Fallback to combo box (for backward compatibility)
             var value = ToolCombo?.SelectedValue;
             if (value is ToolMode mode)
             {
@@ -1074,6 +1179,81 @@ namespace NVSPlotter
             
             // Close console window when main window closes
             Closed += (s, e) => _consoleWindow?.ForceClose();
+        }
+
+        private void InitializeToolsWindow()
+        {
+            _toolsWindow = new ToolsWindow(OnToolSelected);
+            
+            // Close tools window when main window closes
+            Closed += (s, e) => _toolsWindow?.ForceClose();
+            
+            // Show the tools window when main window is loaded
+            Loaded += (s, e) =>
+            {
+                if (_toolsWindow != null)
+                {
+                    _toolsWindow.Owner = this;
+                    _toolsWindow.Show();
+                }
+            };
+        }
+
+        /// <summary>
+        /// Called when a tool is selected from the floating tools panel.
+        /// </summary>
+        private void OnToolSelected(ToolMode tool)
+        {
+            // Handle tool change logic (same as ToolCombo_SelectionChanged)
+            if (_measurementOverlay != null)
+            {
+                if (tool != ToolMode.Measure && (_measurementOverlay.IsMeasuring || _measurementOverlay.HasMeasurement))
+                {
+                    _measurementOverlay.Reset();
+                }
+            }
+
+            if (tool != ToolMode.Polyline)
+            {
+                _shapeController.FinishPolyline();
+            }
+
+            if (tool != ToolMode.Bezier && _shapeController.IsBezierActive)
+            {
+                _shapeController.CancelBezier();
+            }
+
+            if (_shapeController.IsDrawing && tool != ToolMode.Polyline && tool != ToolMode.Bezier)
+            {
+                _shapeController.CancelAll();
+            }
+
+            // Clear selection when switching away from Select tool
+            if (tool != ToolMode.Select && _selectionController.HasSelection)
+            {
+                _selectionController.ClearSelection();
+            }
+
+            // Cancel paint well operations when switching away
+            if (tool != ToolMode.PaintWell && (_paintWellController.IsCreating || _paintWellController.IsDragging))
+            {
+                _paintWellController.Cancel();
+            }
+
+            // Sync the combo box for backward compatibility
+            if (ToolCombo != null)
+            {
+                foreach (ComboBoxItem item in ToolCombo.Items)
+                {
+                    if (item.Tag?.ToString()?.Equals(tool.ToString(), StringComparison.OrdinalIgnoreCase) == true)
+                    {
+                        ToolCombo.SelectedItem = item;
+                        break;
+                    }
+                }
+            }
+
+            AppendLog($"Tool: {tool}");
         }
 
         private void ShowConsoleBtn_Click(object sender, RoutedEventArgs e)
@@ -1444,6 +1624,13 @@ namespace NVSPlotter
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // Tool keyboard shortcuts (when not in a text box)
+            if (e.OriginalSource is not TextBox && _toolsWindow?.HandleKeyboardShortcut(e.Key, Keyboard.Modifiers) == true)
+            {
+                e.Handled = true;
+                return;
+            }
+
             // Selection tool: Escape cancels, Delete removes selected strokes
             if (GetCurrentTool() == ToolMode.Select)
             {
@@ -3473,6 +3660,53 @@ namespace NVSPlotter
                 });
             }
 
+            // Save settings
+            projectFile.Settings = new ProjectSettings
+            {
+                // Document settings
+                PagePresetIndex = PagePresetCombo?.SelectedIndex ?? 0,
+                HomeCornerIndex = HomeCornerCombo?.SelectedIndex ?? 0,
+
+                // Snap settings
+                SnapEnabled = (FindName("SnapEnabledCheck") as CheckBox)?.IsChecked ?? true,
+                SnapRadius = ParseDouble((FindName("SnapRadiusBox") as TextBox)?.Text, 5.0),
+
+                // Grid settings
+                ShowGrid = (FindName("ShowGridCheck") as CheckBox)?.IsChecked ?? true,
+                SnapToGrid = (FindName("SnapToGridCheck") as CheckBox)?.IsChecked ?? true,
+                GridSpacing = ParseDouble((FindName("GridSpacingBox") as TextBox)?.Text, 5.0),
+
+                // View settings
+                Zoom = ZoomSlider?.Value ?? 0.6,
+                CanvasRotation = _canvasRotation.Angle,
+
+                // Painting mode settings
+                PaintModeEnabled = (FindName("PaintModeEnabledCheck") as CheckBox)?.IsChecked ?? false,
+                AutoWashWipe = (FindName("AutoWashWipeCheck") as CheckBox)?.IsChecked ?? true,
+
+                // G-code settings
+                FeedXY = ParseDouble(FeedXYBox?.Text, 3000),
+                ZUp = ParseDouble(ZUpBox?.Text, 10),
+                ZDown = ParseDouble(ZDownBox?.Text, 2),
+                SafeMargin = ParseDouble((FindName("SafeMarginBox") as TextBox)?.Text, 50),
+                ShowMarginOverlay = (FindName("ShowMarginOverlayCheck") as CheckBox)?.IsChecked ?? true,
+                OptimizeStrokes = OptimizeCheck?.IsChecked ?? false,
+                StartGcode = (FindName("StartGcodeBox") as TextBox)?.Text ?? "",
+                EndGcode = (FindName("EndGcodeBox") as TextBox)?.Text ?? ""
+            };
+
+            // Save working area if defined
+            if (_workingAreaManager.DefinedArea is Rect area)
+            {
+                projectFile.Settings.WorkingArea = new WorkingAreaData
+                {
+                    Left = area.Left,
+                    Top = area.Top,
+                    Width = area.Width,
+                    Height = area.Height
+                };
+            }
+
             var json = JsonSerializer.Serialize(projectFile, _jsonOptions);
             File.WriteAllText(filePath, json, Encoding.UTF8);
 
@@ -3519,12 +3753,57 @@ namespace NVSPlotter
                 _doc.Strokes.Add(stroke);
             }
 
+            // Load settings (with null checks for backward compatibility)
+            var settings = projectFile.Settings ?? new ProjectSettings();
+
+            // Document settings
+            if (PagePresetCombo != null) PagePresetCombo.SelectedIndex = settings.PagePresetIndex;
+            if (HomeCornerCombo != null) HomeCornerCombo.SelectedIndex = settings.HomeCornerIndex;
+
+            // Snap settings
+            if (FindName("SnapEnabledCheck") is CheckBox snapCheck) snapCheck.IsChecked = settings.SnapEnabled;
+            if (FindName("SnapRadiusBox") is TextBox snapRadiusBox) snapRadiusBox.Text = settings.SnapRadius.ToString(CultureInfo.InvariantCulture);
+
+            // Grid settings
+            if (FindName("ShowGridCheck") is CheckBox showGridCheck) showGridCheck.IsChecked = settings.ShowGrid;
+            if (FindName("SnapToGridCheck") is CheckBox snapToGridCheck) snapToGridCheck.IsChecked = settings.SnapToGrid;
+            if (FindName("GridSpacingBox") is TextBox gridSpacingBox) gridSpacingBox.Text = settings.GridSpacing.ToString(CultureInfo.InvariantCulture);
+
+            // View settings
+            if (ZoomSlider != null) ZoomSlider.Value = settings.Zoom;
+            _canvasRotation.Angle = settings.CanvasRotation;
+
+            // Painting mode settings
+            if (FindName("PaintModeEnabledCheck") is CheckBox paintModeCheck) paintModeCheck.IsChecked = settings.PaintModeEnabled;
+            if (FindName("AutoWashWipeCheck") is CheckBox autoWashCheck) autoWashCheck.IsChecked = settings.AutoWashWipe;
+
+            // G-code settings
+            if (FeedXYBox != null) FeedXYBox.Text = settings.FeedXY.ToString(CultureInfo.InvariantCulture);
+            if (ZUpBox != null) ZUpBox.Text = settings.ZUp.ToString(CultureInfo.InvariantCulture);
+            if (ZDownBox != null) ZDownBox.Text = settings.ZDown.ToString(CultureInfo.InvariantCulture);
+            if (FindName("SafeMarginBox") is TextBox safeMarginBox) safeMarginBox.Text = settings.SafeMargin.ToString(CultureInfo.InvariantCulture);
+            if (FindName("ShowMarginOverlayCheck") is CheckBox showMarginCheck) showMarginCheck.IsChecked = settings.ShowMarginOverlay;
+            if (OptimizeCheck != null) OptimizeCheck.IsChecked = settings.OptimizeStrokes;
+            if (FindName("StartGcodeBox") is TextBox startGcodeBox) startGcodeBox.Text = settings.StartGcode;
+            if (FindName("EndGcodeBox") is TextBox endGcodeBox) endGcodeBox.Text = settings.EndGcode;
+
+            // Working area
+            _workingAreaManager.Clear();
+            if (settings.WorkingArea != null)
+            {
+                var area = new Rect(
+                    settings.WorkingArea.Left,
+                    settings.WorkingArea.Top,
+                    settings.WorkingArea.Width,
+                    settings.WorkingArea.Height);
+                _workingAreaManager.SetArea(area);
+            }
+
             // Reset state
             _undo.Clear();
             _lastGcode = "";
             _currentProjectPath = filePath;
             _imageService.Clear();
-            _workingAreaManager.Clear();
             _selectionController.ClearSelection();
 
             // Update UI

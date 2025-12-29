@@ -1,0 +1,120 @@
+﻿<Window x:Class="NVSPlotter.ToolsWindow"
+xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+Title="Tools"
+Width="72" SizeToContent="Height"
+WindowStyle="ToolWindow"
+ShowInTaskbar="False"
+ResizeMode="NoResize"
+Topmost="True"
+Background="#2D2D2D"
+AllowsTransparency="False"
+WindowStartupLocation="Manual"
+Closing="Window_Closing"
+Loaded="Window_Loaded"
+LocationChanged="Window_LocationChanged"
+MouseLeftButtonDown="Window_MouseLeftButtonDown">
+    
+<Window.Resources>
+    <!-- Tool Button Style -->
+    <Style x:Key="ToolButtonStyle" TargetType="Button">
+        <Setter Property="Width" Value="44"/>
+        <Setter Property="Height" Value="44"/>
+        <Setter Property="Margin" Value="3,2"/>
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="BorderBrush" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="2"/>
+        <Setter Property="Foreground" Value="#E0E0E0"/>
+        <Setter Property="FontSize" Value="22"/>
+        <Setter Property="Cursor" Value="Hand"/>
+        <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="border" 
+                                Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="4">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#3D3D3D"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="border" Property="Background" Value="#4D4D4D"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="Tag" Value="Selected">
+                    <Setter Property="Background" Value="#0078D4"/>
+                    <Setter Property="BorderBrush" Value="#0078D4"/>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+        
+        <!-- Separator Style -->
+        <Style x:Key="ToolSeparatorStyle" TargetType="Border">
+            <Setter Property="Height" Value="1"/>
+            <Setter Property="Background" Value="#4D4D4D"/>
+            <Setter Property="Margin" Value="6,4"/>
+        </Style>
+    </Window.Resources>
+    
+    <Border BorderBrush="#1D1D1D" BorderThickness="1" CornerRadius="4">
+        <StackPanel>
+            <!-- Header / Drag Handle -->
+            <Border Background="#252525" Padding="0,4" CornerRadius="4,4,0,0">
+                <TextBlock Text="🛠️" FontSize="14" HorizontalAlignment="Center" Foreground="#808080"/>
+            </Border>
+            
+            <!-- Tools -->
+            <StackPanel x:Name="ToolsPanel" Margin="2,4,2,6">
+                
+                <!-- Drawing Tools -->
+                <Button x:Name="PaintWellBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="🎨" ToolTip="Paint Well (W)" Tag="PaintWell" Click="ToolButton_Click"/>
+                
+                <Button x:Name="LineBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="╱" ToolTip="Line (L)" Tag="Line" Click="ToolButton_Click" FontFamily="Consolas" FontWeight="Bold"/>
+                
+                <Button x:Name="RectangleBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="▢" ToolTip="Rectangle (R)" Tag="Rectangle" Click="ToolButton_Click"/>
+                
+                <Button x:Name="CircleBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="○" ToolTip="Circle (C)" Tag="Circle" Click="ToolButton_Click"/>
+                
+                <Button x:Name="PolylineBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="⟋" ToolTip="Polyline (P)" Tag="Polyline" Click="ToolButton_Click" FontFamily="Consolas"/>
+                
+                <Button x:Name="BezierBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="〰" ToolTip="Bezier Curve (B)" Tag="Bezier" Click="ToolButton_Click"/>
+                
+                <Border Style="{StaticResource ToolSeparatorStyle}"/>
+                
+                <!-- Selection & Transform -->
+                <Button x:Name="SelectBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="⬚" ToolTip="Select / Transform (V)" Tag="Select" Click="ToolButton_Click"/>
+                
+                <Button x:Name="PanBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="✋" ToolTip="Pan (H) - Middle mouse also works" Tag="Pan" Click="ToolButton_Click"/>
+                
+                <Button x:Name="ZoomBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="🔍" ToolTip="Zoom (Z) - Drag up/down to zoom" Tag="Zoom" Click="ToolButton_Click"/>
+                
+                <Border Style="{StaticResource ToolSeparatorStyle}"/>
+                
+                <!-- Utility Tools -->
+                <Button x:Name="MeasureBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="📏" ToolTip="Measure (M)" Tag="Measure" Click="ToolButton_Click"/>
+                
+                <Button x:Name="EraseBtn" Style="{StaticResource ToolButtonStyle}" 
+                        Content="🗑" ToolTip="Erase (E)" Tag="Erase" Click="ToolButton_Click"/>
+                
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

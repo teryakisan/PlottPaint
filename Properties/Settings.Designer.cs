@@ -70,5 +70,29 @@ namespace NVSPlotter.Properties {
                 this["safeMarginMm"] = value;
             }
         }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("100")]
+        public double ToolsWindowLeft {
+            get {
+                return ((double)(this["ToolsWindowLeft"]));
+            }
+            set {
+                this["ToolsWindowLeft"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("150")]
+        public double ToolsWindowTop {
+            get {
+                return ((double)(this["ToolsWindowTop"]));
+            }
+            set {
+                this["ToolsWindowTop"] = value;
+            }
+        }
     }
 }

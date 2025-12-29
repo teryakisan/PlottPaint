@@ -23,6 +23,60 @@ public sealed class ProjectFile
 
     /// <summary>All paint wells in the document</summary>
     public List<PaintWellData> PaintWells { get; set; } = new();
+
+    /// <summary>Project settings</summary>
+    public ProjectSettings Settings { get; set; } = new();
+}
+
+/// <summary>
+/// All project-specific settings that should be saved/loaded with the project
+/// </summary>
+public sealed class ProjectSettings
+{
+    // Document settings
+    public int PagePresetIndex { get; set; } = 0;
+    public int HomeCornerIndex { get; set; } = 0;
+
+    // Snap settings
+    public bool SnapEnabled { get; set; } = true;
+    public double SnapRadius { get; set; } = 5.0;
+
+    // Grid settings
+    public bool ShowGrid { get; set; } = true;
+    public bool SnapToGrid { get; set; } = true;
+    public double GridSpacing { get; set; } = 5.0;
+
+    // View settings
+    public double Zoom { get; set; } = 0.6;
+    public double CanvasRotation { get; set; } = 0;
+
+    // Painting mode settings
+    public bool PaintModeEnabled { get; set; } = false;
+    public bool AutoWashWipe { get; set; } = true;
+
+    // G-code settings
+    public double FeedXY { get; set; } = 3000;
+    public double ZUp { get; set; } = 10;
+    public double ZDown { get; set; } = 2;
+    public double SafeMargin { get; set; } = 50;
+    public bool ShowMarginOverlay { get; set; } = true;
+    public bool OptimizeStrokes { get; set; } = false;
+    public string StartGcode { get; set; } = "G21 ; Set units to mm\nG90 ; Absolute positioning\nG94 ; Set feed rate mode to mm/min";
+    public string EndGcode { get; set; } = "G0 Z10 ; Raise Z axis\nG0 X0 Y0 ; Return to home";
+
+    // Working area (null if not defined)
+    public WorkingAreaData? WorkingArea { get; set; }
+}
+
+/// <summary>
+/// Serializable working area data
+/// </summary>
+public sealed class WorkingAreaData
+{
+    public double Left { get; set; }
+    public double Top { get; set; }
+    public double Width { get; set; }
+    public double Height { get; set; }
 }
 
 /// <summary>
