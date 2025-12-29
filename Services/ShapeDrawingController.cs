@@ -1231,7 +1231,7 @@ public sealed class ShapeDrawingController
         var geometry = new PathGeometry();
         
         // Start from the first segment
-        var firstSeg = _polyBezierSegments[0];
+        var (P0, P1, P2, P3) = _polyBezierSegments[0];
         var figure = new PathFigure
         {
             StartPoint = new Point(P0.X, P0.Y),
