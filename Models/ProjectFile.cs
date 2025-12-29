@@ -89,6 +89,13 @@ public sealed class StrokeData
     public double Bx { get; set; }
     public double By { get; set; }
     public Guid? PaintWellId { get; set; }
+    public Guid? GroupId { get; set; }
+    
+    /// <summary>Indicates this stroke contains the START point of a grouped object</summary>
+    public bool IsGroupStart { get; set; }
+    
+    /// <summary>Indicates this stroke contains the END point of a grouped object</summary>
+    public bool IsGroupEnd { get; set; }
 }
 
 /// <summary>

@@ -145,23 +145,56 @@ public sealed class SelectionController
         }
 
         // Check if clicking on a stroke (single select) - strokes use canvas coordinates directly
+        // When clicking on a stroke, select all strokes in the same group (object)
         var hitIndex = HitTestStroke(point, doc.Strokes);
         if (hitIndex >= 0)
         {
+            // Find all strokes in the same group as the clicked stroke
+            var groupedIndices = FindGroupedStrokes(hitIndex, doc.Strokes);
+            
+            // Check if clicking on an already-selected grouped object
+            // If so, do nothing (prevents indicator jumping on repeated clicks)
+            var allGroupedAlreadySelected = groupedIndices.All(idx => _selectedIndices.Contains(idx));
+            if (allGroupedAlreadySelected && !shiftHeld)
+            {
+                // Already selected - do nothing, just return
+                return true;
+            }
+            
             if (shiftHeld)
             {
-                // Toggle selection
-                if (_selectedIndices.Contains(hitIndex))
-                    _selectedIndices.Remove(hitIndex);
+                // Toggle selection of entire grouped object
+                // Check if any of the grouped strokes are already selected
+                var anySelected = groupedIndices.Any(idx => _selectedIndices.Contains(idx));
+                
+                if (anySelected)
+                {
+                    // Remove all grouped strokes from selection
+                    foreach (var idx in groupedIndices)
+                    {
+                        _selectedIndices.Remove(idx);
+                    }
+                }
                 else
-                    _selectedIndices.Add(hitIndex);
+                {
+                    // Add all grouped strokes to selection
+                    foreach (var idx in groupedIndices)
+                    {
+                        _selectedIndices.Add(idx);
+                    }
+                }
             }
             else
             {
-                // Single select - clear all selections first
+                // Single select entire grouped object - clear all selections first
                 _selectedIndices.Clear();
                 _selectedPaintWellIds.Clear();
-                _selectedIndices.Add(hitIndex);
+                
+                // Find and select all strokes in the same group
+                foreach (var idx in groupedIndices)
+                {
+                    _selectedIndices.Add(idx);
+                }
             }
             UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
             _requestRender();
@@ -532,6 +565,35 @@ public sealed class SelectionController
         return -1;
     }
 
+    /// <summary>
+    /// Finds all strokes that belong to the same group as the stroke at the given index.
+    /// If the stroke has no GroupId, only that stroke is returned (individual line).
+    /// </summary>
+    private HashSet<int> FindGroupedStrokes(int startIndex, List<LineStroke> strokes)
+    {
+        var result = new HashSet<int> { startIndex };
+        
+        var hitStroke = strokes[startIndex];
+        
+        // If this stroke has no group, it's an individual object - select only this stroke
+        if (!hitStroke.GroupId.HasValue)
+        {
+            return result;
+        }
+        
+        // Find all strokes with the same GroupId
+        var groupId = hitStroke.GroupId.Value;
+        for (int i = 0; i < strokes.Count; i++)
+        {
+            if (strokes[i].GroupId == groupId)
+            {
+                result.Add(i);
+            }
+        }
+        
+        return result;
+    }
+
     private PaintWell? HitTestPaintWell(PointMm point, List<PaintWell> paintWells)
     {
         // Check paint wells in reverse order (top-most first)
@@ -797,7 +859,10 @@ public sealed class SelectionController
                 new PointMm(original.B.X + dx, original.B.Y + dy)
             )
             {
-                PaintWellId = original.PaintWellId
+                PaintWellId = original.PaintWellId,
+                GroupId = original.GroupId,
+                IsGroupStart = original.IsGroupStart,
+                IsGroupEnd = original.IsGroupEnd
             };
         }
 
@@ -966,7 +1031,13 @@ public sealed class SelectionController
             newBounds.Top + (original.B.Y - oldBounds.Top) * scaleY
         );
 
-        return new LineStroke(newA, newB) { PaintWellId = original.PaintWellId };
+        return new LineStroke(newA, newB) 
+        { 
+            PaintWellId = original.PaintWellId, 
+            GroupId = original.GroupId,
+            IsGroupStart = original.IsGroupStart,
+            IsGroupEnd = original.IsGroupEnd
+        };
     }
 
     // ===== ROTATE =====
@@ -1041,7 +1112,13 @@ public sealed class SelectionController
     {
         var newA = RotatePoint(original.A, center, angle);
         var newB = RotatePoint(original.B, center, angle);
-        return new LineStroke(newA, newB) { PaintWellId = original.PaintWellId };
+        return new LineStroke(newA, newB) 
+        { 
+            PaintWellId = original.PaintWellId, 
+            GroupId = original.GroupId,
+            IsGroupStart = original.IsGroupStart,
+            IsGroupEnd = original.IsGroupEnd
+        };
     }
 
     private static PointMm RotatePoint(PointMm point, PointMm center, double angle)

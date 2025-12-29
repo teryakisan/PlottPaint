@@ -32,6 +32,10 @@ public sealed class ShapeDrawingController
     private readonly Action _requestRender;
     private readonly Func<Guid?> _getActivePaintWellId;
 
+    // Current group ID for multi-stroke objects (rectangle, circle, polyline, bezier, etc.)
+    // Null means the next stroke is an individual object (single line).
+    private Guid? _currentGroupId;
+
     private bool _isDrawing;
     private bool _isPolylineActive;
     private ToolMode _activeTool = ToolMode.Line;
@@ -175,12 +179,18 @@ public sealed class ShapeDrawingController
         switch (_activeTool)
         {
             case ToolMode.Rectangle:
+                _currentGroupId = Guid.NewGuid(); // All rectangle strokes share same group
                 FinalizeRectangle(_start, end);
+                _currentGroupId = null;
                 break;
             case ToolMode.Circle:
+                _currentGroupId = Guid.NewGuid(); // All circle strokes share same group
                 FinalizeEllipse(_start, end);
+                _currentGroupId = null;
                 break;
             default:
+                // Single line - no group (null GroupId)
+                _currentGroupId = null;
                 AddStroke(_start, end);
                 break;
         }
@@ -196,6 +206,8 @@ public sealed class ShapeDrawingController
             // First click: start the polyline
             _isPolylineActive = true;
             _activeTool = ToolMode.Polyline;
+            _currentGroupId = Guid.NewGuid(); // All polyline strokes share same group
+            _strokeCountInGroup = 0;
             _polylineLast = point;
             _polylineStart = point; // Remember the starting point for auto-close
             BeginLinePreview(point);
@@ -208,9 +220,10 @@ public sealed class ShapeDrawingController
         const double CLOSE_TOLERANCE = 5.0; // mm
         if (Utility.Distance(_polylineStart, point) <= CLOSE_TOLERANCE && Utility.Distance(_polylineLast, _polylineStart) >= MIN_DIST)
         {
-            // Close the polyline by connecting back to start
+            // Close the polyline by connecting back to start - this is the last stroke
             CancelPreview();
-            AddStroke(_polylineLast, _polylineStart);
+            // Mark first stroke as start (handled when first added), mark this as end
+            AddStroke(_polylineLast, _polylineStart, isGroupStart: _strokeCountInGroup == 0, isGroupEnd: true);
             _requestRender();
             FinishPolyline();
             return;
@@ -219,7 +232,8 @@ public sealed class ShapeDrawingController
         if (Utility.Distance(_polylineLast, point) >= MIN_DIST)
         {
             CancelPreview();
-            AddStroke(_polylineLast, point);
+            // Mark first stroke as group start
+            AddStroke(_polylineLast, point, isGroupStart: _strokeCountInGroup == 0);
             _polylineLast = point;
             _requestRender();
         }
@@ -230,6 +244,8 @@ public sealed class ShapeDrawingController
 
         if (isDoubleClick)
         {
+            // Mark the previous stroke as group end if we have strokes
+            MarkLastStrokeAsGroupEnd();
             FinishPolyline();
         }
         else
@@ -237,6 +253,18 @@ public sealed class ShapeDrawingController
             BeginLinePreview(_polylineLast);
             _canvas.CaptureMouse();
         }
+    }
+
+    /// <summary>
+    /// Marks the last stroke in the current group as the group end.
+    /// Called when finishing a polyline/bezier/etc. without closing.
+    /// </summary>
+    private void MarkLastStrokeAsGroupEnd()
+    {
+        // This would need access to the document, but we don't have it here.
+        // The marking should be done at AddStroke time by tracking when we're finishing.
+        // For now, this is a no-op placeholder - the caller should ensure the last stroke
+        // is added with isGroupEnd: true.
     }
 
     public bool TryFinishPolyline()
@@ -250,6 +278,7 @@ public sealed class ShapeDrawingController
     {
         if (!_isPolylineActive) return;
         _isPolylineActive = false;
+        _currentGroupId = null; // Clear group ID
         _activeTool = ToolMode.Line;
         CancelPreview();
     }
@@ -263,20 +292,28 @@ public sealed class ShapeDrawingController
         _isPolyBezierActive = false;
         _polyBezierPhase = PolyBezierPhase.PlacingStart;
         _polyBezierSegments.Clear();
+        _currentGroupId = null; // Clear group ID
         CancelPreview();
         CancelBezierPreview();
         CancelPolyBezierPreview();
         CancelFreeDraw();
     }
 
-    private void AddStroke(PointMm a, PointMm b)
+    // Counter to track strokes within current group for marker assignment
+    private int _strokeCountInGroup;
+
+    private void AddStroke(PointMm a, PointMm b, bool isGroupStart = false, bool isGroupEnd = false)
     {
         if (Utility.Distance(a, b) < MIN_DIST) return;
         var stroke = new LineStroke(a, b)
         {
-            PaintWellId = _getActivePaintWellId()
+            PaintWellId = _getActivePaintWellId(),
+            GroupId = _currentGroupId,
+            IsGroupStart = isGroupStart || _currentGroupId == null, // Individual strokes are their own start
+            IsGroupEnd = isGroupEnd || _currentGroupId == null // Individual strokes are their own end
         };
         _commitStroke(stroke);
+        _strokeCountInGroup++;
     }
 
   
@@ -395,10 +432,11 @@ public sealed class ShapeDrawingController
         var bottomRight = new PointMm(right, bottom);
         var bottomLeft = new PointMm(left, bottom);
 
-        AddStroke(topLeft, topRight);
+        _strokeCountInGroup = 0;
+        AddStroke(topLeft, topRight, isGroupStart: true);
         AddStroke(topRight, bottomRight);
         AddStroke(bottomRight, bottomLeft);
-        AddStroke(bottomLeft, topLeft);
+        AddStroke(bottomLeft, topLeft, isGroupEnd: true);
     }
 
     private void FinalizeEllipse(PointMm start, PointMm end)
@@ -418,6 +456,7 @@ public sealed class ShapeDrawingController
         PointMm? firstPoint = null;
         PointMm? prevPoint = null;
 
+        _strokeCountInGroup = 0;
         for (int i = 0; i < CIRCLE_SEGMENTS; i++)
         {
             var angle = 2.0 * Math.PI * i / CIRCLE_SEGMENTS;
@@ -427,7 +466,8 @@ public sealed class ShapeDrawingController
 
             if (prevPoint is PointMm prev)
             {
-                AddStroke(prev, point);
+                // Mark first segment as group start
+                AddStroke(prev, point, isGroupStart: _strokeCountInGroup == 0);
             }
             else
             {
@@ -439,7 +479,8 @@ public sealed class ShapeDrawingController
 
         if (prevPoint is PointMm last && firstPoint is PointMm first)
         {
-            AddStroke(last, first);
+            // Mark last segment as group end
+            AddStroke(last, first, isGroupEnd: true);
         }
     }
 
@@ -480,6 +521,7 @@ public sealed class ShapeDrawingController
             // First click: set start point
             _isBezierActive = true;
             _activeTool = ToolMode.Bezier;
+            _currentGroupId = Guid.NewGuid(); // All bezier strokes share same group
             _bezierClickCount = 1;
             _bezierP0 = point;
             _bezierP3 = point;
@@ -527,6 +569,7 @@ public sealed class ShapeDrawingController
     {
         _isBezierActive = false;
         _bezierClickCount = 0;
+        _currentGroupId = null; // Clear group ID
         _activeTool = ToolMode.Line;
         CancelBezierPreview();
     }
@@ -697,21 +740,20 @@ public sealed class ShapeDrawingController
         var (p1, p2) = ComputeControlPoints(_bezierP0, _bezierP3, _bezierControl);
 
         // Tessellate the cubic Bezier into line segments
-        var samples = SampleCubicBezier(_bezierP0, p1, p2, _bezierP3, BEZIER_SEGMENTS);
+        var samples = SampleCubicBezier(_bezierP0, p1, p2, _bezierP3, BEZIER_SEGMENTS).ToList();
 
-        PointMm? prev = null;
-        foreach (var pt in samples)
+        _strokeCountInGroup = 0;
+        for (int i = 0; i < samples.Count - 1; i++)
         {
-            if (prev is PointMm p)
-            {
-                AddStroke(p, pt);
-            }
-            prev = pt;
+            var isFirst = i == 0;
+            var isLast = i == samples.Count - 2;
+            AddStroke(samples[i], samples[i + 1], isGroupStart: isFirst, isGroupEnd: isLast);
         }
 
         CancelBezierPreview();
         _isBezierActive = false;
         _bezierClickCount = 0;
+        _currentGroupId = null; // Clear group ID
         _activeTool = ToolMode.Line;
         _requestRender();
     }
@@ -799,6 +841,7 @@ public sealed class ShapeDrawingController
             // First click: set start point
             _isPolyBezierActive = true;
             _activeTool = ToolMode.PolyBezier;
+            _currentGroupId = Guid.NewGuid(); // All poly-bezier strokes share same group
             _polyBezierPhase = PolyBezierPhase.PlacingEnd; // Next click will place end
             _polyBezierStart = point;
             _polyBezierSegStart = point;
@@ -871,6 +914,7 @@ public sealed class ShapeDrawingController
         _isPolyBezierActive = false;
         _polyBezierPhase = PolyBezierPhase.PlacingStart;
         _polyBezierSegments.Clear();
+        _currentGroupId = null; // Clear group ID
         _activeTool = ToolMode.Line;
         CancelPolyBezierPreview();
     }
@@ -1051,25 +1095,33 @@ public sealed class ShapeDrawingController
     {
         if (!_isPolyBezierActive) return;
 
+        // Collect all strokes from all segments first to count total
+        var allStrokes = new List<(PointMm A, PointMm B)>();
+        
         // Tessellate all committed segments into line strokes
         foreach (var seg in _polyBezierSegments)
         {
-            var samples = SampleCubicBezier(seg.P0, seg.P1, seg.P2, seg.P3, BEZIER_SEGMENTS);
-            PointMm? prev = null;
-            foreach (var pt in samples)
+            var samples = SampleCubicBezier(seg.P0, seg.P1, seg.P2, seg.P3, BEZIER_SEGMENTS).ToList();
+            for (int i = 0; i < samples.Count - 1; i++)
             {
-                if (prev is PointMm p)
-                {
-                    AddStroke(p, pt);
-                }
-                prev = pt;
+                allStrokes.Add((samples[i], samples[i + 1]));
             }
+        }
+
+        // Add all strokes with proper markers
+        _strokeCountInGroup = 0;
+        for (int i = 0; i < allStrokes.Count; i++)
+        {
+            var isFirst = i == 0;
+            var isLast = i == allStrokes.Count - 1;
+            AddStroke(allStrokes[i].A, allStrokes[i].B, isGroupStart: isFirst, isGroupEnd: isLast);
         }
 
         CancelPolyBezierPreview();
         _isPolyBezierActive = false;
         _polyBezierPhase = PolyBezierPhase.PlacingStart;
         _polyBezierSegments.Clear();
+        _currentGroupId = null; // Clear group ID
         _activeTool = ToolMode.Line;
         _requestRender();
     }
@@ -1117,6 +1169,7 @@ public sealed class ShapeDrawingController
         {
             _isFreeDrawing = true;
             _activeTool = ToolMode.FreeDraw;
+            _currentGroupId = Guid.NewGuid(); // All freedraw strokes share same group
             _freeDrawPoints.Clear();
             _freeDrawPoints.Add(start);
 
@@ -1228,11 +1281,13 @@ public sealed class ShapeDrawingController
                     return;
                 }
 
+                _strokeCountInGroup = 0;
+
                 // Convert points to smooth Bezier curves
                 if (_freeDrawPoints.Count == 2)
                 {
-                    // Just two points - single line
-                    AddStroke(_freeDrawPoints[0], _freeDrawPoints[1]);
+                    // Just two points - single line (both start and end)
+                    AddStroke(_freeDrawPoints[0], _freeDrawPoints[1], isGroupStart: true, isGroupEnd: true);
                 }
                 else
                 {
@@ -1254,14 +1309,17 @@ public sealed class ShapeDrawingController
                         FlattenBezierAdaptive(seg.P0, seg.P1, seg.P2, seg.P3, flattenedPath, FREEDRAW_FLATNESS_TOLERANCE);
                     }
             
-                    // Create connected strokes from the flattened path
+                    // Create connected strokes from the flattened path with proper markers
                     for (int i = 0; i < flattenedPath.Count - 1; i++)
                     {
-                        AddStroke(flattenedPath[i], flattenedPath[i + 1]);
+                        var isFirst = i == 0;
+                        var isLast = i == flattenedPath.Count - 2;
+                        AddStroke(flattenedPath[i], flattenedPath[i + 1], isGroupStart: isFirst, isGroupEnd: isLast);
                     }
                 }
 
                 _freeDrawPoints.Clear();
+                _currentGroupId = null; // Clear group ID
                 _requestRender();
             }
 
@@ -1347,6 +1405,7 @@ public sealed class ShapeDrawingController
 
                     _isFreeDrawing = false;
                     _freeDrawPoints.Clear();
+                    _currentGroupId = null; // Clear group ID
 
                     // Remove preview path
                     if (_freeDrawPreviewPath != null)

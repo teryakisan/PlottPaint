@@ -2301,15 +2301,10 @@ namespace NVSPlotter
             for (int i = 0; i < _doc.Strokes.Count; i++)
             {
                 var s = _doc.Strokes[i];
-                var isSelected = _selectionController.IsSelected(i);
                 
-                // Determine stroke color
+                // Determine stroke color - keep original color even when selected
                 Brush strokeBrush;
-                if (isSelected)
-                {
-                    strokeBrush = Brushes.DodgerBlue;
-                }
-                else if (paintModeEnabled && s.PaintWellId.HasValue)
+                if (paintModeEnabled && s.PaintWellId.HasValue)
                 {
                     var color = _paintWellController.GetStrokeColor(s);
                     strokeBrush = new SolidColorBrush(color);
@@ -2326,7 +2321,7 @@ namespace NVSPlotter
                     X2 = s.B.X,
                     Y2 = s.B.Y,
                     Stroke = strokeBrush,
-                    StrokeThickness = isSelected ? 2.0 : 1.2,
+                    StrokeThickness = 1.2,
                     SnapsToDevicePixels = true,
                     IsHitTestVisible = false
                 };
@@ -2335,6 +2330,9 @@ namespace NVSPlotter
                 DrawCanvas.Children.Add(ln);
             }
 
+            // Draw start/end indicators for selected strokes (grouped by GroupId)
+            DrawSelectionIndicators();
+
             // Selection visuals (bounding box, handles)
             _selectionController.RenderSelectionVisuals();
 
@@ -2342,6 +2340,132 @@ namespace NVSPlotter
             AppendLog($"Bed: X={_bedX:0.###} Y={_bedY:0.###} {(_bedFromGrbl ? "(from $$)" : "(default)")}, margin={SafeMarginMm:0.###}mm");
 
             UpdateZoomHost();
+        }
+
+        /// <summary>
+        /// Draws start/end indicators for selected strokes using IsGroupStart/IsGroupEnd markers.
+        /// For grouped objects: shows start at stroke with IsGroupStart=true, end at stroke with IsGroupEnd=true.
+        /// For closed loops (start == end): shows a single purple indicator.
+        /// For individual strokes (no group): shows start/end on that stroke.
+        /// </summary>
+        private void DrawSelectionIndicators()
+        {
+            if (!_selectionController.HasSelection) return;
+
+            const double indicatorSize = 18.0; // Larger indicator size for better visibility
+            const double closedLoopTolerance = 0.5; // mm tolerance for considering points equal
+
+            // Get selected strokes in sorted order for consistency
+            var selectedIndices = _selectionController.SelectedIndices.OrderBy(i => i).ToList();
+            if (selectedIndices.Count == 0) return;
+
+            // Group selected strokes by GroupId
+            var groupedStrokes = new Dictionary<Guid, List<LineStroke>>();
+            var ungroupedStrokes = new List<LineStroke>();
+
+            foreach (var idx in selectedIndices)
+            {
+                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
+                var stroke = _doc.Strokes[idx];
+                
+                if (stroke.GroupId == null)
+                {
+                    ungroupedStrokes.Add(stroke);
+                }
+                else
+                {
+                    if (!groupedStrokes.TryGetValue(stroke.GroupId.Value, out var list))
+                    {
+                        list = new List<LineStroke>();
+                        groupedStrokes[stroke.GroupId.Value] = list;
+                    }
+                    list.Add(stroke);
+                }
+            }
+
+            // Draw indicators for each group using markers
+            foreach (var (_, strokes) in groupedStrokes)
+            {
+                DrawIndicatorsUsingMarkers(strokes, indicatorSize, closedLoopTolerance);
+            }
+
+            // Draw indicators for ungrouped strokes (each is its own group)
+            foreach (var stroke in ungroupedStrokes)
+            {
+                DrawIndicatorsUsingMarkers(new List<LineStroke> { stroke }, indicatorSize, closedLoopTolerance);
+            }
+        }
+
+        /// <summary>
+        /// Draws indicators for a group of strokes using their IsGroupStart/IsGroupEnd markers.
+        /// </summary>
+        private void DrawIndicatorsUsingMarkers(List<LineStroke> strokes, double indicatorSize, double closedLoopTolerance)
+        {
+            if (strokes.Count == 0) return;
+
+            // Find the start point (stroke with IsGroupStart=true)
+            var startStroke = strokes.FirstOrDefault(s => s.IsGroupStart);
+            var startPoint = startStroke?.A ?? strokes[0].A;
+
+            // Find the end point (stroke with IsGroupEnd=true)
+            var endStroke = strokes.FirstOrDefault(s => s.IsGroupEnd);
+            var endPoint = endStroke?.B ?? strokes[^1].B;
+
+            // Check if it's a closed loop
+            bool isClosed = Math.Abs(startPoint.X - endPoint.X) < closedLoopTolerance &&
+                           Math.Abs(startPoint.Y - endPoint.Y) < closedLoopTolerance;
+
+            if (isClosed)
+            {
+                // Closed loop: single purple indicator at start/end point
+                var closedIndicator = new Ellipse
+                {
+                    Width = indicatorSize,
+                    Height = indicatorSize,
+                    Fill = new SolidColorBrush(Color.FromArgb(180, 128, 0, 128)), // Purple fill
+                    Stroke = new SolidColorBrush(Color.FromRgb(100, 0, 100)), // Dark purple border
+                    StrokeThickness = 2,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(closedIndicator, startPoint.X - indicatorSize / 2.0);
+                Canvas.SetTop(closedIndicator, startPoint.Y - indicatorSize / 2.0);
+                Panel.SetZIndex(closedIndicator, 5);
+                DrawCanvas.Children.Add(closedIndicator);
+            }
+            else
+            {
+                // Open path: green start, red end
+                var startIndicator = new Ellipse
+                {
+                    Width = indicatorSize,
+                    Height = indicatorSize,
+                    Fill = new SolidColorBrush(Color.FromArgb(180, 0, 180, 0)),
+                    Stroke = Brushes.DarkGreen,
+                    StrokeThickness = 2,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(startIndicator, startPoint.X - indicatorSize / 2.0);
+                Canvas.SetTop(startIndicator, startPoint.Y - indicatorSize / 2.0);
+                Panel.SetZIndex(startIndicator, 5);
+                DrawCanvas.Children.Add(startIndicator);
+
+                var endIndicator = new Ellipse
+                {
+                    Width = indicatorSize,
+                    Height = indicatorSize,
+                    Fill = new SolidColorBrush(Color.FromArgb(180, 220, 50, 50)), // Red fill
+                    Stroke = new SolidColorBrush(Color.FromRgb(180, 30, 30)), // Dark red border
+                    StrokeThickness = 2,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(endIndicator, endPoint.X - indicatorSize / 2.0);
+                Canvas.SetTop(endIndicator, endPoint.Y - indicatorSize / 2.0);
+                Panel.SetZIndex(endIndicator, 5);
+                DrawCanvas.Children.Add(endIndicator);
+            }
         }
 
         private void RenderReferenceImage()
@@ -3993,7 +4117,8 @@ namespace NVSPlotter
                     Ay = stroke.A.Y,
                     Bx = stroke.B.X,
                     By = stroke.B.Y,
-                    PaintWellId = stroke.PaintWellId
+                    PaintWellId = stroke.PaintWellId,
+                    GroupId = stroke.GroupId
                 });
             }
 
@@ -4108,7 +4233,8 @@ namespace NVSPlotter
                 var stroke = new LineStroke(
                     new PointMm(strokeData.Ax, strokeData.Ay),
                     new PointMm(strokeData.Bx, strokeData.By),
-                    strokeData.PaintWellId);
+                    strokeData.PaintWellId,
+                    strokeData.GroupId);
                 _doc.Strokes.Add(stroke);
             }
 
