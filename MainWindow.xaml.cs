@@ -1088,10 +1088,10 @@ namespace NVSPlotter
                 return;
             }
 
-            // Selection tool handling
+            // Selection tool handling - use unclamped point so handles outside document area work
             if (_selectionController.IsActive)
             {
-                var selPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var selPoint = MouseToMm(e.GetPosition(CanvasScroll));
                 if (_selectionController.HandleMouseMove(selPoint))
                 {
                     e.Handled = true;
@@ -1101,7 +1101,7 @@ namespace NVSPlotter
             // Also handle hover detection when Select tool is active but not dragging
             else if (GetCurrentTool() == ToolMode.Select && _selectionController.HasSelection)
             {
-                var selPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var selPoint = MouseToMm(e.GetPosition(CanvasScroll));
                 _selectionController.HandleMouseMove(selPoint);
             }
 
@@ -1144,7 +1144,9 @@ namespace NVSPlotter
             }
 
             var tool = GetCurrentTool();
-            var rawPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+            // Use unclamped point for selection handle detection (handles may be outside document area after rotation)
+            var unclampedPoint = MouseToMm(e.GetPosition(CanvasScroll));
+            var rawPoint = ClampToPage(unclampedPoint);
             var point = ApplySnapping(rawPoint, out _, out _, out _);
 
             // Check if clicking on a paint well - set it as active color regardless of current tool
@@ -1175,11 +1177,11 @@ namespace NVSPlotter
                 }
             }
 
-            // Selection tool
+            // Selection tool - use unclamped point so handles outside document area are clickable
             if (tool == ToolMode.Select)
             {
                 var shiftHeld = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
-                if (_selectionController.HandleMouseDown(point, shiftHeld))
+                if (_selectionController.HandleMouseDown(unclampedPoint, shiftHeld))
                 {
                     e.Handled = true;
                     return;
@@ -1333,10 +1335,10 @@ namespace NVSPlotter
                 }
             }
 
-            // Selection tool handling
+            // Selection tool handling - use unclamped point so handles outside document area work
             if (_selectionController.IsActive)
             {
-                var selPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var selPoint = MouseToMm(e.GetPosition(CanvasScroll));
                 _selectionController.HandleMouseUp(selPoint);
                 _lastGcode = ""; // Invalidate G-code cache after transform
                 e.Handled = true;
@@ -2642,12 +2644,15 @@ namespace NVSPlotter
             RulerCanvas.Children.Clear();
 
             const double rulerThickness = 18.0;
+            // Extra margin around document to allow selection handles outside document bounds to be clickable
+            // This accommodates rotation handles (ROTATE_HANDLE_OFFSET = 45) plus selection padding (20) plus handle size (12)
+            const double handleMargin = 100.0;
 
-            // Size canvas to page + ruler thickness
-            DrawCanvas.Width = _doc.WidthMm + rulerThickness;
-            DrawCanvas.Height = _doc.HeightMm + rulerThickness;
-            RulerCanvas.Width = _doc.WidthMm + rulerThickness;
-            RulerCanvas.Height = _doc.HeightMm + rulerThickness;
+            // Size canvas to page + ruler thickness + handle margin on all sides
+            DrawCanvas.Width = _doc.WidthMm + rulerThickness + handleMargin * 2;
+            DrawCanvas.Height = _doc.HeightMm + rulerThickness + handleMargin * 2;
+            RulerCanvas.Width = _doc.WidthMm + rulerThickness + handleMargin * 2;
+            RulerCanvas.Height = _doc.HeightMm + rulerThickness + handleMargin * 2;
 
             // Page border (offset by ruler thickness)
             var pageRect = new Rectangle
