@@ -492,6 +492,9 @@ namespace NVSPlotter
 
             var baud = GetSelectedBaud();
 
+            // Show the console window when connecting
+            ShowConsoleWindow();
+
             try
             {
                 _grbl?.Dispose();
@@ -502,6 +505,22 @@ namespace NVSPlotter
 
                 AppendLog("Connected to GRBL.");
                 await LoadGrblSettingsAsync();
+
+                // Auto-home if enabled
+                if (FindName("AutoHomeOnConnectCheck") is CheckBox autoHomeCheck && autoHomeCheck.IsChecked == true)
+                {
+                    AppendLog("Auto-homing...");
+                    try
+                    {
+                        await _grbl.SendLineWaitOkAsync("$H", TimeSpan.FromSeconds(30), _sendCts?.Token ?? CancellationToken.None);
+                        _isHomed = true;
+                        AppendLog("Auto-home completed.");
+                    }
+                    catch (Exception homeEx)
+                    {
+                        AppendLog("Auto-home failed: " + homeEx.Message);
+                    }
+                }
             }
             catch (Exception ex)
             {
@@ -512,6 +531,44 @@ namespace NVSPlotter
             {
                 UpdateConnStatus();
             }
+        }
+
+        /// <summary>
+        /// Shows the console window at the bottom-right of the current screen.
+        /// </summary>
+        private void ShowConsoleWindow()
+        {
+            if (_consoleWindow == null)
+            {
+                InitializeConsoleWindow();
+            }
+
+            if (!_consoleWindow!.IsVisible)
+            {
+                // Set owner when showing (main window is now visible)
+                if (_consoleWindow.Owner == null)
+                {
+                    _consoleWindow.Owner = this;
+                }
+                
+                // Find the screen that contains the main window
+                var mainWindowCenter = new System.Drawing.Point(
+                    (int)(Left + Width / 2),
+                    (int)(Top + Height / 2));
+                var currentScreen = System.Windows.Forms.Screen.FromPoint(mainWindowCenter);
+                var workArea = currentScreen.WorkingArea;
+                
+                // Position at bottom-right corner of the same screen as the main window
+                var desiredLeft = workArea.Right - _consoleWindow.Width;
+                var desiredTop = workArea.Bottom - _consoleWindow.Height;
+                
+                _consoleWindow.Left = desiredLeft;
+                _consoleWindow.Top = desiredTop;
+                
+                _consoleWindow.Show();
+            }
+            
+            _consoleWindow.Activate();
         }
 
         private string? GetSelectedPort()
@@ -1269,28 +1326,7 @@ namespace NVSPlotter
             }
             else
             {
-                // Set owner when showing (main window is now visible)
-                if (_consoleWindow.Owner == null)
-                {
-                    _consoleWindow.Owner = this;
-                }
-                
-                // Find the screen that contains the main window
-                var mainWindowCenter = new System.Drawing.Point(
-                    (int)(Left + Width / 2),
-                    (int)(Top + Height / 2));
-                var currentScreen = System.Windows.Forms.Screen.FromPoint(mainWindowCenter);
-                var workArea = currentScreen.WorkingArea;
-                
-                // Position at bottom-left corner of the same screen as the main window
-                var desiredLeft = workArea.Left;
-                var desiredTop = workArea.Bottom - _consoleWindow.Height;
-                
-                _consoleWindow.Left = desiredLeft;
-                _consoleWindow.Top = desiredTop;
-                
-                _consoleWindow.Show();
-                _consoleWindow.Activate();
+                ShowConsoleWindow();
             }
         }
 

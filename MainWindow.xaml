@@ -390,6 +390,12 @@
                                     <Button x:Name="ConnectBtn" Content="Connect" Width="82" Margin="8,0,0,0" Click="ConnectBtn_Click"/>
                                 </StackPanel>
 
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                    <CheckBox x:Name="AutoHomeOnConnectCheck" Content="Auto Home on Connect" 
+                                              IsChecked="True" VerticalAlignment="Center"
+                                              ToolTip="Automatically home the plotter after connecting"/>
+                                </StackPanel>
+
                                 <WrapPanel Margin="0,0,0,10" Width="328">
                                     <Button Content="Auto Home ($H)" Width="178" Margin="0,0,8,8" Click="HomeBtn_Click"/>
                                     <Button Content="$X Unlock" Width="107" Margin="0,0,8,8" Click="UnlockBtn_Click"/>
