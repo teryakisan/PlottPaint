@@ -1,6 +1,7 @@
 ﻿<Window x:Class="NVSPlotter.ToolsWindow"
 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+xmlns:fa="http://schemas.fontawesome.io/icons/"
 Title="Tools"
 Width="72" SizeToContent="Height"
 WindowStyle="None"
@@ -68,7 +69,7 @@ MouseLeftButtonDown="Window_MouseLeftButtonDown">
         <StackPanel>
             <!-- Header / Drag Handle -->
             <Border Background="#252525" Padding="0,4" CornerRadius="4,4,0,0">
-                <TextBlock Text="🛠️" FontSize="14" HorizontalAlignment="Center" Foreground="#808080"/>
+                <fa:FontAwesome Icon="Wrench" FontSize="14" HorizontalAlignment="Center" Foreground="#808080"/>
             </Border>
             
             <!-- Tools -->
@@ -77,51 +78,91 @@ MouseLeftButtonDown="Window_MouseLeftButtonDown">
                 <!-- Selection & Navigation (most common) -->
                 <Button x:Name="SelectBtn" Style="{StaticResource ToolButtonStyle}" 
                         ToolTip="Select / Transform (V)" Tag="Select" Click="ToolButton_Click">
-                    <Path Data="M 2,2 L 2,18 L 7,14 L 10,20 L 13,19 L 10,13 L 16,13 Z" 
-                          Fill="#E0E0E0" Stroke="#E0E0E0" StrokeThickness="0.5"/>
+                    <fa:FontAwesome Icon="MousePointer" Foreground="#E0E0E0" FontSize="20"/>
                 </Button>
                 
                 <Button x:Name="PanBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="✋" ToolTip="Pan (H) - Middle mouse also works" Tag="Pan" Click="ToolButton_Click"/>
+                        ToolTip="Pan (H) - Middle mouse also works" Tag="Pan" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="HandPaperOutline" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Button x:Name="ZoomBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="🔍" ToolTip="Zoom (Z) - Drag up/down to zoom" Tag="Zoom" Click="ToolButton_Click"/>
+                        ToolTip="Zoom (Z) - Drag up/down to zoom" Tag="Zoom" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="Search" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Border Style="{StaticResource ToolSeparatorStyle}"/>
                 
                 <!-- Drawing Tools -->
                 <Button x:Name="FreeDrawBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="✏️" ToolTip="Free Draw (F) - Draw freehand strokes" Tag="FreeDraw" Click="ToolButton_Click"/>
+                        ToolTip="Free Draw (F) - Draw freehand strokes" Tag="FreeDraw" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="Pencil" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Button x:Name="LineBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="╱" ToolTip="Line (L)" Tag="Line" Click="ToolButton_Click" FontFamily="Consolas" FontWeight="Bold"/>
+                        ToolTip="Line (L)" Tag="Line" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="Minus" Foreground="#E0E0E0" FontSize="20" RenderTransformOrigin="0.5,0.5">
+                        <fa:FontAwesome.RenderTransform>
+                            <RotateTransform Angle="-45"/>
+                        </fa:FontAwesome.RenderTransform>
+                    </fa:FontAwesome>
+                </Button>
                 
                 <Button x:Name="RectangleBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="▢" ToolTip="Rectangle (R)" Tag="Rectangle" Click="ToolButton_Click"/>
+                        ToolTip="Rectangle (R)" Tag="Rectangle" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="SquareOutline" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Button x:Name="CircleBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="○" ToolTip="Circle (C)" Tag="Circle" Click="ToolButton_Click"/>
+                        ToolTip="Circle (C) - Right-click for options" Tag="Circle" Click="ToolButton_Click">
+                    <Button.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Header="Circle Curve Segments" IsEnabled="False" FontWeight="Bold"/>
+                            <Separator/>
+                            <MenuItem Header="1 (Single curve)" Tag="1" Click="CircleSegments_Click"/>
+                            <MenuItem Header="2 (Half circles)" Tag="2" Click="CircleSegments_Click"/>
+                            <MenuItem Header="3 (Thirds)" Tag="3" Click="CircleSegments_Click"/>
+                            <MenuItem Header="4 (Quarters)" Tag="4" Click="CircleSegments_Click"/>
+                            <MenuItem Header="6 (Sixths)" Tag="6" Click="CircleSegments_Click"/>
+                            <MenuItem Header="8 (Eighths)" Tag="8" Click="CircleSegments_Click"/>
+                            <MenuItem Header="12 (Twelfths)" Tag="12" Click="CircleSegments_Click"/>
+                        </ContextMenu>
+                    </Button.ContextMenu>
+                    <fa:FontAwesome Icon="CircleThin" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Button x:Name="PolylineBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="⟋" ToolTip="Polyline (P)" Tag="Polyline" Click="ToolButton_Click" FontFamily="Consolas"/>
+                        ToolTip="Polyline (P)" Tag="Polyline" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="ShareAlt" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Button x:Name="BezierBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="〰" ToolTip="Bezier Curve (B)" Tag="Bezier" Click="ToolButton_Click"/>
+                        ToolTip="Bezier Curve (B)" Tag="Bezier" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="PencilSquareOutline" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Button x:Name="PolyBezierBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="〰〰" ToolTip="Poly-Bezier (Shift+B) - Connected curves" Tag="PolyBezier" Click="ToolButton_Click" FontSize="14"/>
+                        ToolTip="Poly-Bezier (Shift+B) - Connected curves" Tag="PolyBezier" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="Sitemap" Foreground="#E0E0E0" FontSize="18"/>
+                </Button>
                 
                 <Border Style="{StaticResource ToolSeparatorStyle}"/>
                 
                 <!-- Paint & Utility Tools -->
                 <Button x:Name="PaintWellBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="🎨" ToolTip="Paint Well (W)" Tag="PaintWell" Click="ToolButton_Click"/>
+                        ToolTip="Paint Well (W)" Tag="PaintWell" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="PaintBrush" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Button x:Name="MeasureBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="📏" ToolTip="Measure (M)" Tag="Measure" Click="ToolButton_Click"/>
+                        ToolTip="Measure (M)" Tag="Measure" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="Expand" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
                 <Button x:Name="EraseBtn" Style="{StaticResource ToolButtonStyle}" 
-                        Content="🗑" ToolTip="Erase (E)" Tag="Erase" Click="ToolButton_Click"/>
+                        ToolTip="Erase (E)" Tag="Erase" Click="ToolButton_Click">
+                    <fa:FontAwesome Icon="Eraser" Foreground="#E0E0E0" FontSize="20"/>
+                </Button>
                 
             </StackPanel>
         </StackPanel>

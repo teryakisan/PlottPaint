@@ -11,6 +11,9 @@
     <Setting Name="circleSegments" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">128</Value>
     </Setting>
+    <Setting Name="circleCurveSegments" Type="System.Int32" Scope="User">
+      <Value Profile="(Default)">1</Value>
+    </Setting>
     <Setting Name="safeMarginMm" Type="System.Double" Scope="User">
       <Value Profile="(Default)">50</Value>
     </Setting>

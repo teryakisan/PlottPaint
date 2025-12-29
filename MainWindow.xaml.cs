@@ -1128,7 +1128,7 @@ namespace NVSPlotter
                     }
                 }
 
-                if (_shapeController.Update(mm))
+                if (_shapeController.Update(mm, Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl)))
                 {
                     e.Handled = true;
                     return;
@@ -1358,7 +1358,8 @@ namespace NVSPlotter
             {
                 var rawEnd = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
                 var endMm = ApplySnapping(rawEnd, out _, out _, out _);
-                _shapeController.CompleteDraw(endMm);
+                var constrainAspectRatio = Keyboard.IsKeyDown(Key.LeftCtrl) || Keyboard.IsKeyDown(Key.RightCtrl);
+                _shapeController.CompleteDraw(endMm, constrainAspectRatio);
                 // Record undo group for all strokes added by this shape
                 var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
                 if (strokesAdded > 0)
@@ -2724,8 +2725,9 @@ namespace NVSPlotter
                 DrawCanvas.Children.Add(ln);
             }
 
-            // Note: Selection indicators are now shown only via hover snap indicator with heat map colors
-            // The DrawSelectionIndicators method was removed to avoid showing all points when selected
+            // Note: Selection indicators show individual group start/end points within the selection
+            // This allows circle curve segments and other multi-group shapes to display their markers
+            DrawSelectionIndicators();
 
             // Selection visuals (bounding box, handles)
             _selectionController.RenderSelectionVisuals();
@@ -2739,7 +2741,7 @@ namespace NVSPlotter
         /// <summary>
         /// Draws start/end indicators for selected strokes using IsGroupStart/IsGroupEnd markers.
         /// For grouped objects: shows start at stroke with IsGroupStart=true, end at stroke with IsGroupEnd=true.
-        /// For closed loops (start == end): shows a single purple indicator.
+        /// For closed loops (start == end across ALL groups): shows a single purple indicator.
         /// For individual strokes (no group): shows start/end on that stroke.
         /// </summary>
         private void DrawSelectionIndicators()
@@ -2777,24 +2779,62 @@ namespace NVSPlotter
                 }
             }
 
-            // Draw indicators for each group using markers
+            // Collect ALL start and end points from all groups to detect cross-group closed loops
+            var allStartPoints = new List<PointMm>();
+            var allEndPoints = new List<PointMm>();
+
             foreach (var (_, strokes) in groupedStrokes)
             {
-                DrawIndicatorsUsingMarkers(strokes, indicatorSize, closedLoopTolerance);
+                var startStroke = strokes.FirstOrDefault(s => s.IsGroupStart);
+                var endStroke = strokes.FirstOrDefault(s => s.IsGroupEnd);
+                
+                if (startStroke != null) allStartPoints.Add(startStroke.A);
+                else if (strokes.Count > 0) allStartPoints.Add(strokes[0].A);
+                
+                if (endStroke != null) allEndPoints.Add(endStroke.B);
+                else if (strokes.Count > 0) allEndPoints.Add(strokes[^1].B);
+            }
+
+            foreach (var stroke in ungroupedStrokes)
+            {
+                allStartPoints.Add(stroke.A);
+                allEndPoints.Add(stroke.B);
+            }
+
+            // Find points that are both a start AND an end (closed loop junctions)
+            var closedLoopPoints = new HashSet<(double X, double Y)>();
+            foreach (var startPt in allStartPoints)
+            {
+                foreach (var endPt in allEndPoints)
+                {
+                    if (Math.Abs(startPt.X - endPt.X) < closedLoopTolerance &&
+                        Math.Abs(startPt.Y - endPt.Y) < closedLoopTolerance)
+                    {
+                        // Use rounded coordinates as key to handle tolerance
+                        closedLoopPoints.Add((Math.Round(startPt.X, 1), Math.Round(startPt.Y, 1)));
+                    }
+                }
+            }
+
+            // Draw indicators for each group, passing the closed loop info
+            foreach (var (_, strokes) in groupedStrokes)
+            {
+                DrawIndicatorsUsingMarkers(strokes, indicatorSize, closedLoopTolerance, closedLoopPoints);
             }
 
             // Draw indicators for ungrouped strokes (each is its own group)
             foreach (var stroke in ungroupedStrokes)
             {
-                DrawIndicatorsUsingMarkers(new List<LineStroke> { stroke }, indicatorSize, closedLoopTolerance);
+                DrawIndicatorsUsingMarkers(new List<LineStroke> { stroke }, indicatorSize, closedLoopTolerance, closedLoopPoints);
             }
         }
 
         /// <summary>
         /// Draws indicators for a group of strokes using their IsGroupStart/IsGroupEnd markers.
-        /// Creates a heat map gradient from green (start) to red (end) for all intermediate points.
+        /// Shows only start (green) and end (red) indicators, or purple if they overlap (closed loop).
+        /// The closedLoopPoints set contains points that are both a start AND an end across all selected groups.
         /// </summary>
-        private void DrawIndicatorsUsingMarkers(List<LineStroke> strokes, double indicatorSize, double closedLoopTolerance)
+        private void DrawIndicatorsUsingMarkers(List<LineStroke> strokes, double indicatorSize, double closedLoopTolerance, HashSet<(double X, double Y)> closedLoopPoints)
         {
             if (strokes.Count == 0) return;
 
@@ -2806,13 +2846,20 @@ namespace NVSPlotter
             var endStroke = strokes.FirstOrDefault(s => s.IsGroupEnd);
             var endPoint = endStroke?.B ?? strokes[^1].B;
 
-            // Check if it's a closed loop
-            bool isClosed = Math.Abs(startPoint.X - endPoint.X) < closedLoopTolerance &&
-                           Math.Abs(startPoint.Y - endPoint.Y) < closedLoopTolerance;
+            // Check if start point is part of a closed loop (overlaps with any end point across all groups)
+            var startRounded = (Math.Round(startPoint.X, 1), Math.Round(startPoint.Y, 1));
+            var endRounded = (Math.Round(endPoint.X, 1), Math.Round(endPoint.Y, 1));
+            
+            bool startIsClosed = closedLoopPoints.Contains(startRounded);
+            bool endIsClosed = closedLoopPoints.Contains(endRounded);
 
-            if (isClosed)
+            // Check if start and end of THIS group are at the same position
+            bool isSelfClosed = Math.Abs(startPoint.X - endPoint.X) < closedLoopTolerance &&
+                               Math.Abs(startPoint.Y - endPoint.Y) < closedLoopTolerance;
+
+            if (isSelfClosed)
             {
-                // Closed loop: single purple indicator at start/end point
+                // This group forms a complete closed loop by itself - single purple indicator
                 var closedIndicator = new Ellipse
                 {
                     Width = indicatorSize,
@@ -2830,49 +2877,89 @@ namespace NVSPlotter
             }
             else
             {
-                // Open path: draw indicators at all stroke endpoints with gradient from green to red
-                // Collect all unique points in order: start of first stroke, then end of each stroke
-                var points = new List<PointMm>();
+                // Open path within this group, but check if endpoints connect to other groups
                 
-                // Add start point
-                points.Add(strokes[0].A);
-                
-                // Add end point of each stroke
-                foreach (var stroke in strokes)
+                // Start indicator - purple if it's part of a cross-group closed loop, green otherwise
+                if (startIsClosed)
                 {
-                    points.Add(stroke.B);
-                }
-                
-                // Calculate indicator size - slightly smaller for intermediate points
-                var intermediateSize = indicatorSize * 0.7;
-                
-                // Draw indicators with heat map gradient
-                for (int i = 0; i < points.Count; i++)
-                {
-                    var point = points[i];
-                    var t = points.Count > 1 ? (double)i / (points.Count - 1) : 0.0; // 0.0 = start, 1.0 = end
-                    
-                    // Calculate heat map color: green (0, 180, 0) -> yellow (180, 180, 0) -> red (220, 50, 50)
-                    var (fillColor, strokeColor) = GetHeatMapColor(t);
-                    
-                    // Use full size for start and end, smaller for intermediate
-                    var currentSize = (i == 0 || i == points.Count - 1) ? indicatorSize : intermediateSize;
-                    var strokeThickness = (i == 0 || i == points.Count - 1) ? 2.0 : 1.5;
-                    
-                    var indicator = new Ellipse
+                    // This start point coincides with an end point from another group - purple
+                    var closedIndicator = new Ellipse
                     {
-                        Width = currentSize,
-                        Height = currentSize,
-                        Fill = new SolidColorBrush(fillColor),
-                        Stroke = new SolidColorBrush(strokeColor),
-                        StrokeThickness = strokeThickness,
+                        Width = indicatorSize,
+                        Height = indicatorSize,
+                        Fill = new SolidColorBrush(Color.FromArgb(180, 128, 0, 128)), // Purple fill
+                        Stroke = new SolidColorBrush(Color.FromRgb(100, 0, 100)), // Dark purple border
+                        StrokeThickness = 2,
                         IsHitTestVisible = false,
                         SnapsToDevicePixels = true
                     };
-                    Canvas.SetLeft(indicator, point.X - currentSize / 2.0);
-                    Canvas.SetTop(indicator, point.Y - currentSize / 2.0);
-                    Panel.SetZIndex(indicator, 5);
-                    DrawCanvas.Children.Add(indicator);
+                    Canvas.SetLeft(closedIndicator, startPoint.X - indicatorSize / 2.0);
+                    Canvas.SetTop(closedIndicator, startPoint.Y - indicatorSize / 2.0);
+                    Panel.SetZIndex(closedIndicator, 5);
+                    DrawCanvas.Children.Add(closedIndicator);
+                }
+                else
+                {
+                    // Normal start indicator (green)
+                    var startIndicator = new Ellipse
+                    {
+                        Width = indicatorSize,
+                        Height = indicatorSize,
+                        Fill = new SolidColorBrush(Color.FromArgb(180, 0, 180, 0)), // Green fill
+                        Stroke = new SolidColorBrush(Color.FromRgb(0, 120, 0)), // Dark green border
+                        StrokeThickness = 2,
+                        IsHitTestVisible = false,
+                        SnapsToDevicePixels = true
+                    };
+                    Canvas.SetLeft(startIndicator, startPoint.X - indicatorSize / 2.0);
+                    Canvas.SetTop(startIndicator, startPoint.Y - indicatorSize / 2.0);
+                    Panel.SetZIndex(startIndicator, 5);
+                    DrawCanvas.Children.Add(startIndicator);
+                }
+
+                // End indicator - purple if it's part of a cross-group closed loop, red otherwise
+                // But skip if end point is at the same location as start (already drawn)
+                bool endSameAsStart = Math.Abs(startPoint.X - endPoint.X) < closedLoopTolerance &&
+                                     Math.Abs(startPoint.Y - endPoint.Y) < closedLoopTolerance;
+                
+                if (!endSameAsStart)
+                {
+                    if (endIsClosed)
+                    {
+                        // This end point coincides with a start point from another group - purple
+                        var closedIndicator = new Ellipse
+                        {
+                            Width = indicatorSize,
+                            Height = indicatorSize,
+                            Fill = new SolidColorBrush(Color.FromArgb(180, 128, 0, 128)), // Purple fill
+                            Stroke = new SolidColorBrush(Color.FromRgb(100, 0, 100)), // Dark purple border
+                            StrokeThickness = 2,
+                            IsHitTestVisible = false,
+                            SnapsToDevicePixels = true
+                        };
+                        Canvas.SetLeft(closedIndicator, endPoint.X - indicatorSize / 2.0);
+                        Canvas.SetTop(closedIndicator, endPoint.Y - indicatorSize / 2.0);
+                        Panel.SetZIndex(closedIndicator, 5);
+                        DrawCanvas.Children.Add(closedIndicator);
+                    }
+                    else
+                    {
+                        // Normal end indicator (red)
+                        var endIndicator = new Ellipse
+                        {
+                            Width = indicatorSize,
+                            Height = indicatorSize,
+                            Fill = new SolidColorBrush(Color.FromArgb(180, 220, 50, 50)), // Red fill
+                            Stroke = new SolidColorBrush(Color.FromRgb(160, 30, 30)), // Dark red border
+                            StrokeThickness = 2,
+                            IsHitTestVisible = false,
+                            SnapsToDevicePixels = true
+                        };
+                        Canvas.SetLeft(endIndicator, endPoint.X - indicatorSize / 2.0);
+                        Canvas.SetTop(endIndicator, endPoint.Y - indicatorSize / 2.0);
+                        Panel.SetZIndex(endIndicator, 5);
+                        DrawCanvas.Children.Add(endIndicator);
+                    }
                 }
             }
         }

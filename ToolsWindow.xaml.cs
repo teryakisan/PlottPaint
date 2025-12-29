@@ -167,6 +167,15 @@ public partial class ToolsWindow : Window
         }
     }
 
+    private void CircleSegments_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is MenuItem menuItem && menuItem.Tag is string tagStr && int.TryParse(tagStr, out var segments))
+        {
+            Settings.Default.circleCurveSegments = segments;
+            Settings.Default.Save();
+        }
+    }
+
     /// <summary>
     /// Selects a tool and updates the visual state.
     /// </summary>

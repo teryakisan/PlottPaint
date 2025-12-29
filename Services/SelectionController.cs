@@ -81,6 +81,10 @@ public sealed class SelectionController
     private double _selectionRotationAngle;
     private double _baseRotationAngle; // Rotation angle at the start of the current rotation operation
     private Point _selectionRotationCenter;
+    
+    // Logical bounds tracking - the unrotated bounding box that we scale relative to
+    // This is separate from _selectionBounds which is the axis-aligned bounds of the actual (rotated) strokes
+    private Rect _logicalBounds;
 
     // Preview visuals
     private Rectangle? _marqueeRect;
@@ -162,6 +166,7 @@ public sealed class SelectionController
                 _selectionRotationAngle = 0;
             }
             UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+            _logicalBounds = _selectionBounds; // Initialize logical bounds for new selection
             _requestRender();
             return true;
         }
@@ -222,6 +227,7 @@ public sealed class SelectionController
                 }
             }
             UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+            _logicalBounds = _selectionBounds; // Initialize logical bounds for new selection
             _requestRender();
             return true;
         }
@@ -581,6 +587,7 @@ public sealed class SelectionController
         _selectedIndices.Clear();
         _selectedPaintWellIds.Clear();
         _selectionBounds = Rect.Empty;
+        _logicalBounds = Rect.Empty;
         _selectionRotationAngle = 0;
         RemoveSelectionVisuals();
         _requestRender();
@@ -714,12 +721,19 @@ public sealed class SelectionController
 
         var doc = _getDocument();
         
-        // During rotation, use the original bounds to keep the box size constant.
-        // Otherwise, recalculate the bounds from current stroke positions.
+        // Determine which bounds to use for the visual display:
+        // - During rotation, use the original bounds to keep the box size constant
+        // - When we have a rotation angle, use the logical bounds (unrotated reference frame)
+        // - Otherwise, recalculate from current stroke positions
         Rect boundsToUse;
         if (_mode == SelectionMode.Rotating && !_originalBounds.IsEmpty)
         {
             boundsToUse = _originalBounds;
+        }
+        else if (Math.Abs(_selectionRotationAngle) > 0.001 && !_logicalBounds.IsEmpty)
+        {
+            // Use logical bounds when we have a rotation - this is the unrotated reference frame
+            boundsToUse = _logicalBounds;
         }
         else
         {
@@ -1059,10 +1073,20 @@ public sealed class SelectionController
 
     private SelectionHandle HitTestHandle(PointMm point)
     {
-        // During rotation, use original bounds to match the visual display
-        var boundsToUse = (_mode == SelectionMode.Rotating && !_originalBounds.IsEmpty) 
-            ? _originalBounds 
-            : _selectionBounds;
+        // Use logical bounds when we have a rotation, otherwise use selection bounds
+        Rect boundsToUse;
+        if (_mode == SelectionMode.Rotating && !_originalBounds.IsEmpty)
+        {
+            boundsToUse = _originalBounds;
+        }
+        else if (Math.Abs(_selectionRotationAngle) > 0.001 && !_logicalBounds.IsEmpty)
+        {
+            boundsToUse = _logicalBounds;
+        }
+        else
+        {
+            boundsToUse = _selectionBounds;
+        }
             
         if (boundsToUse.IsEmpty) return SelectionHandle.None;
         
@@ -1139,10 +1163,20 @@ public sealed class SelectionController
 
     private bool IsPointInBounds(PointMm point, Rect bounds)
     {
-        // During rotation, use original bounds to match the visual display
-        var boundsToUse = (_mode == SelectionMode.Rotating && !_originalBounds.IsEmpty) 
-            ? _originalBounds 
-            : bounds;
+        // Use logical bounds when we have a rotation
+        Rect boundsToUse;
+        if (_mode == SelectionMode.Rotating && !_originalBounds.IsEmpty)
+        {
+            boundsToUse = _originalBounds;
+        }
+        else if (Math.Abs(_selectionRotationAngle) > 0.001 && !_logicalBounds.IsEmpty)
+        {
+            boundsToUse = _logicalBounds;
+        }
+        else
+        {
+            boundsToUse = bounds;
+        }
             
         // Paint wells are rendered with ruler offset, strokes are not.
         var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
@@ -1298,6 +1332,7 @@ public sealed class SelectionController
         }
 
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+        _logicalBounds = _selectionBounds; // Initialize logical bounds for new selection
         _requestRender();
     }
 
@@ -1394,13 +1429,15 @@ public sealed class SelectionController
     {
         _activeHandle = handle;
         _dragStart = start;
-        _originalBounds = _selectionBounds;
-        SaveOriginalStrokes();
         _canvas.CaptureMouse();
 
         if (handle == SelectionHandle.Rotate)
         {
             _mode = SelectionMode.Rotating;
+            
+            // Use logical bounds as the reference for rotation
+            _originalBounds = _logicalBounds.IsEmpty ? _selectionBounds : _logicalBounds;
+            SaveOriginalStrokes();
             
             // Save the current rotation angle as the base for this rotation operation
             // This allows cumulative rotation across multiple drag operations
@@ -1419,6 +1456,11 @@ public sealed class SelectionController
         else
         {
             _mode = SelectionMode.Resizing;
+            
+            // For resize after rotation, we need to work in the logical (unrotated) coordinate space
+            // Use the logical bounds as our reference frame
+            _originalBounds = _logicalBounds.IsEmpty ? _selectionBounds : _logicalBounds;
+            SaveOriginalStrokes();
         }
     }
 
@@ -1428,41 +1470,85 @@ public sealed class SelectionController
 
         var doc = _getDocument();
 
-        // Get raw edge positions without normalization
+        // Calculate the center of the logical bounds (used for rotation)
+        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
+        var originalLogicalCenterX = _originalBounds.Left + _originalBounds.Width / 2;
+        var originalLogicalCenterY = _originalBounds.Top + _originalBounds.Height / 2;
+        var visualCenterX = offset + originalLogicalCenterX;
+        var visualCenterY = offset + originalLogicalCenterY;
+
+        // Transform the mouse position into the unrotated coordinate space
+        // This allows resizing to work along the rotated selection box axes
+        PointMm transformedCurrent = current;
+        if (Math.Abs(_selectionRotationAngle) > 0.001)
+        {
+            // Rotate the mouse position backwards (negative angle) around the center
+            // to get coordinates in the unrotated space
+            var cos = Math.Cos(-_selectionRotationAngle);
+            var sin = Math.Sin(-_selectionRotationAngle);
+            var dx = current.X - visualCenterX;
+            var dy = current.Y - visualCenterY;
+            transformedCurrent = new PointMm(
+                visualCenterX + dx * cos - dy * sin,
+                visualCenterY + dx * sin + dy * cos
+            );
+        }
+
+        // Get raw edge positions without normalization (in logical/unrotated space)
         double left = _originalBounds.Left;
         double top = _originalBounds.Top;
         double right = _originalBounds.Right;
         double bottom = _originalBounds.Bottom;
 
+        // Adjust for paint well offset when comparing to mouse position
+        var adjustedCurrent = new PointMm(transformedCurrent.X - offset, transformedCurrent.Y - offset);
+
+        // Determine the anchor point (opposite corner/edge from the handle being dragged)
+        // This anchor point should remain stationary in world space
+        double anchorX = originalLogicalCenterX;
+        double anchorY = originalLogicalCenterY;
+
         switch (_activeHandle)
         {
             case SelectionHandle.TopLeft:
-                left = current.X;
-                top = current.Y;
+                left = adjustedCurrent.X;
+                top = adjustedCurrent.Y;
+                anchorX = right;
+                anchorY = bottom;
                 break;
             case SelectionHandle.TopCenter:
-                top = current.Y;
+                top = adjustedCurrent.Y;
+                anchorY = bottom;
                 break;
             case SelectionHandle.TopRight:
-                right = current.X;
-                top = current.Y;
+                right = adjustedCurrent.X;
+                top = adjustedCurrent.Y;
+                anchorX = left;
+                anchorY = bottom;
                 break;
             case SelectionHandle.MiddleLeft:
-                left = current.X;
+                left = adjustedCurrent.X;
+                anchorX = right;
                 break;
             case SelectionHandle.MiddleRight:
-                right = current.X;
+                right = adjustedCurrent.X;
+                anchorX = left;
                 break;
             case SelectionHandle.BottomLeft:
-                left = current.X;
-                bottom = current.Y;
+                left = adjustedCurrent.X;
+                bottom = adjustedCurrent.Y;
+                anchorX = right;
+                anchorY = top;
                 break;
             case SelectionHandle.BottomCenter:
-                bottom = current.Y;
+                bottom = adjustedCurrent.Y;
+                anchorY = top;
                 break;
             case SelectionHandle.BottomRight:
-                right = current.X;
-                bottom = current.Y;
+                right = adjustedCurrent.X;
+                bottom = adjustedCurrent.Y;
+                anchorX = left;
+                anchorY = top;
                 break;
         }
 
@@ -1474,24 +1560,90 @@ public sealed class SelectionController
         if (flipH) (left, right) = (right, left);
         if (flipV) (top, bottom) = (bottom, top);
 
-        var newBounds = new Rect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
-        if (newBounds.Width < 1 || newBounds.Height < 1) return;
+        var newLogicalBounds = new Rect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+        if (newLogicalBounds.Width < 1 || newLogicalBounds.Height < 1) return;
 
-        // Scale and flip strokes
+        // Calculate the anchor point position in the NEW logical bounds
+        // The anchor's relative position should remain the same
+        double anchorRelX = _originalBounds.Width > 0 ? (anchorX - _originalBounds.Left) / _originalBounds.Width : 0.5;
+        double anchorRelY = _originalBounds.Height > 0 ? (anchorY - _originalBounds.Top) / _originalBounds.Height : 0.5;
+        
+        // Apply flip to anchor relative position
+        if (flipH) anchorRelX = 1.0 - anchorRelX;
+        if (flipV) anchorRelY = 1.0 - anchorRelY;
+        
+        double newAnchorX = newLogicalBounds.Left + anchorRelX * newLogicalBounds.Width;
+        double newAnchorY = newLogicalBounds.Top + anchorRelY * newLogicalBounds.Height;
+
+        // Calculate where the anchor point ends up in world space after rotation
+        var originalAnchorWorld = Math.Abs(_selectionRotationAngle) > 0.001
+            ? RotatePoint(new PointMm(anchorX, anchorY), new PointMm(originalLogicalCenterX, originalLogicalCenterY), _selectionRotationAngle)
+            : new PointMm(anchorX, anchorY);
+
+        var newLogicalCenterX = newLogicalBounds.Left + newLogicalBounds.Width / 2;
+        var newLogicalCenterY = newLogicalBounds.Top + newLogicalBounds.Height / 2;
+        
+        var newAnchorWorld = Math.Abs(_selectionRotationAngle) > 0.001
+            ? RotatePoint(new PointMm(newAnchorX, newAnchorY), new PointMm(newLogicalCenterX, newLogicalCenterY), _selectionRotationAngle)
+            : new PointMm(newAnchorX, newAnchorY);
+
+        // Calculate the offset needed to keep the anchor point in the same world position
+        double offsetX = originalAnchorWorld.X - newAnchorWorld.X;
+        double offsetY = originalAnchorWorld.Y - newAnchorWorld.Y;
+
+        // Adjust the new logical bounds to compensate
+        var adjustedNewLogicalBounds = new Rect(
+            newLogicalBounds.Left + offsetX,
+            newLogicalBounds.Top + offsetY,
+            newLogicalBounds.Width,
+            newLogicalBounds.Height
+        );
+
+        var adjustedNewLogicalCenterX = adjustedNewLogicalBounds.Left + adjustedNewLogicalBounds.Width / 2;
+        var adjustedNewLogicalCenterY = adjustedNewLogicalBounds.Top + adjustedNewLogicalBounds.Height / 2;
+        var originalCenter = new PointMm(originalLogicalCenterX, originalLogicalCenterY);
+        var newCenter = new PointMm(adjustedNewLogicalCenterX, adjustedNewLogicalCenterY);
+
+        // Transform strokes: unrotate original -> scale -> re-rotate around NEW center
         if (_originalStrokes != null)
         {
             var indices = _selectedIndices.ToList();
+            
             for (int i = 0; i < indices.Count; i++)
             {
                 var idx = indices[i];
                 if (i >= _originalStrokes.Count) continue;
 
                 var original = _originalStrokes[i];
-                doc.Strokes[idx] = ScaleAndFlipStroke(original, _originalBounds, newBounds, flipH, flipV);
+                
+                // Step 1: Unrotate the original stroke back to logical space around the ORIGINAL center
+                LineStroke unrotated;
+                if (Math.Abs(_selectionRotationAngle) > 0.001)
+                {
+                    unrotated = RotateStroke(original, originalCenter, -_selectionRotationAngle);
+                }
+                else
+                {
+                    unrotated = original;
+                }
+                
+                // Step 2: Scale in logical space (using unadjusted bounds for scaling ratios)
+                var scaled = ScaleAndFlipStroke(unrotated, _originalBounds, newLogicalBounds, flipH, flipV);
+                
+                // Step 3: Translate by the offset to keep anchor stationary
+                scaled = TranslateStroke(scaled, offsetX, offsetY);
+                
+                // Step 4: Re-rotate around the adjusted NEW center
+                if (Math.Abs(_selectionRotationAngle) > 0.001)
+                {
+                    scaled = RotateStroke(scaled, newCenter, _selectionRotationAngle);
+                }
+                
+                doc.Strokes[idx] = scaled;
             }
         }
 
-        // Scale and flip paint wells
+        // Transform paint wells: unrotate -> scale -> translate -> re-rotate
         if (_originalPaintWellBounds != null)
         {
             foreach (var (id, originalWellBounds) in _originalPaintWellBounds)
@@ -1499,13 +1651,51 @@ public sealed class SelectionController
                 var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
                 if (well != null)
                 {
-                    well.Bounds = ScaleAndFlipRect(originalWellBounds, _originalBounds, newBounds, flipH, flipV);
+                    // Step 1: Unrotate around ORIGINAL center
+                    Rect unrotated;
+                    if (Math.Abs(_selectionRotationAngle) > 0.001)
+                    {
+                        unrotated = RotateRect(originalWellBounds, originalCenter, -_selectionRotationAngle);
+                    }
+                    else
+                    {
+                        unrotated = originalWellBounds;
+                    }
+                    
+                    // Step 2: Scale
+                    var scaled = ScaleAndFlipRect(unrotated, _originalBounds, newLogicalBounds, flipH, flipV);
+                    
+                    // Step 3: Translate
+                    scaled = new Rect(scaled.Left + offsetX, scaled.Top + offsetY, scaled.Width, scaled.Height);
+                    
+                    // Step 4: Re-rotate around adjusted NEW center
+                    if (Math.Abs(_selectionRotationAngle) > 0.001)
+                    {
+                        scaled = RotateRect(scaled, newCenter, _selectionRotationAngle);
+                    }
+                    
+                    well.Bounds = scaled;
                 }
             }
         }
 
-        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+        // Update the logical bounds for rendering (use the adjusted bounds)
+        _logicalBounds = adjustedNewLogicalBounds;
         _requestRender();
+    }
+    
+    private static LineStroke TranslateStroke(LineStroke stroke, double dx, double dy)
+    {
+        return new LineStroke(
+            new PointMm(stroke.A.X + dx, stroke.A.Y + dy),
+            new PointMm(stroke.B.X + dx, stroke.B.Y + dy)
+        )
+        {
+            PaintWellId = stroke.PaintWellId,
+            GroupId = stroke.GroupId,
+            IsGroupStart = stroke.IsGroupStart,
+            IsGroupEnd = stroke.IsGroupEnd
+        };
     }
 
     private static LineStroke ScaleAndFlipStroke(LineStroke original, Rect oldBounds, Rect newBounds, bool flipH, bool flipV)
@@ -1656,7 +1846,10 @@ public sealed class SelectionController
             _originalBounds.Left + _originalBounds.Width / 2,
             _originalBounds.Top + _originalBounds.Height / 2);
 
-        // Rotate strokes
+        // Calculate the total rotation from the original strokes (base + delta)
+        var totalRotation = _selectionRotationAngle;
+
+        // Rotate strokes from their original positions
         if (_originalStrokes != null)
         {
             var indices = _selectedIndices.ToList();
@@ -1666,7 +1859,13 @@ public sealed class SelectionController
                 if (i >= _originalStrokes.Count) continue;
 
                 var original = _originalStrokes[i];
-                doc.Strokes[idx] = RotateStroke(original, transformCenter, deltaAngle);
+                
+                // First unrotate from base angle, then rotate to new total angle
+                // This is equivalent to rotating by deltaAngle from current position
+                var unrotated = Math.Abs(_baseRotationAngle) > 0.001 
+                    ? RotateStroke(original, transformCenter, -_baseRotationAngle) 
+                    : original;
+                doc.Strokes[idx] = RotateStroke(unrotated, transformCenter, totalRotation);
             }
         }
 
@@ -1678,12 +1877,18 @@ public sealed class SelectionController
                 var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
                 if (well != null)
                 {
-                    well.Bounds = RotateRect(originalWellBounds, transformCenter, deltaAngle);
+                    // First unrotate from base angle, then rotate to new total angle
+                    var unrotated = Math.Abs(_baseRotationAngle) > 0.001 
+                        ? RotateRect(originalWellBounds, transformCenter, -_baseRotationAngle) 
+                        : originalWellBounds;
+                    well.Bounds = RotateRect(unrotated, transformCenter, totalRotation);
                 }
             }
         }
 
-        // Don't update selection bounds during rotation - we use _originalBounds to keep the box size constant
+        // The logical bounds stay the same during rotation - only the angle changes
+        // Don't update _logicalBounds here
+
         _requestRender();
     }
 

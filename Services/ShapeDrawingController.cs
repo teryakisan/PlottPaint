@@ -26,6 +26,7 @@ public sealed class ShapeDrawingController
     private const int BEZIER_SEGMENTS = 48;
     private const double HANDLE_SIZE = 10.0;
     private static int CIRCLE_SEGMENTS => Settings.Default.circleSegments;
+    private static int CIRCLE_CURVE_SEGMENTS => Math.Max(1, Settings.Default.circleCurveSegments);
 
     private readonly Canvas _canvas;
     private readonly Action<LineStroke> _commitStroke;
@@ -136,7 +137,7 @@ public sealed class ShapeDrawingController
         _canvas.CaptureMouse();
     }
 
-    public bool Update(PointMm current)
+    public bool Update(PointMm current, bool constrainAspectRatio = false)
     {
         if (_isBezierActive)
         {
@@ -155,10 +156,10 @@ public sealed class ShapeDrawingController
             switch (_activeTool)
             {
                 case ToolMode.Rectangle:
-                    UpdateRectanglePreview(current);
+                    UpdateRectanglePreview(current, constrainAspectRatio);
                     break;
                 case ToolMode.Circle:
-                    UpdateCirclePreview(current);
+                    UpdateCirclePreview(current, constrainAspectRatio);
                     break;
                 default:
                     if (_previewLine != null)
@@ -180,7 +181,7 @@ public sealed class ShapeDrawingController
         return false;
     }
 
-    public void CompleteDraw(PointMm end)
+    public void CompleteDraw(PointMm end, bool constrainAspectRatio = false)
     {
         if (!_isDrawing) return;
 
@@ -190,14 +191,14 @@ public sealed class ShapeDrawingController
             case ToolMode.Rectangle:
                 _currentGroupId = Guid.NewGuid(); // All rectangle strokes share same group
                 _strokeCountInGroup = 0;
-                FinalizeRectangle(_start, end);
+                FinalizeRectangle(_start, end, constrainAspectRatio);
                 strokesAdded = _strokeCountInGroup;
                 _currentGroupId = null;
                 break;
             case ToolMode.Circle:
                 _currentGroupId = Guid.NewGuid(); // All circle strokes share same group
                 _strokeCountInGroup = 0;
-                FinalizeEllipse(_start, end);
+                FinalizeEllipse(_start, end, constrainAspectRatio);
                 strokesAdded = _strokeCountInGroup;
                 _currentGroupId = null;
                 break;
@@ -382,7 +383,7 @@ public sealed class ShapeDrawingController
         rect.Height = 0;
     }
 
-    private void BeginCirclePreview(PointMm start)
+    private void BeginCirclePreview(PointMm center)
     {
         var ellipse = new Ellipse
         {
@@ -396,38 +397,63 @@ public sealed class ShapeDrawingController
         _previewShape = ellipse;
         _canvas.Children.Add(ellipse);
         Panel.SetZIndex(ellipse, 15);
-        Canvas.SetLeft(ellipse, start.X);
-        Canvas.SetTop(ellipse, start.Y);
+        // Circle draws from center - start with zero size at center
+        Canvas.SetLeft(ellipse, center.X);
+        Canvas.SetTop(ellipse, center.Y);
         ellipse.Width = 0;
         ellipse.Height = 0;
     }
 
-    private void UpdateRectanglePreview(PointMm current)
+    private void UpdateRectanglePreview(PointMm current, bool constrainAspectRatio = false)
     {
         if (_previewShape is not Rectangle rect) return;
 
-        var left = Math.Min(_start.X, current.X);
-        var top = Math.Min(_start.Y, current.Y);
-        var width = Math.Abs(current.X - _start.X);
-        var height = Math.Abs(current.Y - _start.Y);
+        // Rectangle draws from center (_start) outward to current point
+        // The half-width/half-height in each direction is the distance from center to current
+        var halfWidth = Math.Abs(current.X - _start.X);
+        var halfHeight = Math.Abs(current.Y - _start.Y);
 
-        Canvas.SetLeft(rect, left);
-        Canvas.SetTop(rect, top);
+        // Constrain to square if Ctrl is held
+        if (constrainAspectRatio)
+        {
+            var halfSize = Math.Max(halfWidth, halfHeight);
+            halfWidth = halfSize;
+            halfHeight = halfSize;
+        }
+
+        var width = halfWidth * 2;
+        var height = halfHeight * 2;
+
+        // Position rectangle so center stays at _start
+        Canvas.SetLeft(rect, _start.X - halfWidth);
+        Canvas.SetTop(rect, _start.Y - halfHeight);
         rect.Width = width;
         rect.Height = height;
     }
 
-    private void UpdateCirclePreview(PointMm current)
+    private void UpdateCirclePreview(PointMm current, bool constrainAspectRatio = false)
     {
         if (_previewShape is not Ellipse ellipse) return;
 
-        var left = Math.Min(_start.X, current.X);
-        var top = Math.Min(_start.Y, current.Y);
-        var width = Math.Abs(current.X - _start.X);
-        var height = Math.Abs(current.Y - _start.Y);
+        // Circle draws from center (_start) outward to current point
+        // The radius in each direction is the distance from center to current
+        var radiusX = Math.Abs(current.X - _start.X);
+        var radiusY = Math.Abs(current.Y - _start.Y);
 
-        Canvas.SetLeft(ellipse, left);
-        Canvas.SetTop(ellipse, top);
+        // Constrain to perfect circle if Ctrl is held
+        if (constrainAspectRatio)
+        {
+            var radius = Math.Max(radiusX, radiusY);
+            radiusX = radius;
+            radiusY = radius;
+        }
+
+        var width = radiusX * 2;
+        var height = radiusY * 2;
+
+        // Position ellipse so center stays at _start
+        Canvas.SetLeft(ellipse, _start.X - radiusX);
+        Canvas.SetTop(ellipse, _start.Y - radiusY);
         ellipse.Width = width;
         ellipse.Height = height;
     }
@@ -445,14 +471,32 @@ public sealed class ShapeDrawingController
         _previewLine.Y2 = current.Y;
     }
 
-    private void FinalizeRectangle(PointMm start, PointMm end)
+    private void FinalizeRectangle(PointMm center, PointMm edge, bool constrainAspectRatio = false)
     {
-        var left = Math.Min(start.X, end.X);
-        var right = Math.Max(start.X, end.X);
-        var top = Math.Min(start.Y, end.Y);
-        var bottom = Math.Max(start.Y, end.Y);
+        // Rectangle is drawn from center (start) outward to edge point
+        // The half-width/half-height in each direction is the distance from center to edge
+        var halfWidth = Math.Abs(edge.X - center.X);
+        var halfHeight = Math.Abs(edge.Y - center.Y);
 
-        if ((right - left) < MIN_DIST || (bottom - top) < MIN_DIST) return;
+        // Constrain to square if Ctrl is held
+        if (constrainAspectRatio)
+        {
+            var halfSize = Math.Max(halfWidth, halfHeight);
+            halfWidth = halfSize;
+            halfHeight = halfSize;
+        }
+
+        if (halfWidth < MIN_DIST && halfHeight < MIN_DIST) return;
+
+        // Ensure minimum size
+        halfWidth = Math.Max(halfWidth, 0.1);
+        halfHeight = Math.Max(halfHeight, 0.1);
+
+        // Calculate the four corners from center
+        var left = center.X - halfWidth;
+        var right = center.X + halfWidth;
+        var top = center.Y - halfHeight;
+        var bottom = center.Y + halfHeight;
 
         var topLeft = new PointMm(left, top);
         var topRight = new PointMm(right, top);
@@ -466,49 +510,71 @@ public sealed class ShapeDrawingController
         AddStroke(bottomLeft, topLeft, isGroupEnd: true);
     }
 
-    private void FinalizeEllipse(PointMm start, PointMm end)
+    private void FinalizeEllipse(PointMm center, PointMm edge, bool constrainAspectRatio = false)
     {
-        var left = Math.Min(start.X, end.X);
-        var right = Math.Max(start.X, end.X);
-        var top = Math.Min(start.Y, end.Y);
-        var bottom = Math.Max(start.Y, end.Y);
+        // Circle is drawn from center (start) outward to edge point
+        // The radius in each direction is the distance from center to edge
+        var radiusX = Math.Abs(edge.X - center.X);
+        var radiusY = Math.Abs(edge.Y - center.Y);
 
-        if ((right - left) < MIN_DIST || (bottom - top) < MIN_DIST) return;
+        // Constrain to perfect circle if Ctrl is held
+        if (constrainAspectRatio)
+        {
+            var radius = Math.Max(radiusX, radiusY);
+            radiusX = radius;
+            radiusY = radius;
+        }
 
-        var centerX = (left + right) / 2.0;
-        var centerY = (top + bottom) / 2.0;
-        var radiusX = Math.Max((right - left) / 2.0, 0.1);
-        var radiusY = Math.Max((bottom - top) / 2.0, 0.1);
+        if (radiusX < MIN_DIST && radiusY < MIN_DIST) return;
 
-        PointMm? firstPoint = null;
-        PointMm? prevPoint = null;
+        // Ensure minimum radius
+        radiusX = Math.Max(radiusX, 0.1);
+        radiusY = Math.Max(radiusY, 0.1);
 
+        var centerX = center.X;
+        var centerY = center.Y;
+
+        var curveSegments = CIRCLE_CURVE_SEGMENTS;
+        var lineSegmentsPerCurve = Math.Max(1, CIRCLE_SEGMENTS / curveSegments);
+        
         _strokeCountInGroup = 0;
-        for (int i = 0; i < CIRCLE_SEGMENTS; i++)
+
+        // Create N separate curve groups, each with its own GroupId
+        for (int curveIdx = 0; curveIdx < curveSegments; curveIdx++)
         {
-            var angle = 2.0 * Math.PI * i / CIRCLE_SEGMENTS;
-            var x = centerX + radiusX * Math.Cos(angle);
-            var y = centerY + radiusY * Math.Sin(angle);
-            var point = new PointMm(x, y);
+            // Each curve segment gets its own GroupId for separate start/end indicators
+            _currentGroupId = Guid.NewGuid();
+            var curveStrokeCount = 0;
 
-            if (prevPoint is PointMm prev)
-            {
-                // Mark first segment as group start
-                AddStroke(prev, point, isGroupStart: _strokeCountInGroup == 0);
-            }
-            else
-            {
-                firstPoint = point;
-            }
+            // Calculate the start and end angle for this curve segment
+            var startAngle = 2.0 * Math.PI * curveIdx / curveSegments;
+            var endAngle = 2.0 * Math.PI * (curveIdx + 1) / curveSegments;
 
-            prevPoint = point;
+            PointMm? prevPoint = null;
+
+            // Create line segments for this portion of the ellipse
+            for (int i = 0; i <= lineSegmentsPerCurve; i++)
+            {
+                var t = (double)i / lineSegmentsPerCurve;
+                var angle = startAngle + t * (endAngle - startAngle);
+                var x = centerX + radiusX * Math.Cos(angle);
+                var y = centerY + radiusY * Math.Sin(angle);
+                var point = new PointMm(x, y);
+
+                if (prevPoint is PointMm prev)
+                {
+                    var isFirst = curveStrokeCount == 0;
+                    var isLast = i == lineSegmentsPerCurve;
+                    AddStroke(prev, point, isGroupStart: isFirst, isGroupEnd: isLast);
+                    curveStrokeCount++;
+                }
+
+                prevPoint = point;
+            }
         }
 
-        if (prevPoint is PointMm last && firstPoint is PointMm first)
-        {
-            // Mark last segment as group end
-            AddStroke(last, first, isGroupEnd: true);
-        }
+        // Clear the current group ID after all curves are done
+        _currentGroupId = null;
     }
 
     private void CancelPreview()
