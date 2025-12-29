@@ -916,57 +916,147 @@ public sealed class SelectionController
     /// After separation, the selected strokes form a new standalone group (or individual strokes if only one).
     /// Returns true if any strokes were separated.
     /// </summary>
+    /// <summary>
+    /// Separates the selected strokes from their parent groups by assigning them new unique GroupIds.
+    /// When strokes are removed from the middle of a group, three separate groups are created:
+    /// 1. Left segment (strokes before the selection)
+    /// 2. Separated center (the selected strokes)
+    /// 3. Right segment (strokes after the selection)
+    /// Returns true if any strokes were separated.
+    /// </summary>
     public bool SeparateFromGroup()
     {
         if (_selectedIndices.Count == 0) return false;
 
         var doc = _getDocument();
-        
-        // Check if any selected strokes are part of a group
-        var hasGroupedStrokes = false;
+
+        // Group selected indices by their original GroupId
+        var selectedByGroup = new Dictionary<Guid, List<int>>();
+
         foreach (var idx in _selectedIndices)
         {
-            if (idx >= 0 && idx < doc.Strokes.Count && doc.Strokes[idx].GroupId.HasValue)
+            if (idx < 0 || idx >= doc.Strokes.Count) continue;
+            var stroke = doc.Strokes[idx];
+
+            if (stroke.GroupId.HasValue)
             {
-                hasGroupedStrokes = true;
-                break;
+                if (!selectedByGroup.TryGetValue(stroke.GroupId.Value, out var list))
+                {
+                    list = new List<int>();
+                    selectedByGroup[stroke.GroupId.Value] = list;
+                }
+                list.Add(idx);
             }
         }
-        
-        if (!hasGroupedStrokes) return false;
 
-        // Generate a new GroupId for the separated strokes (if more than one stroke selected)
-        // If only one stroke is selected, make it an individual stroke (null GroupId)
-        Guid? newGroupId = _selectedIndices.Count > 1 ? Guid.NewGuid() : null;
-        
-        // Get selected strokes in order
-        var orderedIndices = _selectedIndices.OrderBy(i => i).ToList();
-        
-        // Assign new GroupId and update IsGroupStart/IsGroupEnd markers
-        for (int i = 0; i < orderedIndices.Count; i++)
+        if (selectedByGroup.Count == 0) return false; // No grouped strokes to separate
+
+        // Process each original group
+        foreach (var kvp in selectedByGroup)
         {
-            var idx = orderedIndices[i];
-            if (idx < 0 || idx >= doc.Strokes.Count) continue;
-            
-            var stroke = doc.Strokes[idx];
-            
-            // Create a new stroke with the new GroupId
-            var newStroke = new LineStroke(stroke.A, stroke.B)
+            var originalGroupId = kvp.Key;
+            var selectedIndicesInGroup = kvp.Value;
+
+            // Find ALL strokes in this original group (not just selected ones)
+            var allGroupIndices = new List<int>();
+            for (int i = 0; i < doc.Strokes.Count; i++)
             {
-                PaintWellId = stroke.PaintWellId,
-                GroupId = newGroupId,
-                IsGroupStart = i == 0, // First stroke in new group is start
-                IsGroupEnd = i == orderedIndices.Count - 1 // Last stroke in new group is end
-            };
-            
-            doc.Strokes[idx] = newStroke;
+                if (doc.Strokes[i].GroupId == originalGroupId)
+                {
+                    allGroupIndices.Add(i);
+                }
+            }
+
+            // Sort indices to maintain stroke order
+            allGroupIndices.Sort();
+            var selectedSet = new HashSet<int>(selectedIndicesInGroup);
+
+            // Partition into: before (left), selected (center), after (right)
+            var leftIndices = new List<int>();
+            var centerIndices = new List<int>();
+            var rightIndices = new List<int>();
+
+            bool foundFirstSelected = false;
+
+            foreach (var idx in allGroupIndices)
+            {
+                if (selectedSet.Contains(idx))
+                {
+                    foundFirstSelected = true;
+                    centerIndices.Add(idx);
+                }
+                else if (!foundFirstSelected)
+                {
+                    leftIndices.Add(idx);
+                }
+                else
+                {
+                    rightIndices.Add(idx);
+                }
+            }
+
+            // Left segment gets new GroupId (if it has strokes)
+            if (leftIndices.Count > 0)
+            {
+                var leftGroupId = leftIndices.Count > 1 ? Guid.NewGuid() : (Guid?)null;
+                for (int i = 0; i < leftIndices.Count; i++)
+                {
+                    var idx = leftIndices[i];
+                    var stroke = doc.Strokes[idx];
+                    doc.Strokes[idx] = new LineStroke(stroke.A, stroke.B)
+                    {
+                        PaintWellId = stroke.PaintWellId,
+                        GroupId = leftGroupId,
+                        IsGroupStart = i == 0,
+                        IsGroupEnd = i == leftIndices.Count - 1
+                    };
+                }
+            }
+
+            // Center (selected) segment gets new GroupId
+            if (centerIndices.Count > 0)
+            {
+                var centerGroupId = centerIndices.Count > 1 ? Guid.NewGuid() : (Guid?)null;
+                var orderedCenter = centerIndices.OrderBy(i => i).ToList();
+
+                for (int i = 0; i < orderedCenter.Count; i++)
+                {
+                    var idx = orderedCenter[i];
+                    var stroke = doc.Strokes[idx];
+                    doc.Strokes[idx] = new LineStroke(stroke.A, stroke.B)
+                    {
+                        PaintWellId = stroke.PaintWellId,
+                        GroupId = centerGroupId,
+                        IsGroupStart = i == 0,
+                        IsGroupEnd = i == orderedCenter.Count - 1
+                    };
+                }
+            }
+
+            // Right segment gets new GroupId (if it has strokes)
+            if (rightIndices.Count > 0)
+            {
+                var rightGroupId = rightIndices.Count > 1 ? Guid.NewGuid() : (Guid?)null;
+                for (int i = 0; i < rightIndices.Count; i++)
+                {
+                    var idx = rightIndices[i];
+                    var stroke = doc.Strokes[idx];
+                    doc.Strokes[idx] = new LineStroke(stroke.A, stroke.B)
+                    {
+                        PaintWellId = stroke.PaintWellId,
+                        GroupId = rightGroupId,
+                        IsGroupStart = i == 0,
+                        IsGroupEnd = i == rightIndices.Count - 1
+                    };
+                }
+            }
         }
-        
+
         // Update the bounds after modification
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
         _logicalBounds = _selectionBounds;
         _selectionRotationAngle = 0; // Reset rotation for new selection
-        
+
         _requestRender();
         return true;
     }

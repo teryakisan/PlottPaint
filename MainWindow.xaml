@@ -293,10 +293,6 @@
                                       ToolTip="Maximum distance before paint refresh"/>
                                             <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center" FontSize="10"/>
                                         </StackPanel>
-
-                                        <Button Content="Apply Color to Selection" Margin="0,5,0,0" 
-                                 Click="ApplyPaintToSelection_Click"
-                                 ToolTip="Apply this paint well's color to selected strokes"/>
                                     </StackPanel>
                                 </Border>
                             </StackPanel>

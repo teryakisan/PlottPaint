@@ -1255,6 +1255,7 @@ namespace NVSPlotter
             {
                 _paintWellController.SetActiveColor(hitWell);
                 UpdateActivePaintWellCombo();
+                UpdatePaintWellChipHighlights(); // Update visual highlight on color chips
                 AppendLog($"Active color set to: {hitWell.Name}");
                 RenderAll(); // Update visuals to show active well
                 
@@ -4380,6 +4381,7 @@ namespace NVSPlotter
 
         /// <summary>
         /// Handles click on a paint well color chip in the grid view.
+        /// If strokes are selected, automatically applies the color to them.
         /// </summary>
         private void PaintWellChip_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
@@ -4394,6 +4396,24 @@ namespace NVSPlotter
             _paintWellController.SetActiveColor(well);
             UpdateActivePaintWellCombo();
             
+            // AUTO-APPLY: If strokes are selected, apply this color to them immediately
+            if (_selectionController.HasSelection && _selectionController.SelectedIndices.Count > 0)
+            {
+                foreach (var idx in _selectionController.SelectedIndices)
+                {
+                    if (idx >= 0 && idx < _doc.Strokes.Count)
+                    {
+                        _doc.Strokes[idx].PaintWellId = well.Id;
+                    }
+                }
+                _lastGcode = ""; // Invalidate G-code cache
+                AppendLog($"Applied '{well.Name}' color to {_selectionController.SelectedIndices.Count} stroke(s).");
+            }
+            else
+            {
+                AppendLog($"Active color set to: {well.Name}");
+            }
+            
             // Also sync the hidden ListBox selection for backward compatibility
             if (FindName("PaintWellsList") is ListBox list)
             {
@@ -4404,8 +4424,7 @@ namespace NVSPlotter
             
             UpdateSelectedWellPropertiesUI();
             UpdatePaintWellChipHighlights(); // Update visual highlight
-            RenderAll(); // Update visuals to show active well
-            AppendLog($"Active color set to: {well.Name}");
+            RenderAll(); // Update visuals to show active well and applied colors
             e.Handled = true;
         }
 
@@ -4674,35 +4693,6 @@ namespace NVSPlotter
                 _paintWellController.UpdateSelectedWell(refreshDistanceMaxMm: value);
                 _lastGcode = "";
             }
-        }
-
-        private void ApplyPaintToSelection_Click(object sender, RoutedEventArgs e)
-        {
-            if (!_selectionController.HasSelection)
-            {
-                AppendLog("No strokes selected. Use the Select tool to select strokes first.");
-                return;
-            }
-
-            var well = _paintWellController.SelectedWell;
-            if (well == null)
-            {
-                AppendLog("No paint well selected in the list.");
-                return;
-            }
-
-            // Apply the selected well to all selected strokes
-            foreach (var idx in _selectionController.SelectedIndices)
-            {
-                if (idx >= 0 && idx < _doc.Strokes.Count)
-                {
-                    _doc.Strokes[idx].PaintWellId = well.Id;
-                }
-            }
-
-            _lastGcode = "";
-            RenderAll();
-            AppendLog($"Applied '{well.Name}' color to {_selectionController.SelectedIndices.Count} stroke(s).");
         }
 
         // ===== PROJECT FILE OPERATIONS =====
