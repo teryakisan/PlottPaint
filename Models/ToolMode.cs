@@ -8,6 +8,7 @@ public enum ToolMode
     Circle,
     Polyline,
     Bezier,
+    PolyBezier,
     Erase,
     Measure,
     Guides,
@@ -16,5 +17,6 @@ public enum ToolMode
     Crop,
     ImageAlign,
     PaintWell,
-    Zoom
+    Zoom,
+    FreeDraw
 }

@@ -86,8 +86,9 @@ namespace NVSPlotter
         private readonly SelectionController _selectionController;
         private readonly PaintWellController _paintWellController;
 
-        // Undo
-        private readonly Stack<LineStroke> _undo = new();
+        // Undo - stores group sizes for multi-stroke operations (e.g., rectangles, circles, freehand)
+        private readonly Stack<int> _undoGroupSizes = new();
+        private int _strokeCountBeforeOperation;
 
         // Pan state (middle mouse)
         private bool _isPanning;
@@ -181,6 +182,9 @@ namespace NVSPlotter
                 stroke => { _doc.Strokes.Add(stroke); _lastGcode = ""; },
                 RenderAll,
                 () => _paintWellController?.ActiveColorWell?.Id);
+
+            // Track stroke count for grouped undo
+            _strokeCountBeforeOperation = 0;
 
             _selectionController = new SelectionController(
                 DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
@@ -298,7 +302,7 @@ namespace NVSPlotter
 
             var idx = PagePresetCombo.SelectedIndex;
             _doc = idx == 1 ? new PlotDocument(1189, 841) : new PlotDocument(841, 1189);
-            _undo.Clear();
+            _undoGroupSizes.Clear();
             _lastGcode = "";
             RenderAll();
         }
@@ -462,7 +466,7 @@ namespace NVSPlotter
         private void ClearBtn_Click(object sender, RoutedEventArgs e)
         {
             _doc.Strokes.Clear();
-            _undo.Clear();
+            _undoGroupSizes.Clear();
             _lastGcode = "";
             RenderAll();
         }
@@ -670,9 +674,20 @@ namespace NVSPlotter
         {
             if (_doc.Strokes.Count == 0) return;
 
-            var last = _doc.Strokes[^1];
-            _doc.Strokes.RemoveAt(_doc.Strokes.Count - 1);
-            _undo.Push(last);
+            // Determine how many strokes to undo
+            int countToUndo = 1;
+            if (_undoGroupSizes.Count > 0)
+            {
+                countToUndo = _undoGroupSizes.Pop();
+            }
+
+            // Remove the strokes (up to the group size or remaining strokes)
+            countToUndo = Math.Min(countToUndo, _doc.Strokes.Count);
+            for (int i = 0; i < countToUndo; i++)
+            {
+                _doc.Strokes.RemoveAt(_doc.Strokes.Count - 1);
+            }
+
             _lastGcode = "";
             RenderAll();
         }
@@ -782,6 +797,11 @@ namespace NVSPlotter
             {
                 _selectionController.Cancel();
             }
+            if (_shapeController.IsFreeDrawing)
+            {
+                _shapeController.EndFreeDraw(); // Complete the stroke on leave instead of canceling
+                _lastGcode = "";
+            }
             if (_paintWellController.IsCreating || _paintWellController.IsDragging)
             {
                 _paintWellController.Cancel();
@@ -873,15 +893,26 @@ namespace NVSPlotter
             }
  
             var rawMm = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
-            var mm = ApplySnapping(rawMm, out var snappedTo, out var snapType, out var gridSnapped);
-            UpdateSnapIndicator(snappedTo, snapType, gridSnapped ? mm : null);
+                var mm = ApplySnapping(rawMm, out var snappedTo, out var snapType, out var gridSnapped);
+                UpdateSnapIndicator(snappedTo, snapType, gridSnapped ? mm : null);
 
-            if (_shapeController.Update(mm))
-            {
-                e.Handled = true;
-                return;
+                // FreeDraw tool - update while mouse is held
+                if (_shapeController.IsFreeDrawing)
+                {
+                    // Pass zoom level for pixel-based distance calculation
+                    if (_shapeController.UpdateFreeDraw(rawMm, _zoom.ScaleX))
+                    {
+                        e.Handled = true;
+                        return;
+                    }
+                }
+
+                if (_shapeController.Update(mm))
+                {
+                    e.Handled = true;
+                    return;
+                }
             }
-        }
 
         private void DrawCanvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
@@ -936,14 +967,54 @@ namespace NVSPlotter
 
             if (tool == ToolMode.Bezier)
             {
+                // Track stroke count when starting a new bezier
+                if (!_shapeController.IsBezierActive)
+                {
+                    _strokeCountBeforeOperation = _doc.Strokes.Count;
+                }
                 _shapeController.HandleBezierClick(point);
+                // If bezier just finished (by third click), record undo group
+                if (!_shapeController.IsBezierActive)
+                {
+                    var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                    if (strokesAdded > 0)
+                    {
+                        _undoGroupSizes.Push(strokesAdded);
+                    }
+                }
+                e.Handled = true;
+                return;
+            }
+
+            if (tool == ToolMode.PolyBezier)
+            {
+                // Track stroke count when starting a new poly-bezier
+                if (!_shapeController.IsPolyBezierActive)
+                {
+                    _strokeCountBeforeOperation = _doc.Strokes.Count;
+                }
+                _shapeController.HandlePolyBezierClick(point);
                 e.Handled = true;
                 return;
             }
 
             if (tool == ToolMode.Polyline)
             {
+                // Track stroke count for the entire polyline operation
+                if (!_shapeController.IsPolylineActive)
+                {
+                    _strokeCountBeforeOperation = _doc.Strokes.Count;
+                }
                 _shapeController.HandlePolylineClick(point, e.ClickCount >= 2);
+                // If polyline just finished (by double-click or auto-close), record undo group
+                if (!_shapeController.IsPolylineActive)
+                {
+                    var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                    if (strokesAdded > 0)
+                    {
+                        _undoGroupSizes.Push(strokesAdded);
+                    }
+                }
                 e.Handled = true;
                 return;
             }
@@ -969,13 +1040,23 @@ namespace NVSPlotter
                 // Store where in the viewport the click occurred (relative to viewport, not content)
                 _zoomDragViewportOffset = _zoomDragStart;
                 DrawCanvas.CaptureMouse();
-                e.Handled = true;
-                return;
-            }
+                        e.Handled = true;
+                        return;
+                    }
 
-            _shapeController.BeginDraw(tool, point);
-            e.Handled = true;
-        }
+                    // FreeDraw tool - continuous freehand drawing
+                    if (tool == ToolMode.FreeDraw)
+                    {
+                        _strokeCountBeforeOperation = _doc.Strokes.Count;
+                        _shapeController.BeginFreeDraw(point);
+                        e.Handled = true;
+                        return;
+                    }
+
+                    _strokeCountBeforeOperation = _doc.Strokes.Count;
+                    _shapeController.BeginDraw(tool, point);
+                    e.Handled = true;
+                }
 
         private void DrawCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
         {
@@ -1000,6 +1081,21 @@ namespace NVSPlotter
             if (_workingAreaManager.IsDragging)
             {
                 CompleteWorkingAreaDrag(e);
+                return;
+            }
+
+            // FreeDraw tool completion
+            if (_shapeController.IsFreeDrawing)
+            {
+                _shapeController.EndFreeDraw();
+                // Record undo group for all strokes added by this freehand drawing
+                var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                if (strokesAdded > 0)
+                {
+                    _undoGroupSizes.Push(strokesAdded);
+                }
+                _lastGcode = ""; // Invalidate G-code cache
+                e.Handled = true;
                 return;
             }
 
@@ -1040,6 +1136,12 @@ namespace NVSPlotter
                 var rawEnd = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
                 var endMm = ApplySnapping(rawEnd, out _, out _, out _);
                 _shapeController.CompleteDraw(endMm);
+                // Record undo group for all strokes added by this shape
+                var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                if (strokesAdded > 0)
+                {
+                    _undoGroupSizes.Push(strokesAdded);
+                }
                 e.Handled = true;
                 return;
             }
@@ -1296,6 +1398,11 @@ namespace NVSPlotter
             if (tool != ToolMode.Bezier && _shapeController.IsBezierActive)
             {
                 _shapeController.CancelBezier();
+            }
+
+            if (tool != ToolMode.PolyBezier && _shapeController.IsPolyBezierActive)
+            {
+                _shapeController.CancelPolyBezier();
             }
 
             if (_shapeController.IsDrawing && tool != ToolMode.Polyline && tool != ToolMode.Bezier)
@@ -1607,12 +1714,36 @@ namespace NVSPlotter
 
             if (_shapeController.TryFinishBezier())
             {
+                // Record undo group for the bezier that just finished
+                var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                if (strokesAdded > 0)
+                {
+                    _undoGroupSizes.Push(strokesAdded);
+                }
+                e.Handled = true;
+                return;
+            }
+
+            if (_shapeController.TryFinishPolyBezier())
+            {
+                // Record undo group for the poly-bezier that just finished
+                var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                if (strokesAdded > 0)
+                {
+                    _undoGroupSizes.Push(strokesAdded);
+                }
                 e.Handled = true;
                 return;
             }
 
             if (_shapeController.TryFinishPolyline())
             {
+                // Record undo group for the polyline that just finished
+                var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                if (strokesAdded > 0)
+                {
+                    _undoGroupSizes.Push(strokesAdded);
+                }
                 e.Handled = true;
             }
         }
@@ -1636,6 +1767,11 @@ namespace NVSPlotter
             if (tool != ToolMode.Bezier && _shapeController.IsBezierActive)
             {
                 _shapeController.CancelBezier();
+            }
+
+            if (tool != ToolMode.PolyBezier && _shapeController.IsPolyBezierActive)
+            {
+                _shapeController.CancelPolyBezier();
             }
 
             if (_shapeController.IsDrawing && tool != ToolMode.Polyline && tool != ToolMode.Bezier)
@@ -1707,6 +1843,32 @@ namespace NVSPlotter
                 else
                 {
                     _shapeController.TryFinishBezier();
+                    // Record undo group for the bezier that just finished
+                    var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                    if (strokesAdded > 0)
+                    {
+                        _undoGroupSizes.Push(strokesAdded);
+                    }
+                }
+                e.Handled = true;
+                return;
+            }
+
+            if (_shapeController.IsPolyBezierActive && (e.Key == Key.Escape || e.Key == Key.Enter || e.Key == Key.Return))
+            {
+                if (e.Key == Key.Escape)
+                {
+                    _shapeController.CancelPolyBezier();
+                }
+                else
+                {
+                    _shapeController.TryFinishPolyBezier();
+                    // Record undo group for the poly-bezier that just finished
+                    var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                    if (strokesAdded > 0)
+                    {
+                        _undoGroupSizes.Push(strokesAdded);
+                    }
                 }
                 e.Handled = true;
                 return;
@@ -1715,6 +1877,15 @@ namespace NVSPlotter
             if (_shapeController.IsPolylineActive && (e.Key == Key.Escape || e.Key == Key.Enter || e.Key == Key.Return))
             {
                 _shapeController.FinishPolyline();
+                // Record undo group for the polyline that just finished (only on Enter, not Escape)
+                if (e.Key != Key.Escape)
+                {
+                    var strokesAdded = _doc.Strokes.Count - _strokeCountBeforeOperation;
+                    if (strokesAdded > 0)
+                    {
+                        _undoGroupSizes.Push(strokesAdded);
+                    }
+                }
                 e.Handled = true;
                 return;
             }
@@ -3206,12 +3377,82 @@ namespace NVSPlotter
                 }
 
                 // Update selected well properties
-                UpdateSelectedWellPropertiesUI();
-            }
-            finally
+                    UpdateSelectedWellPropertiesUI();
+                
+                    // Update chip highlights after the grid is populated
+                    Dispatcher.BeginInvoke(new Action(UpdatePaintWellChipHighlights), System.Windows.Threading.DispatcherPriority.Loaded);
+                }
+                finally
+                {
+                    _suppressPaintWellUIUpdate = false;
+                }
+        }
+
+        /// <summary>
+        /// Updates the visual highlight on paint well chips to show which is active.
+        /// </summary>
+        private void UpdatePaintWellChipHighlights()
+        {
+            if (FindName("PaintWellsGrid") is not ItemsControl grid) return;
+
+            var activeWellId = _paintWellController.ActiveColorWell?.Id;
+
+            // Standard system blue for selection highlight
+            var highlightColor = Color.FromRgb(0, 120, 215); // Windows accent blue (#0078D7)
+            var highlightBrush = new SolidColorBrush(highlightColor);
+            var highlightBackground = new SolidColorBrush(Color.FromArgb(30, highlightColor.R, highlightColor.G, highlightColor.B));
+
+            // Iterate through all items in the grid
+            for (int i = 0; i < grid.Items.Count; i++)
             {
-                _suppressPaintWellUIUpdate = false;
+                var container = grid.ItemContainerGenerator.ContainerFromIndex(i) as ContentPresenter;
+                if (container == null) continue;
+
+                // Find the SelectionHighlight border in the visual tree
+                var highlightBorder = FindVisualChild<Border>(container, "SelectionHighlight");
+                if (highlightBorder == null) continue;
+
+                // Find the inner WellChip to get the paint well data
+                var wellChip = FindVisualChild<Border>(container, "WellChip");
+                if (wellChip?.Tag is not PaintWell well) continue;
+
+                // Apply highlight if this is the active well
+                if (activeWellId.HasValue && well.Id == activeWellId.Value)
+                {
+                    // Active well: show highlight border with standard blue
+                    highlightBorder.BorderBrush = highlightBrush;
+                    highlightBorder.Background = highlightBackground;
+                }
+                else
+                {
+                    // Not active: transparent border
+                    highlightBorder.BorderBrush = Brushes.Transparent;
+                    highlightBorder.Background = Brushes.Transparent;
+                }
             }
+        }
+
+        /// <summary>
+        /// Finds a child element of the specified type and name in the visual tree.
+        /// </summary>
+        private static T? FindVisualChild<T>(DependencyObject parent, string childName) where T : DependencyObject
+        {
+            for (int i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+            {
+                var child = VisualTreeHelper.GetChild(parent, i);
+
+                if (child is T typedChild && child is FrameworkElement fe && fe.Name == childName)
+                {
+                    return typedChild;
+                }
+
+                var found = FindVisualChild<T>(child, childName);
+                if (found != null)
+                {
+                    return found;
+                }
+            }
+            return null;
         }
 
         private void UpdateSelectedWellPropertiesUI()
@@ -3308,6 +3549,10 @@ namespace NVSPlotter
             // Select the well for editing
             _paintWellController.SelectWell(well);
             
+            // Also set as active color for painting new strokes
+            _paintWellController.SetActiveColor(well);
+            UpdateActivePaintWellCombo();
+            
             // Also sync the hidden ListBox selection for backward compatibility
             if (FindName("PaintWellsList") is ListBox list)
             {
@@ -3317,6 +3562,9 @@ namespace NVSPlotter
             }
             
             UpdateSelectedWellPropertiesUI();
+            UpdatePaintWellChipHighlights(); // Update visual highlight
+            RenderAll(); // Update visuals to show active well
+            AppendLog($"Active color set to: {well.Name}");
             e.Handled = true;
         }
 
@@ -3640,7 +3888,7 @@ namespace NVSPlotter
 
             // Reset document
             _doc = new PlotDocument(Settings.Default.bedX, Settings.Default.bedY);
-            _undo.Clear();
+            _undoGroupSizes.Clear();
             _lastGcode = "";
             _currentProjectPath = null;
             _imageService.Clear();
@@ -3911,7 +4159,7 @@ namespace NVSPlotter
             }
 
             // Reset state
-            _undo.Clear();
+            _undoGroupSizes.Clear();
             _lastGcode = "";
             _currentProjectPath = filePath;
             _imageService.Clear();

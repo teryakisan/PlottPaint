@@ -19,7 +19,7 @@ public partial class ToolsWindow : Window
 {
     private readonly Dictionary<string, Button> _toolButtons = new();
     private readonly Action<ToolMode> _onToolSelected;
-    private ToolMode _currentTool = ToolMode.PaintWell;
+    private ToolMode _currentTool = ToolMode.Select;
     private bool _isClosingForReal;
     private bool _positionRestored;
 
@@ -106,8 +106,8 @@ public partial class ToolsWindow : Window
         // Restore saved position after load
         RestoreSavedPosition();
 
-        // Select initial tool
-        SelectTool(ToolMode.PaintWell, notify: false);
+        // Select initial tool (Select is the default)
+        SelectTool(ToolMode.Select, notify: false);
     }
 
     private void Window_LocationChanged(object sender, EventArgs e)
@@ -206,18 +206,26 @@ public partial class ToolsWindow : Window
     /// </summary>
     public bool HandleKeyboardShortcut(Key key, ModifierKeys modifiers)
     {
-        // Only handle shortcuts when no modifiers are pressed (except for specific combos)
+        // Handle Shift+B for PolyBezier
+        if (key == Key.B && modifiers == ModifierKeys.Shift)
+        {
+            SelectTool(ToolMode.PolyBezier);
+            return true;
+        }
+
+        // Only handle other shortcuts when no modifiers are pressed
         if (modifiers != ModifierKeys.None) return false;
 
         ToolMode? tool = key switch
         {
-            Key.W => ToolMode.PaintWell,
+            Key.V => ToolMode.Select,
+            Key.F => ToolMode.FreeDraw,
             Key.L => ToolMode.Line,
             Key.R => ToolMode.Rectangle,
             Key.C => ToolMode.Circle,
             Key.P => ToolMode.Polyline,
             Key.B => ToolMode.Bezier,
-            Key.V => ToolMode.Select,
+            Key.W => ToolMode.PaintWell,
             Key.H => ToolMode.Pan,
             Key.Z => ToolMode.Zoom,
             Key.M => ToolMode.Measure,

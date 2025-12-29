@@ -99,7 +99,7 @@ public sealed class SelectionController
     {
         var doc = _getDocument();
 
-        // Check if clicking on a handle
+        // Check if clicking on a handle (handles are in canvas space for paint wells)
         if (HasSelection)
         {
             var handle = HitTestHandle(point);
@@ -117,8 +117,11 @@ public sealed class SelectionController
             }
         }
 
+        // For paint well hit testing, convert canvas coordinates to document coordinates
+        var docPoint = CanvasToDocument(point);
+
         // Check if clicking on a paint well first (they're visually larger/easier to click)
-        var hitWell = HitTestPaintWell(point, doc.PaintWells);
+        var hitWell = HitTestPaintWell(docPoint, doc.PaintWells);
         if (hitWell != null)
         {
             if (shiftHeld)
@@ -141,7 +144,7 @@ public sealed class SelectionController
             return true;
         }
 
-        // Check if clicking on a stroke (single select)
+        // Check if clicking on a stroke (single select) - strokes use canvas coordinates directly
         var hitIndex = HitTestStroke(point, doc.Strokes);
         if (hitIndex >= 0)
         {
@@ -173,6 +176,14 @@ public sealed class SelectionController
         }
         BeginMarquee(point);
         return true;
+    }
+
+    /// <summary>
+    /// Converts canvas coordinates to document coordinates by removing ruler offset.
+    /// </summary>
+    private static PointMm CanvasToDocument(PointMm canvasPoint)
+    {
+        return new PointMm(canvasPoint.X - RULER_THICKNESS, canvasPoint.Y - RULER_THICKNESS);
     }
 
     /// <summary>
@@ -825,13 +836,15 @@ public sealed class SelectionController
         {
             _mode = SelectionMode.Rotating;
             
-            // For paint wells, the mouse coordinates include ruler offset,
-            // so we need to add the offset to the center calculation
+            // The rotation handle visual is in canvas coordinates.
+            // For paint wells, handles are rendered at (offset + bounds), so mouse coords match.
+            // Calculate the visual center where handles are displayed.
             var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
-            var center = new PointMm(
-                offset + _originalBounds.Left + _originalBounds.Width / 2,
-                offset + _originalBounds.Top + _originalBounds.Height / 2);
-            _originalAngle = Math.Atan2(start.Y - center.Y, start.X - center.X);
+            var visualCenterX = offset + _originalBounds.Left + _originalBounds.Width / 2;
+            var visualCenterY = offset + _originalBounds.Top + _originalBounds.Height / 2;
+            
+            // Calculate initial angle from center to mouse position (both in canvas coords)
+            _originalAngle = Math.Atan2(start.Y - visualCenterY, start.X - visualCenterX);
         }
         else
         {
@@ -964,17 +977,16 @@ public sealed class SelectionController
 
         var doc = _getDocument();
 
-        // For paint wells, the mouse coordinates include ruler offset,
-        // so we need to add the offset to the center calculation for angle calculation
+        // Calculate visual center in canvas coordinates (same as BeginHandleOperation)
         var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
-        var centerForAngle = new PointMm(
-            offset + _originalBounds.Left + _originalBounds.Width / 2,
-            offset + _originalBounds.Top + _originalBounds.Height / 2);
+        var visualCenterX = offset + _originalBounds.Left + _originalBounds.Width / 2;
+        var visualCenterY = offset + _originalBounds.Top + _originalBounds.Height / 2;
 
-        var currentAngle = Math.Atan2(current.Y - centerForAngle.Y, current.X - centerForAngle.X);
+        // Calculate current angle from visual center to mouse position
+        var currentAngle = Math.Atan2(current.Y - visualCenterY, current.X - visualCenterX);
         var deltaAngle = currentAngle - _originalAngle;
 
-        // The actual rotation center for transforming objects is in document coordinates (no offset)
+        // The actual rotation center for transforming objects is in document coordinates
         var transformCenter = new PointMm(
             _originalBounds.Left + _originalBounds.Width / 2,
             _originalBounds.Top + _originalBounds.Height / 2);
