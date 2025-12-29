@@ -8,6 +8,7 @@ using System.Windows.Input;
 
 // Avoid ambiguity with System.Windows.Forms types
 using Button = System.Windows.Controls.Button;
+using Screen = System.Windows.Forms.Screen;
 
 namespace NVSPlotter;
 
@@ -20,15 +21,13 @@ public partial class ToolsWindow : Window
     private readonly Action<ToolMode> _onToolSelected;
     private ToolMode _currentTool = ToolMode.PaintWell;
     private bool _isClosingForReal;
+    private bool _positionRestored;
 
     public ToolMode CurrentTool => _currentTool;
 
     public ToolsWindow(Action<ToolMode> onToolSelected)
     {
         _onToolSelected = onToolSelected ?? throw new ArgumentNullException(nameof(onToolSelected));
-        
-        // Restore saved position BEFORE InitializeComponent to ensure it takes effect
-        RestoreSavedPosition();
         
         InitializeComponent();
         
@@ -42,30 +41,69 @@ public partial class ToolsWindow : Window
         }
     }
 
+    /// <summary>
+    /// Checks if a position is visible on any monitor.
+    /// </summary>
+    private static bool IsPositionOnAnyScreen(double left, double top, double minVisible = 50)
+    {
+        // Check against all screens using Windows Forms Screen class
+        foreach (var screen in Screen.AllScreens)
+        {
+            var bounds = screen.WorkingArea;
+            // Check if at least minVisible pixels would be visible on this screen
+            if (left >= bounds.Left - minVisible && 
+                left < bounds.Right - minVisible &&
+                top >= bounds.Top - minVisible && 
+                top < bounds.Bottom - minVisible)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Gets a default position near the main window or primary screen.
+    /// </summary>
+    private static (double Left, double Top) GetDefaultPosition()
+    {
+        // Try to position on primary screen
+        var primaryScreen = Screen.PrimaryScreen;
+        if (primaryScreen != null)
+        {
+            return (primaryScreen.WorkingArea.Left + 100, primaryScreen.WorkingArea.Top + 150);
+        }
+        return (100, 150);
+    }
+
     private void RestoreSavedPosition()
     {
+        if (_positionRestored) return;
+        
         var savedLeft = Settings.Default.ToolsWindowLeft;
         var savedTop = Settings.Default.ToolsWindowTop;
 
-        // Validate position is on screen
-        var screen = SystemParameters.WorkArea;
-        if (savedLeft >= screen.Left && savedLeft < screen.Right - 50 && 
-            savedTop >= screen.Top && savedTop < screen.Bottom - 50)
+        // Check if saved position is valid (not default uninitialized values)
+        // and is visible on any screen (supports multi-monitor)
+        if (IsPositionOnAnyScreen(savedLeft, savedTop))
         {
             Left = savedLeft;
             Top = savedTop;
+            _positionRestored = true;
         }
         else
         {
-            // Default position: offset from edge
-            Left = 100;
-            Top = 150;
+            // Use default position on primary screen
+            var (defaultLeft, defaultTop) = GetDefaultPosition();
+            Left = defaultLeft;
+            Top = defaultTop;
+            _positionRestored = true;
         }
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
     {
-        // Re-apply saved position after load (in case Owner changed it)
+        // Restore saved position after load
         RestoreSavedPosition();
 
         // Select initial tool
@@ -74,12 +112,13 @@ public partial class ToolsWindow : Window
 
     private void Window_LocationChanged(object sender, EventArgs e)
     {
-        // Save position whenever the window is moved (but not during close)
-        if (!_isClosingForReal && IsLoaded)
+        // Save position whenever the window is moved (but not during close or before loaded)
+        if (!_isClosingForReal && IsLoaded && _positionRestored)
         {
             Settings.Default.ToolsWindowLeft = Left;
             Settings.Default.ToolsWindowTop = Top;
-            // Don't save immediately on every move - will be saved on close
+            // Save immediately to ensure position is persisted even if app crashes
+            Settings.Default.Save();
         }
     }
 

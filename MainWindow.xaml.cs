@@ -1275,36 +1275,16 @@ namespace NVSPlotter
                     _consoleWindow.Owner = this;
                 }
                 
-                // Position to the right of the main window, but ensure it's on-screen
-                var desiredLeft = Left + Width + 10;
-                var desiredTop = Top;
+                // Find the screen that contains the main window
+                var mainWindowCenter = new System.Drawing.Point(
+                    (int)(Left + Width / 2),
+                    (int)(Top + Height / 2));
+                var currentScreen = System.Windows.Forms.Screen.FromPoint(mainWindowCenter);
+                var workArea = currentScreen.WorkingArea;
                 
-                // Get the working area of the screen (excludes taskbar)
-                var screen = System.Windows.SystemParameters.WorkArea;
-                
-                // If the console would be off the right edge, position it to the left of the main window
-                if (desiredLeft + _consoleWindow.Width > screen.Right)
-                {
-                    desiredLeft = Left - _consoleWindow.Width - 10;
-                }
-                
-                // If still off-screen (left edge), just put it at the left edge of the screen
-                if (desiredLeft < screen.Left)
-                {
-                    desiredLeft = screen.Left;
-                }
-                
-                // Ensure top is on-screen
-                if (desiredTop < screen.Top)
-                {
-                    desiredTop = screen.Top;
-                }
-                
-                // Ensure bottom is on-screen
-                if (desiredTop + _consoleWindow.Height > screen.Bottom)
-                {
-                    desiredTop = screen.Bottom - _consoleWindow.Height;
-                }
+                // Position at bottom-left corner of the same screen as the main window
+                var desiredLeft = workArea.Left;
+                var desiredTop = workArea.Bottom - _consoleWindow.Height;
                 
                 _consoleWindow.Left = desiredLeft;
                 _consoleWindow.Top = desiredTop;
