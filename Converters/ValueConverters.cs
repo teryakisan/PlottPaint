@@ -73,3 +73,23 @@ public class BoolToVisibilityConverter : IValueConverter
         return false;
     }
 }
+
+/// <summary>
+/// Converts a string to its first character (for displaying paint well initials).
+/// </summary>
+public class FirstLetterConverter : IValueConverter
+{
+    public object Convert(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        if (value is string s && !string.IsNullOrEmpty(s))
+        {
+            return s[0].ToString().ToUpperInvariant();
+        }
+        return "?";
+    }
+
+    public object ConvertBack(object value, Type targetType, object parameter, CultureInfo culture)
+    {
+        throw new NotImplementedException();
+    }
+}

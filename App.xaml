@@ -8,5 +8,6 @@
         <converters:ColorToBrushConverter x:Key="ColorToBrushConverter"/>
         <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter"/>
         <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+        <converters:FirstLetterConverter x:Key="FirstLetterConverter"/>
     </Application.Resources>
 </Application>

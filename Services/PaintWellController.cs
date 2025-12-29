@@ -23,8 +23,9 @@ namespace NVSPlotter.Services;
 /// </summary>
 public sealed class PaintWellController
 {
-    private const double HANDLE_SIZE = 10.0;      // Visual size of handles in pixels
-    private const double HANDLE_HIT_RADIUS = 8.0; // Hit test radius in mm (more generous)
+    private const double HANDLE_SIZE = 12.0;      // Visual size of handles in pixels
+    private const double HANDLE_HIT_RADIUS = 15.0; // Hit test radius in mm (generous for easier clicking)
+    private const double BOUNDS_HIT_MARGIN = 10.0; // Extra margin around paint well bounds for easier clicking
     private const double MIN_WELL_SIZE = 10.0;
     private const double RULER_THICKNESS = 18.0;  // Must match the ruler offset used in rendering
 
@@ -149,6 +150,36 @@ public sealed class PaintWellController
         return _getDocument().PaintWells.FirstOrDefault(w => w.Id == id);
     }
 
+    /// <summary>
+    /// Tests if a point (in document coordinates, not canvas coordinates) hits a paint well.
+    /// Returns the hit paint well, or null if no well was hit.
+    /// This allows clicking on paint wells to select them as active color from any tool.
+    /// </summary>
+    public PaintWell? TryHitTestPaintWell(PointMm canvasPoint)
+    {
+        // Convert from canvas coordinates (with ruler) to document coordinates
+        var point = CanvasToDocument(canvasPoint);
+        var doc = _getDocument();
+
+        // Check paint wells in reverse order (top-most first)
+        foreach (var well in doc.PaintWells.AsEnumerable().Reverse())
+        {
+            // Check if point is inside the well bounds with extra margin for easier clicking
+            var expandedBounds = new Rect(
+                well.Bounds.Left - BOUNDS_HIT_MARGIN,
+                well.Bounds.Top - BOUNDS_HIT_MARGIN,
+                well.Bounds.Width + (BOUNDS_HIT_MARGIN * 2),
+                well.Bounds.Height + (BOUNDS_HIT_MARGIN * 2));
+            
+            if (expandedBounds.Contains(new Point(point.X, point.Y)))
+            {
+                return well;
+            }
+        }
+
+        return null;
+    }
+
     // ===== MOUSE HANDLING =====
 
     /// <summary>
@@ -183,7 +214,14 @@ public sealed class PaintWellController
                 return true;
             }
 
-            if (well.Bounds.Contains(new Point(point.X, point.Y)))
+            // Check if inside bounds with extra margin for easier clicking
+            var expandedBounds = new Rect(
+                well.Bounds.Left - BOUNDS_HIT_MARGIN,
+                well.Bounds.Top - BOUNDS_HIT_MARGIN,
+                well.Bounds.Width + (BOUNDS_HIT_MARGIN * 2),
+                well.Bounds.Height + (BOUNDS_HIT_MARGIN * 2));
+            
+            if (expandedBounds.Contains(new Point(point.X, point.Y)))
             {
                 _selectedWell = well;
                 _dragMode = DragMode.Move;

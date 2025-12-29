@@ -121,7 +121,7 @@
                                 <!-- Enable/Disable Painting Mode -->
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <CheckBox x:Name="PaintModeEnabledCheck" Content="Enable Painting Mode" 
-                               IsChecked="False" VerticalAlignment="Center" 
+                               IsChecked="True" VerticalAlignment="Center" 
                                Click="PaintModeEnabledCheck_Click"/>
                                 </StackPanel>
 
@@ -155,31 +155,81 @@
                              Click="ClearActivePaintWell_Click" ToolTip="Clear active paint (use black)"/>
                                 </StackPanel>
 
-                                <!-- Paint Wells List -->
+                                <!-- Paint Wells Grid -->
                                 <TextBlock Text="Paint Wells:" Margin="0,5,0,3" FontWeight="SemiBold"/>
-                                <ListBox x:Name="PaintWellsList" Height="100" Margin="0,0,0,8"
-                          SelectionChanged="PaintWellsList_SelectionChanged">
-                                    <ListBox.ItemTemplate>
+                                <ItemsControl x:Name="PaintWellsGrid" Margin="0,0,0,8">
+                                    <ItemsControl.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <WrapPanel Orientation="Horizontal"/>
+                                        </ItemsPanelTemplate>
+                                    </ItemsControl.ItemsPanel>
+                                    <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <StackPanel Orientation="Horizontal">
-                                                <Rectangle Width="20" Height="20" Margin="0,0,8,0"
-                                            Stroke="DarkGray" StrokeThickness="1">
-                                                    <Rectangle.Fill>
-                                                        <SolidColorBrush Color="{Binding Color}"/>
-                                                    </Rectangle.Fill>
-                                                </Rectangle>
-                                                <TextBlock Text="{Binding Name}" VerticalAlignment="Center" Width="100"/>
-                                                <TextBlock Text="{Binding DipDepth, StringFormat='Dip: {0:0.#}mm'}" 
-                                            VerticalAlignment="Center" Foreground="Gray" FontSize="10"/>
-                                            </StackPanel>
+                                            <Border x:Name="WellChip" Width="36" Height="36" Margin="2" 
+                                                    BorderThickness="2" CornerRadius="4" Cursor="Hand"
+                                                    MouseLeftButtonDown="PaintWellChip_MouseLeftButtonDown"
+                                                    Tag="{Binding}">
+                                                <Border.BorderBrush>
+                                                    <SolidColorBrush Color="{Binding Color}"/>
+                                                </Border.BorderBrush>
+                                                <Border.Background>
+                                                    <SolidColorBrush Color="{Binding Color}" Opacity="0.7"/>
+                                                </Border.Background>
+                                                <Border.ToolTip>
+                                                    <StackPanel MaxWidth="200">
+                                                        <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="12"/>
+                                                        <Separator Margin="0,3"/>
+                                                        <TextBlock Text="{Binding DipDepth, StringFormat='Dip Depth: {0:0.#} mm'}" FontSize="11"/>
+                                                        <TextBlock Text="{Binding DwellTimeMs, StringFormat='Dwell Time: {0} ms'}" FontSize="11"/>
+                                                        <TextBlock FontSize="11">
+                                                            <TextBlock.Text>
+                                                                <MultiBinding StringFormat="Refresh: {0:0}-{1:0} mm">
+                                                                    <Binding Path="RefreshDistanceMinMm"/>
+                                                                    <Binding Path="RefreshDistanceMaxMm"/>
+                                                                </MultiBinding>
+                                                            </TextBlock.Text>
+                                                        </TextBlock>
+                                                        <TextBlock FontSize="11">
+                                                            <TextBlock.Text>
+                                                                <MultiBinding StringFormat="Position: ({0:0}, {1:0})">
+                                                                    <Binding Path="Bounds.Left"/>
+                                                                    <Binding Path="Bounds.Top"/>
+                                                                </MultiBinding>
+                                                            </TextBlock.Text>
+                                                        </TextBlock>
+                                                        <TextBlock FontSize="11">
+                                                            <TextBlock.Text>
+                                                                <MultiBinding StringFormat="Size: {0:0} x {1:0} mm">
+                                                                    <Binding Path="Bounds.Width"/>
+                                                                    <Binding Path="Bounds.Height"/>
+                                                                </MultiBinding>
+                                                            </TextBlock.Text>
+                                                        </TextBlock>
+                                                        <Separator Margin="0,3"/>
+                                                        <TextBlock Text="Click to select" FontSize="10" Foreground="Gray" FontStyle="Italic"/>
+                                                    </StackPanel>
+                                                </Border.ToolTip>
+                                                <!-- Show first letter of name as label -->
+                                                <TextBlock Text="{Binding Name, Converter={StaticResource FirstLetterConverter}}" 
+                                                           HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                           FontWeight="Bold" FontSize="14"
+                                                           Foreground="White">
+                                                    <TextBlock.Effect>
+                                                        <DropShadowEffect ShadowDepth="1" BlurRadius="2" Color="Black" Opacity="0.7"/>
+                                                    </TextBlock.Effect>
+                                                </TextBlock>
+                                            </Border>
                                         </DataTemplate>
-                                    </ListBox.ItemTemplate>
-                                </ListBox>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+                                <!-- Hidden ListBox for backward compatibility with selection logic -->
+                                <ListBox x:Name="PaintWellsList" Visibility="Collapsed"
+                                         SelectionChanged="PaintWellsList_SelectionChanged"/>
 
                                 <!-- Paint Well Actions -->
                                 <WrapPanel Margin="0,0,0,8">
                                     <Button x:Name="AddPaintWellBtn" Content="Add Well" Width="70" Margin="0,0,5,0" 
-                             Click="AddPaintWellBtn_Click" ToolTip="Select PaintWell tool and draw on canvas"/>
+                                    Click="AddPaintWellBtn_Click" ToolTip="Create a new paint well at the center of the canvas"/>
                                     <Button x:Name="RemovePaintWellBtn" Content="Remove" Width="60" Margin="0,0,5,0" 
                              Click="RemovePaintWellBtn_Click"/>
                                     <Button x:Name="ClearPaintWellsBtn" Content="Clear All" Width="60" 

@@ -42,16 +42,24 @@ public sealed class SelectionController
         Rotating
     }
 
-    private const double HIT_TOLERANCE = 3.0; // mm
-    private const double HANDLE_SIZE = 8.0;
-    private const double ROTATE_HANDLE_OFFSET = 25.0;
+    private const double HIT_TOLERANCE = 8.0; // mm - distance to click on a stroke
+    private const double HANDLE_SIZE = 12.0;  // Visual size of handles
+    private const double HANDLE_HIT_RADIUS = 20.0; // Hit test radius for handles (generous for easier clicking)
+    private const double ROTATE_HANDLE_OFFSET = 35.0; // Distance from top of selection to rotation handle
+    private const double RULER_THICKNESS = 18.0;  // Must match the ruler offset used in rendering
+    private const double SELECTION_PADDING = 20.0; // Padding between selection handles and content
+    private const double PAINT_WELL_HIT_MARGIN = 10.0; // Extra margin around paint well bounds for easier clicking
 
     private readonly Canvas _canvas;
     private readonly Func<PlotDocument> _getDocument;
     private readonly Action _requestRender;
 
-    // Selection state
+    // Selection state - strokes
     private readonly HashSet<int> _selectedIndices = new();
+    
+    // Selection state - paint wells
+    private readonly HashSet<Guid> _selectedPaintWellIds = new();
+    
     private Rect _selectionBounds;
     private SelectionMode _mode = SelectionMode.Idle;
     private SelectionHandle _activeHandle = SelectionHandle.None;
@@ -60,6 +68,7 @@ public sealed class SelectionController
     private PointMm _dragStart;
     private Rect _originalBounds;
     private List<LineStroke>? _originalStrokes;
+    private List<(Guid Id, Rect Bounds)>? _originalPaintWellBounds;
     private double _originalAngle;
 
     // Preview visuals
@@ -69,9 +78,10 @@ public sealed class SelectionController
     private Ellipse? _rotateHandle;
     private Line? _rotateConnector;
 
-    public bool HasSelection => _selectedIndices.Count > 0;
+    public bool HasSelection => _selectedIndices.Count > 0 || _selectedPaintWellIds.Count > 0;
     public bool IsActive => _mode != SelectionMode.Idle;
     public IReadOnlySet<int> SelectedIndices => _selectedIndices;
+    public IReadOnlySet<Guid> SelectedPaintWellIds => _selectedPaintWellIds;
     public Rect SelectionBounds => _selectionBounds;
 
     public SelectionController(Canvas canvas, Func<PlotDocument> getDocument, Action requestRender)
@@ -107,6 +117,30 @@ public sealed class SelectionController
             }
         }
 
+        // Check if clicking on a paint well first (they're visually larger/easier to click)
+        var hitWell = HitTestPaintWell(point, doc.PaintWells);
+        if (hitWell != null)
+        {
+            if (shiftHeld)
+            {
+                // Toggle selection
+                if (_selectedPaintWellIds.Contains(hitWell.Id))
+                    _selectedPaintWellIds.Remove(hitWell.Id);
+                else
+                    _selectedPaintWellIds.Add(hitWell.Id);
+            }
+            else
+            {
+                // Single select - clear all selections first
+                _selectedIndices.Clear();
+                _selectedPaintWellIds.Clear();
+                _selectedPaintWellIds.Add(hitWell.Id);
+            }
+            UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+            _requestRender();
+            return true;
+        }
+
         // Check if clicking on a stroke (single select)
         var hitIndex = HitTestStroke(point, doc.Strokes);
         if (hitIndex >= 0)
@@ -121,11 +155,12 @@ public sealed class SelectionController
             }
             else
             {
-                // Single select
+                // Single select - clear all selections first
                 _selectedIndices.Clear();
+                _selectedPaintWellIds.Clear();
                 _selectedIndices.Add(hitIndex);
             }
-            UpdateSelectionBounds(doc.Strokes);
+            UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
             _requestRender();
             return true;
         }
@@ -134,6 +169,7 @@ public sealed class SelectionController
         if (!shiftHeld)
         {
             _selectedIndices.Clear();
+            _selectedPaintWellIds.Clear();
         }
         BeginMarquee(point);
         return true;
@@ -206,10 +242,11 @@ public sealed class SelectionController
     {
         if (_mode == SelectionMode.Moving || _mode == SelectionMode.Resizing || _mode == SelectionMode.Rotating)
         {
+            var doc = _getDocument();
+
             // Restore original strokes
             if (_originalStrokes != null)
             {
-                var doc = _getDocument();
                 foreach (var idx in _selectedIndices.OrderBy(i => i))
                 {
                     var originalIdx = _selectedIndices.ToList().IndexOf(idx);
@@ -219,11 +256,25 @@ public sealed class SelectionController
                     }
                 }
             }
+
+            // Restore original paint well bounds
+            if (_originalPaintWellBounds != null)
+            {
+                foreach (var (id, originalBounds) in _originalPaintWellBounds)
+                {
+                    var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
+                    if (well != null)
+                    {
+                        well.Bounds = originalBounds;
+                    }
+                }
+            }
         }
 
         _mode = SelectionMode.Idle;
         _activeHandle = SelectionHandle.None;
         _originalStrokes = null;
+        _originalPaintWellBounds = null;
         RemoveMarqueeVisual();
 
         if (_canvas.IsMouseCaptured)
@@ -238,36 +289,66 @@ public sealed class SelectionController
     public void ClearSelection()
     {
         _selectedIndices.Clear();
+        _selectedPaintWellIds.Clear();
         _selectionBounds = Rect.Empty;
         RemoveSelectionVisuals();
         _requestRender();
     }
 
     /// <summary>
-    /// Deletes the selected strokes and returns them for undo.
+    /// Deletes the selected strokes and paint wells.
+    /// Returns information for undo purposes.
     /// </summary>
-    public List<(int Index, LineStroke Stroke)>? DeleteSelection()
+    public (List<(int Index, LineStroke Stroke)>? Strokes, List<PaintWell>? PaintWells) DeleteSelection()
     {
-        if (!HasSelection) return null;
+        if (!HasSelection) return (null, null);
 
         var doc = _getDocument();
-        var deleted = new List<(int Index, LineStroke Stroke)>();
+        List<(int Index, LineStroke Stroke)>? deletedStrokes = null;
+        List<PaintWell>? deletedPaintWells = null;
 
-        // Delete in reverse order to preserve indices
-        foreach (var idx in _selectedIndices.OrderByDescending(i => i))
+        // Delete strokes in reverse order to preserve indices
+        if (_selectedIndices.Count > 0)
         {
-            if (idx >= 0 && idx < doc.Strokes.Count)
+            deletedStrokes = new List<(int Index, LineStroke Stroke)>();
+            foreach (var idx in _selectedIndices.OrderByDescending(i => i))
             {
-                deleted.Add((idx, doc.Strokes[idx]));
-                doc.Strokes.RemoveAt(idx);
+                if (idx >= 0 && idx < doc.Strokes.Count)
+                {
+                    deletedStrokes.Add((idx, doc.Strokes[idx]));
+                    doc.Strokes.RemoveAt(idx);
+                }
+            }
+        }
+
+        // Delete paint wells
+        if (_selectedPaintWellIds.Count > 0)
+        {
+            deletedPaintWells = new List<PaintWell>();
+            foreach (var wellId in _selectedPaintWellIds)
+            {
+                var well = doc.PaintWells.FirstOrDefault(w => w.Id == wellId);
+                if (well != null)
+                {
+                    deletedPaintWells.Add(well);
+                    doc.PaintWells.Remove(well);
+
+                    // Clear stroke associations to this paint well
+                    foreach (var stroke in doc.Strokes.Where(s => s.PaintWellId == wellId))
+                    {
+                        stroke.PaintWellId = null;
+                    }
+                }
             }
         }
 
         _selectedIndices.Clear();
+        _selectedPaintWellIds.Clear();
         _selectionBounds = Rect.Empty;
         _requestRender();
 
-        return deleted.Count > 0 ? deleted : null;
+        return (deletedStrokes?.Count > 0 ? deletedStrokes : null, 
+                deletedPaintWells?.Count > 0 ? deletedPaintWells : null);
     }
 
     /// <summary>
@@ -281,15 +362,26 @@ public sealed class SelectionController
         if (!HasSelection) return;
 
         var doc = _getDocument();
-        UpdateSelectionBounds(doc.Strokes);
+        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
 
         if (_selectionBounds.IsEmpty) return;
+
+        // Paint wells are rendered with ruler offset, strokes are not.
+        // For paint well selection, we need to add the ruler offset.
+        // For stroke selection, we don't (strokes render at their raw coordinates).
+        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
+
+        // Calculate visual bounds with padding
+        var visualLeft = offset + _selectionBounds.Left - SELECTION_PADDING;
+        var visualTop = offset + _selectionBounds.Top - SELECTION_PADDING;
+        var visualWidth = _selectionBounds.Width + (SELECTION_PADDING * 2);
+        var visualHeight = _selectionBounds.Height + (SELECTION_PADDING * 2);
 
         // Bounding box
         _boundsRect = new Rectangle
         {
-            Width = _selectionBounds.Width,
-            Height = _selectionBounds.Height,
+            Width = visualWidth,
+            Height = visualHeight,
             Stroke = Brushes.DodgerBlue,
             StrokeThickness = 1,
             StrokeDashArray = [4, 2],
@@ -297,29 +389,29 @@ public sealed class SelectionController
             IsHitTestVisible = false,
             SnapsToDevicePixels = true
         };
-        Canvas.SetLeft(_boundsRect, _selectionBounds.Left);
-        Canvas.SetTop(_boundsRect, _selectionBounds.Top);
+        Canvas.SetLeft(_boundsRect, visualLeft);
+        Canvas.SetTop(_boundsRect, visualTop);
         Panel.SetZIndex(_boundsRect, 18);
         _canvas.Children.Add(_boundsRect);
 
-        // Resize handles
-        AddHandle(_selectionBounds.Left, _selectionBounds.Top, SelectionHandle.TopLeft);
-        AddHandle(_selectionBounds.Left + _selectionBounds.Width / 2, _selectionBounds.Top, SelectionHandle.TopCenter);
-        AddHandle(_selectionBounds.Right, _selectionBounds.Top, SelectionHandle.TopRight);
-        AddHandle(_selectionBounds.Left, _selectionBounds.Top + _selectionBounds.Height / 2, SelectionHandle.MiddleLeft);
-        AddHandle(_selectionBounds.Right, _selectionBounds.Top + _selectionBounds.Height / 2, SelectionHandle.MiddleRight);
-        AddHandle(_selectionBounds.Left, _selectionBounds.Bottom, SelectionHandle.BottomLeft);
-        AddHandle(_selectionBounds.Left + _selectionBounds.Width / 2, _selectionBounds.Bottom, SelectionHandle.BottomCenter);
-        AddHandle(_selectionBounds.Right, _selectionBounds.Bottom, SelectionHandle.BottomRight);
+        // Resize handles at padded corners
+        AddHandle(visualLeft, visualTop, SelectionHandle.TopLeft);
+        AddHandle(visualLeft + visualWidth / 2, visualTop, SelectionHandle.TopCenter);
+        AddHandle(visualLeft + visualWidth, visualTop, SelectionHandle.TopRight);
+        AddHandle(visualLeft, visualTop + visualHeight / 2, SelectionHandle.MiddleLeft);
+        AddHandle(visualLeft + visualWidth, visualTop + visualHeight / 2, SelectionHandle.MiddleRight);
+        AddHandle(visualLeft, visualTop + visualHeight, SelectionHandle.BottomLeft);
+        AddHandle(visualLeft + visualWidth / 2, visualTop + visualHeight, SelectionHandle.BottomCenter);
+        AddHandle(visualLeft + visualWidth, visualTop + visualHeight, SelectionHandle.BottomRight);
 
         // Rotation handle
-        var centerX = _selectionBounds.Left + _selectionBounds.Width / 2;
-        var rotateY = _selectionBounds.Top - ROTATE_HANDLE_OFFSET;
+        var centerX = visualLeft + visualWidth / 2;
+        var rotateY = visualTop - ROTATE_HANDLE_OFFSET;
 
         _rotateConnector = new Line
         {
             X1 = centerX,
-            Y1 = _selectionBounds.Top,
+            Y1 = visualTop,
             X2 = centerX,
             Y2 = rotateY,
             Stroke = Brushes.DodgerBlue,
@@ -352,6 +444,11 @@ public sealed class SelectionController
     /// Checks if a stroke index is selected.
     /// </summary>
     public bool IsSelected(int index) => _selectedIndices.Contains(index);
+
+    /// <summary>
+    /// Checks if a paint well is selected by its ID.
+    /// </summary>
+    public bool IsPaintWellSelected(Guid id) => _selectedPaintWellIds.Contains(id);
 
     // ===== PRIVATE METHODS =====
 
@@ -424,50 +521,91 @@ public sealed class SelectionController
         return -1;
     }
 
+    private PaintWell? HitTestPaintWell(PointMm point, List<PaintWell> paintWells)
+    {
+        // Check paint wells in reverse order (top-most first)
+        for (int i = paintWells.Count - 1; i >= 0; i--)
+        {
+            var well = paintWells[i];
+            // Check if point is inside the well bounds with extra margin for easier clicking
+            var expandedBounds = new Rect(
+                well.Bounds.Left - PAINT_WELL_HIT_MARGIN,
+                well.Bounds.Top - PAINT_WELL_HIT_MARGIN,
+                well.Bounds.Width + (PAINT_WELL_HIT_MARGIN * 2),
+                well.Bounds.Height + (PAINT_WELL_HIT_MARGIN * 2));
+            
+            if (expandedBounds.Contains(new Point(point.X, point.Y)))
+            {
+                return well;
+            }
+        }
+        return null;
+    }
+
     private SelectionHandle HitTestHandle(PointMm point)
     {
         if (_selectionBounds.IsEmpty) return SelectionHandle.None;
 
-        var centerX = _selectionBounds.Left + _selectionBounds.Width / 2;
-        var centerY = _selectionBounds.Top + _selectionBounds.Height / 2;
-        var rotateY = _selectionBounds.Top - ROTATE_HANDLE_OFFSET;
+        // Paint wells are rendered with ruler offset, strokes are not.
+        // The mouse coordinates come in as canvas coordinates.
+        // We need to match the visual handle positions.
+        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
 
-        // Check rotate handle first
-        if (Distance(point, new PointMm(centerX, rotateY)) <= HANDLE_SIZE)
+        // Calculate padded bounds matching the visual display
+        var paddedLeft = offset + _selectionBounds.Left - SELECTION_PADDING;
+        var paddedTop = offset + _selectionBounds.Top - SELECTION_PADDING;
+        var paddedRight = offset + _selectionBounds.Right + SELECTION_PADDING;
+        var paddedBottom = offset + _selectionBounds.Bottom + SELECTION_PADDING;
+        var paddedCenterX = (paddedLeft + paddedRight) / 2;
+        var paddedCenterY = (paddedTop + paddedBottom) / 2;
+        var rotateY = paddedTop - ROTATE_HANDLE_OFFSET;
+
+        // Check rotate handle first - use larger hit radius for easier clicking
+        if (Distance(point, new PointMm(paddedCenterX, rotateY)) <= HANDLE_HIT_RADIUS * 1.5)
             return SelectionHandle.Rotate;
 
-        // Check corner handles
-        if (Distance(point, new PointMm(_selectionBounds.Left, _selectionBounds.Top)) <= HANDLE_SIZE)
+        // Check corner handles with generous hit radius
+        if (Distance(point, new PointMm(paddedLeft, paddedTop)) <= HANDLE_HIT_RADIUS)
             return SelectionHandle.TopLeft;
-        if (Distance(point, new PointMm(_selectionBounds.Right, _selectionBounds.Top)) <= HANDLE_SIZE)
+        if (Distance(point, new PointMm(paddedRight, paddedTop)) <= HANDLE_HIT_RADIUS)
             return SelectionHandle.TopRight;
-        if (Distance(point, new PointMm(_selectionBounds.Left, _selectionBounds.Bottom)) <= HANDLE_SIZE)
+        if (Distance(point, new PointMm(paddedLeft, paddedBottom)) <= HANDLE_HIT_RADIUS)
             return SelectionHandle.BottomLeft;
-        if (Distance(point, new PointMm(_selectionBounds.Right, _selectionBounds.Bottom)) <= HANDLE_SIZE)
+        if (Distance(point, new PointMm(paddedRight, paddedBottom)) <= HANDLE_HIT_RADIUS)
             return SelectionHandle.BottomRight;
 
         // Check edge handles
-        if (Distance(point, new PointMm(centerX, _selectionBounds.Top)) <= HANDLE_SIZE)
+        if (Distance(point, new PointMm(paddedCenterX, paddedTop)) <= HANDLE_HIT_RADIUS)
             return SelectionHandle.TopCenter;
-        if (Distance(point, new PointMm(centerX, _selectionBounds.Bottom)) <= HANDLE_SIZE)
+        if (Distance(point, new PointMm(paddedCenterX, paddedBottom)) <= HANDLE_HIT_RADIUS)
             return SelectionHandle.BottomCenter;
-        if (Distance(point, new PointMm(_selectionBounds.Left, centerY)) <= HANDLE_SIZE)
+        if (Distance(point, new PointMm(paddedLeft, paddedCenterY)) <= HANDLE_HIT_RADIUS)
             return SelectionHandle.MiddleLeft;
-        if (Distance(point, new PointMm(_selectionBounds.Right, centerY)) <= HANDLE_SIZE)
+        if (Distance(point, new PointMm(paddedRight, paddedCenterY)) <= HANDLE_HIT_RADIUS)
             return SelectionHandle.MiddleRight;
 
         return SelectionHandle.None;
     }
 
-    private static bool IsPointInBounds(PointMm point, Rect bounds)
+    private bool IsPointInBounds(PointMm point, Rect bounds)
     {
-        return point.X >= bounds.Left && point.X <= bounds.Right &&
-               point.Y >= bounds.Top && point.Y <= bounds.Bottom;
+        // Paint wells are rendered with ruler offset, strokes are not.
+        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
+
+        // Include the padding area as part of the movable selection region
+        var paddedBounds = new Rect(
+            offset + bounds.Left - SELECTION_PADDING,
+            offset + bounds.Top - SELECTION_PADDING,
+            bounds.Width + (SELECTION_PADDING * 2),
+            bounds.Height + (SELECTION_PADDING * 2));
+        
+        return point.X >= paddedBounds.Left && point.X <= paddedBounds.Right &&
+               point.Y >= paddedBounds.Top && point.Y <= paddedBounds.Bottom;
     }
 
-    private void UpdateSelectionBounds(List<LineStroke> strokes)
+    private void UpdateSelectionBounds(List<LineStroke> strokes, List<PaintWell> paintWells)
     {
-        if (_selectedIndices.Count == 0)
+        if (_selectedIndices.Count == 0 && _selectedPaintWellIds.Count == 0)
         {
             _selectionBounds = Rect.Empty;
             return;
@@ -476,6 +614,7 @@ public sealed class SelectionController
         double minX = double.MaxValue, minY = double.MaxValue;
         double maxX = double.MinValue, maxY = double.MinValue;
 
+        // Include stroke bounds
         foreach (var idx in _selectedIndices)
         {
             if (idx < 0 || idx >= strokes.Count) continue;
@@ -487,6 +626,18 @@ public sealed class SelectionController
             maxY = Math.Max(maxY, Math.Max(stroke.A.Y, stroke.B.Y));
         }
 
+        // Include paint well bounds
+        foreach (var wellId in _selectedPaintWellIds)
+        {
+            var well = paintWells.FirstOrDefault(w => w.Id == wellId);
+            if (well == null) continue;
+
+            minX = Math.Min(minX, well.Bounds.Left);
+            minY = Math.Min(minY, well.Bounds.Top);
+            maxX = Math.Max(maxX, well.Bounds.Right);
+            maxY = Math.Max(maxY, well.Bounds.Bottom);
+        }
+
         if (minX <= maxX && minY <= maxY)
         {
             _selectionBounds = new Rect(minX, minY, maxX - minX, maxY - minY);
@@ -495,6 +646,12 @@ public sealed class SelectionController
         {
             _selectionBounds = Rect.Empty;
         }
+    }
+
+    // Legacy overload for backward compatibility
+    private void UpdateSelectionBounds(List<LineStroke> strokes)
+    {
+        UpdateSelectionBounds(strokes, _getDocument().PaintWells);
     }
 
     // ===== MARQUEE SELECTION =====
@@ -557,8 +714,23 @@ public sealed class SelectionController
             }
         }
 
-        UpdateSelectionBounds(doc.Strokes);
+        // Select paint wells that intersect the marquee
+        foreach (var well in doc.PaintWells)
+        {
+            if (PaintWellIntersectsRect(well, marqueeRect))
+            {
+                _selectedPaintWellIds.Add(well.Id);
+            }
+        }
+
+        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
         _requestRender();
+    }
+
+    private static bool PaintWellIntersectsRect(PaintWell well, Rect marquee)
+    {
+        // Check if the paint well bounds intersect with the marquee rectangle
+        return well.Bounds.IntersectsWith(marquee);
     }
 
     private static bool StrokeIntersectsRect(LineStroke stroke, Rect rect)
@@ -600,8 +772,9 @@ public sealed class SelectionController
         var dy = current.Y - _dragStart.Y;
 
         var doc = _getDocument();
+        
+        // Move strokes
         var indices = _selectedIndices.ToList();
-
         for (int i = 0; i < indices.Count; i++)
         {
             var idx = indices[i];
@@ -617,7 +790,24 @@ public sealed class SelectionController
             };
         }
 
-        UpdateSelectionBounds(doc.Strokes);
+        // Move paint wells
+        if (_originalPaintWellBounds != null)
+        {
+            foreach (var (id, originalBounds) in _originalPaintWellBounds)
+            {
+                var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
+                if (well != null)
+                {
+                    well.Bounds = new Rect(
+                        originalBounds.Left + dx,
+                        originalBounds.Top + dy,
+                        originalBounds.Width,
+                        originalBounds.Height);
+                }
+            }
+        }
+
+        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
         _requestRender();
     }
 
@@ -634,9 +824,13 @@ public sealed class SelectionController
         if (handle == SelectionHandle.Rotate)
         {
             _mode = SelectionMode.Rotating;
+            
+            // For paint wells, the mouse coordinates include ruler offset,
+            // so we need to add the offset to the center calculation
+            var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
             var center = new PointMm(
-                _originalBounds.Left + _originalBounds.Width / 2,
-                _originalBounds.Top + _originalBounds.Height / 2);
+                offset + _originalBounds.Left + _originalBounds.Width / 2,
+                offset + _originalBounds.Top + _originalBounds.Height / 2);
             _originalAngle = Math.Atan2(start.Y - center.Y, start.X - center.X);
         }
         else
@@ -647,27 +841,56 @@ public sealed class SelectionController
 
     private void UpdateResize(PointMm current)
     {
-        if (_originalStrokes == null || _originalBounds.IsEmpty) return;
+        if (_originalBounds.IsEmpty) return;
 
         var doc = _getDocument();
-        var indices = _selectedIndices.ToList();
 
         // Calculate new bounds based on handle being dragged
         var newBounds = CalculateNewBounds(current);
         if (newBounds.Width < 1 || newBounds.Height < 1) return;
 
         // Scale strokes
-        for (int i = 0; i < indices.Count; i++)
+        if (_originalStrokes != null)
         {
-            var idx = indices[i];
-            if (i >= _originalStrokes.Count) continue;
+            var indices = _selectedIndices.ToList();
+            for (int i = 0; i < indices.Count; i++)
+            {
+                var idx = indices[i];
+                if (i >= _originalStrokes.Count) continue;
 
-            var original = _originalStrokes[i];
-            doc.Strokes[idx] = ScaleStroke(original, _originalBounds, newBounds);
+                var original = _originalStrokes[i];
+                doc.Strokes[idx] = ScaleStroke(original, _originalBounds, newBounds);
+            }
         }
 
-        UpdateSelectionBounds(doc.Strokes);
+        // Scale paint wells
+        if (_originalPaintWellBounds != null)
+        {
+            foreach (var (id, originalWellBounds) in _originalPaintWellBounds)
+            {
+                var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
+                if (well != null)
+                {
+                    well.Bounds = ScaleRect(originalWellBounds, _originalBounds, newBounds);
+                }
+            }
+        }
+
+        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
         _requestRender();
+    }
+
+    private static Rect ScaleRect(Rect original, Rect oldBounds, Rect newBounds)
+    {
+        var scaleX = oldBounds.Width > 0 ? newBounds.Width / oldBounds.Width : 1;
+        var scaleY = oldBounds.Height > 0 ? newBounds.Height / oldBounds.Height : 1;
+
+        var newLeft = newBounds.Left + (original.Left - oldBounds.Left) * scaleX;
+        var newTop = newBounds.Top + (original.Top - oldBounds.Top) * scaleY;
+        var newWidth = original.Width * scaleX;
+        var newHeight = original.Height * scaleY;
+
+        return new Rect(newLeft, newTop, Math.Max(10, newWidth), Math.Max(10, newHeight));
     }
 
     private Rect CalculateNewBounds(PointMm current)
@@ -737,29 +960,69 @@ public sealed class SelectionController
 
     private void UpdateRotate(PointMm current)
     {
-        if (_originalStrokes == null || _originalBounds.IsEmpty) return;
+        if (_originalBounds.IsEmpty) return;
 
         var doc = _getDocument();
-        var indices = _selectedIndices.ToList();
 
-        var center = new PointMm(
+        // For paint wells, the mouse coordinates include ruler offset,
+        // so we need to add the offset to the center calculation for angle calculation
+        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
+        var centerForAngle = new PointMm(
+            offset + _originalBounds.Left + _originalBounds.Width / 2,
+            offset + _originalBounds.Top + _originalBounds.Height / 2);
+
+        var currentAngle = Math.Atan2(current.Y - centerForAngle.Y, current.X - centerForAngle.X);
+        var deltaAngle = currentAngle - _originalAngle;
+
+        // The actual rotation center for transforming objects is in document coordinates (no offset)
+        var transformCenter = new PointMm(
             _originalBounds.Left + _originalBounds.Width / 2,
             _originalBounds.Top + _originalBounds.Height / 2);
 
-        var currentAngle = Math.Atan2(current.Y - center.Y, current.X - center.X);
-        var deltaAngle = currentAngle - _originalAngle;
-
-        for (int i = 0; i < indices.Count; i++)
+        // Rotate strokes
+        if (_originalStrokes != null)
         {
-            var idx = indices[i];
-            if (i >= _originalStrokes.Count) continue;
+            var indices = _selectedIndices.ToList();
+            for (int i = 0; i < indices.Count; i++)
+            {
+                var idx = indices[i];
+                if (i >= _originalStrokes.Count) continue;
 
-            var original = _originalStrokes[i];
-            doc.Strokes[idx] = RotateStroke(original, center, deltaAngle);
+                var original = _originalStrokes[i];
+                doc.Strokes[idx] = RotateStroke(original, transformCenter, deltaAngle);
+            }
         }
 
-        UpdateSelectionBounds(doc.Strokes);
+        // Rotate paint wells (rotate their bounds around the selection center)
+        if (_originalPaintWellBounds != null)
+        {
+            foreach (var (id, originalWellBounds) in _originalPaintWellBounds)
+            {
+                var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
+                if (well != null)
+                {
+                    well.Bounds = RotateRect(originalWellBounds, transformCenter, deltaAngle);
+                }
+            }
+        }
+
+        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
         _requestRender();
+    }
+
+    private static Rect RotateRect(Rect original, PointMm center, double angle)
+    {
+        // Rotate the center of the rectangle around the selection center
+        var rectCenterX = original.Left + original.Width / 2;
+        var rectCenterY = original.Top + original.Height / 2;
+        var rotatedCenter = RotatePoint(new PointMm(rectCenterX, rectCenterY), center, angle);
+
+        // Keep the same width/height, just move the position
+        return new Rect(
+            rotatedCenter.X - original.Width / 2,
+            rotatedCenter.Y - original.Height / 2,
+            original.Width,
+            original.Height);
     }
 
     private static LineStroke RotateStroke(LineStroke original, PointMm center, double angle)
@@ -790,6 +1053,13 @@ public sealed class SelectionController
             .OrderBy(i => i)
             .Where(i => i >= 0 && i < doc.Strokes.Count)
             .Select(i => doc.Strokes[i])
+            .ToList();
+
+        // Also save paint well bounds
+        _originalPaintWellBounds = _selectedPaintWellIds
+            .Select(id => doc.PaintWells.FirstOrDefault(w => w.Id == id))
+            .Where(w => w != null)
+            .Select(w => (w!.Id, w.Bounds))
             .ToList();
     }
 

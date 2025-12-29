@@ -895,6 +895,24 @@ namespace NVSPlotter
             var rawPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
             var point = ApplySnapping(rawPoint, out _, out _, out _);
 
+            // Check if clicking on a paint well - set it as active color regardless of current tool
+            var hitWell = _paintWellController.TryHitTestPaintWell(point);
+            if (hitWell != null)
+            {
+                _paintWellController.SetActiveColor(hitWell);
+                UpdateActivePaintWellCombo();
+                AppendLog($"Active color set to: {hitWell.Name}");
+                RenderAll(); // Update visuals to show active well
+                
+                // For PaintWell tool and Select tool, continue to allow further processing
+                // For other tools, just set the color and return
+                if (tool != ToolMode.PaintWell && tool != ToolMode.Select)
+                {
+                    e.Handled = true;
+                    return;
+                }
+            }
+
             // Paint well tool
             if (tool == ToolMode.PaintWell)
             {
@@ -3152,7 +3170,14 @@ namespace NVSPlotter
             _suppressPaintWellUIUpdate = true;
             try
             {
-                // Update paint wells list
+                // Update paint wells grid (new compact view)
+                if (FindName("PaintWellsGrid") is ItemsControl grid)
+                {
+                    grid.ItemsSource = null;
+                    grid.ItemsSource = _doc.PaintWells;
+                }
+
+                // Update hidden paint wells list (for backward compatibility with selection logic)
                 if (FindName("PaintWellsList") is ListBox list)
                 {
                     var selectedId = (_paintWellController.SelectedWell)?.Id;
@@ -3238,6 +3263,20 @@ namespace NVSPlotter
             _paintWellController.SetActiveColor(well);
         }
 
+        /// <summary>
+        /// Updates the ActivePaintWellCombo to reflect the current active color well.
+        /// Called when the active color is changed programmatically (e.g., by clicking a paint well on canvas).
+        /// </summary>
+        private void UpdateActivePaintWellCombo()
+        {
+            if (FindName("ActivePaintWellCombo") is ComboBox combo)
+            {
+                _suppressPaintWellUIUpdate = true;
+                combo.SelectedItem = _paintWellController.ActiveColorWell;
+                _suppressPaintWellUIUpdate = false;
+            }
+        }
+
         private void ClearActivePaintWell_Click(object sender, RoutedEventArgs e)
         {
             _paintWellController.SetActiveColor(null);
@@ -3257,21 +3296,77 @@ namespace NVSPlotter
             UpdateSelectedWellPropertiesUI();
         }
 
+        /// <summary>
+        /// Handles click on a paint well color chip in the grid view.
+        /// </summary>
+        private void PaintWellChip_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+        {
+            if (_suppressPaintWellUIUpdate) return;
+            if (sender is not FrameworkElement element) return;
+            if (element.Tag is not PaintWell well) return;
+
+            // Select the well for editing
+            _paintWellController.SelectWell(well);
+            
+            // Also sync the hidden ListBox selection for backward compatibility
+            if (FindName("PaintWellsList") is ListBox list)
+            {
+                _suppressPaintWellUIUpdate = true;
+                list.SelectedItem = well;
+                _suppressPaintWellUIUpdate = false;
+            }
+            
+            UpdateSelectedWellPropertiesUI();
+            e.Handled = true;
+        }
+
         private void AddPaintWellBtn_Click(object sender, RoutedEventArgs e)
         {
-            // Switch to PaintWell tool so user can draw the well on canvas
-            if (FindName("ToolCombo") is ComboBox toolCombo)
+            // Create a new default-sized paint well near the center of the drawing area
+            const double defaultWidth = 100;
+            const double defaultHeight = 80;
+            
+            // Calculate center position, offset by number of existing wells to avoid overlap
+            var existingCount = _doc.PaintWells.Count;
+            var offsetX = (existingCount % 5) * 20; // Stagger horizontally
+            var offsetY = (existingCount / 5) * 20; // Stagger vertically after 5
+            
+            var centerX = (_doc.WidthMm / 2.0) - (defaultWidth / 2.0) + offsetX;
+            var centerY = (_doc.HeightMm / 2.0) - (defaultHeight / 2.0) + offsetY;
+            
+            // Ensure the well stays within document bounds
+            centerX = Math.Clamp(centerX, 0, _doc.WidthMm - defaultWidth);
+            centerY = Math.Clamp(centerY, 0, _doc.HeightMm - defaultHeight);
+            
+            var bounds = new Rect(centerX, centerY, defaultWidth, defaultHeight);
+            var index = existingCount + 1;
+            var color = GetDefaultPaintWellColor(index);
+            var name = $"Paint {index}";
+            
+            _paintWellController.CreateWell(bounds, color, name);
+            _lastGcode = "";
+            UpdatePaintWellsUI();
+            
+            AppendLog($"Created paint well '{name}' at ({centerX:0}, {centerY:0})");
+        }
+
+        /// <summary>
+        /// Gets a default color for a new paint well based on its index.
+        /// </summary>
+        private static Color GetDefaultPaintWellColor(int index)
+        {
+            // Cycle through a palette of distinct colors
+            return (index % 8) switch
             {
-                foreach (ComboBoxItem item in toolCombo.Items)
-                {
-                    if (item.Tag?.ToString() == "PaintWell")
-                    {
-                        toolCombo.SelectedItem = item;
-                        break;
-                    }
-                }
-            }
-            AppendLog("Select PaintWell tool: Draw a rectangle on canvas to create a paint well.");
+                1 => Colors.Red,
+                2 => Colors.Blue,
+                3 => Colors.Green,
+                4 => Colors.Orange,
+                5 => Colors.Purple,
+                6 => Colors.Cyan,
+                7 => Colors.Magenta,
+                _ => Colors.Brown
+            };
         }
 
         private void RemovePaintWellBtn_Click(object sender, RoutedEventArgs e)
