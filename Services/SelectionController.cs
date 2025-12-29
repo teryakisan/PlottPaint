@@ -6,6 +6,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using FontAwesome.WPF;
 using NVSPlotter.Models;
 
 // Avoid ambiguity with System.Drawing and System.Windows.Forms types
@@ -44,11 +45,16 @@ public sealed class SelectionController
 
     private const double HIT_TOLERANCE = 8.0; // mm - distance to click on a stroke
     private const double HANDLE_SIZE = 12.0;  // Visual size of handles
+    private const double ROTATE_HANDLE_SIZE = 18.0; // Visual size of rotation handle (larger for visibility)
     private const double HANDLE_HIT_RADIUS = 20.0; // Hit test radius for handles (generous for easier clicking)
-    private const double ROTATE_HANDLE_OFFSET = 35.0; // Distance from top of selection to rotation handle
+    private const double ROTATE_HANDLE_HIT_RADIUS = 25.0; // Hit test radius for rotation handle (even more generous)
+    private const double ROTATE_HANDLE_OFFSET = 45.0; // Distance from top of selection to rotation handle (outside the box)
     private const double RULER_THICKNESS = 18.0;  // Must match the ruler offset used in rendering
     private const double SELECTION_PADDING = 20.0; // Padding between selection handles and content
     private const double PAINT_WELL_HIT_MARGIN = 10.0; // Extra margin around paint well bounds for easier clicking
+    private const double MAX_ICON_SIZE = 60.0; // Maximum size for hover icons
+    private const double MIN_ICON_SIZE = 20.0; // Minimum size for hover icons
+    private const double ICON_SIZE_RATIO = 0.5; // Icon size as a ratio of the smaller selection dimension
 
     private readonly Canvas _canvas;
     private readonly Func<PlotDocument> _getDocument;
@@ -73,6 +79,7 @@ public sealed class SelectionController
     
     // Cumulative rotation tracking for selection box display
     private double _selectionRotationAngle;
+    private double _baseRotationAngle; // Rotation angle at the start of the current rotation operation
     private Point _selectionRotationCenter;
 
     // Preview visuals
@@ -80,7 +87,16 @@ public sealed class SelectionController
     private Path? _boundsPath;  // Changed from Rectangle to Path for proper rotation
     private readonly List<Rectangle> _handles = new();
     private Ellipse? _rotateHandle;
+    private Ellipse? _rotateHandleHoverRing; // Dashed green ring shown when hovering over rotation handle
+    private ImageAwesome? _rotateIcon; // FontAwesome rotation icon shown on hover at center
     private Line? _rotateConnector;
+    private Point _rotateHandlePosition; // Store position for hover detection
+    private Point _selectionCenterPosition; // Store center for icon placement
+    
+    // Resize handle hover visuals
+    private Border? _resizeHandleHoverRing; // Highlight ring for resize handles
+    private ImageAwesome? _resizeIcon; // FontAwesome arrows-alt icon shown on hover
+    private readonly List<Point> _resizeHandlePositions = new(); // Store positions of all resize handles
 
     public bool HasSelection => _selectedIndices.Count > 0 || _selectedPaintWellIds.Count > 0;
     public bool IsActive => _mode != SelectionMode.Idle;
@@ -255,7 +271,226 @@ public sealed class SelectionController
                 return true;
 
             default:
+                // When idle, check for hover over rotation handle to show highlight
+                if (HasSelection)
+                {
+                    UpdateRotateHandleHover(point);
+                }
                 return false;
+        }
+    }
+
+    /// <summary>
+    /// Updates the rotation handle hover highlight based on mouse position.
+    /// </summary>
+    private void UpdateRotateHandleHover(PointMm point)
+    {
+        if (_rotateHandle == null) return;
+
+        // Check rotation handle hover
+        var rotateDistance = Distance(point, new PointMm(_rotateHandlePosition.X, _rotateHandlePosition.Y));
+        var isHoveringRotate = rotateDistance <= ROTATE_HANDLE_HIT_RADIUS;
+        
+        // Check resize handle hover
+        var (isHoveringResize, hoveredResizeHandleIndex) = CheckResizeHandleHover(point);
+
+        // Handle rotation hover
+        if (isHoveringRotate && _rotateHandleHoverRing == null)
+        {
+            // Clear any resize hover first
+            ClearResizeHoverVisuals();
+            
+            // Create a large radiating glow effect - using LimeGreen (50,205,50) for consistency with line start indicators
+            const double GLOW_SIZE = 70; // Large glow size for high visibility
+            
+            // Create radial gradient that fades from bright LimeGreen center to fully transparent edge
+            var glowBrush = new RadialGradientBrush
+            {
+                GradientOrigin = new Point(0.5, 0.5),
+                Center = new Point(0.5, 0.5),
+                RadiusX = 0.5,
+                RadiusY = 0.5
+            };
+            // Use LimeGreen (50,205,50) - same as line start indicators for visual consistency
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(255, 50, 205, 50), 0.0));   // Solid LimeGreen core
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(220, 50, 205, 50), 0.15)); // Still very solid
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(160, 50, 205, 50), 0.3));  // Starting to fade
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(90, 50, 205, 50), 0.5));   // Mid fade
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(40, 50, 205, 50), 0.7));   // Mostly faded
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(10, 50, 205, 50), 0.85));  // Nearly transparent
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 50, 205, 50), 1.0));    // Fully transparent at edge
+            
+            _rotateHandleHoverRing = new Ellipse
+            {
+                Width = GLOW_SIZE,
+                Height = GLOW_SIZE,
+                Fill = glowBrush,
+                Stroke = Brushes.Transparent,
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            Canvas.SetLeft(_rotateHandleHoverRing, _rotateHandlePosition.X - GLOW_SIZE / 2);
+            Canvas.SetTop(_rotateHandleHoverRing, _rotateHandlePosition.Y - GLOW_SIZE / 2);
+            Panel.SetZIndex(_rotateHandleHoverRing, 18);
+            _canvas.Children.Add(_rotateHandleHoverRing);
+            
+            // Show the FontAwesome refresh icon at the selection center, scaled to selection size
+            var iconSize = CalculateIconSize();
+            _rotateIcon = new ImageAwesome
+            {
+                Icon = FontAwesomeIcon.Refresh,
+                Width = iconSize,
+                Height = iconSize,
+                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(140, 30, 144, 255)), // Semi-transparent DodgerBlue (never solid)
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            Canvas.SetLeft(_rotateIcon, _selectionCenterPosition.X - iconSize / 2);
+            Canvas.SetTop(_rotateIcon, _selectionCenterPosition.Y - iconSize / 2);
+            Panel.SetZIndex(_rotateIcon, 17);
+            _canvas.Children.Add(_rotateIcon);
+        }
+        else if (!isHoveringRotate && _mode != SelectionMode.Rotating)
+        {
+            // Hide the rotation hover visuals when not hovering and not rotating
+            ClearRotateHoverVisuals();
+        }
+        
+        // Handle resize hover (only if not hovering rotate)
+        if (!isHoveringRotate && isHoveringResize && _resizeHandleHoverRing == null)
+        {
+            // Create a large radiating glow effect - using LimeGreen (50,205,50) for consistency
+            var handlePos = _resizeHandlePositions[hoveredResizeHandleIndex];
+            const double GLOW_SIZE = 55; // Large glow size for high visibility
+            
+            // Create radial gradient that fades from bright LimeGreen center to fully transparent edge
+            var glowBrush = new RadialGradientBrush
+            {
+                GradientOrigin = new Point(0.5, 0.5),
+                Center = new Point(0.5, 0.5),
+                RadiusX = 0.5,
+                RadiusY = 0.5
+            };
+            // Use LimeGreen (50,205,50) - same as line start indicators for visual consistency
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(255, 50, 205, 50), 0.0));   // Solid LimeGreen core
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(220, 50, 205, 50), 0.15)); // Still very solid
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(160, 50, 205, 50), 0.3));  // Starting to fade
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(90, 50, 205, 50), 0.5));   // Mid fade
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(40, 50, 205, 50), 0.7));   // Mostly faded
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(10, 50, 205, 50), 0.85));  // Nearly transparent
+            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 50, 205, 50), 1.0));    // Fully transparent at edge
+            
+            // Use an Ellipse for proper radial gradient rendering
+            var glowEllipse = new Ellipse
+            {
+                Width = GLOW_SIZE,
+                Height = GLOW_SIZE,
+                Fill = glowBrush,
+                Stroke = Brushes.Transparent,
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            
+            // Wrap in a border so we can reuse the existing field type
+            _resizeHandleHoverRing = new Border
+            {
+                Width = GLOW_SIZE,
+                Height = GLOW_SIZE,
+                Background = Brushes.Transparent,
+                BorderBrush = Brushes.Transparent,
+                IsHitTestVisible = false,
+                Child = glowEllipse
+            };
+            Canvas.SetLeft(_resizeHandleHoverRing, handlePos.X - GLOW_SIZE / 2);
+            Canvas.SetTop(_resizeHandleHoverRing, handlePos.Y - GLOW_SIZE / 2);
+            Panel.SetZIndex(_resizeHandleHoverRing, 18);
+            _canvas.Children.Add(_resizeHandleHoverRing);
+            
+            // Show the FontAwesome arrows-alt icon at the selection center, scaled to selection size
+            var iconSize = CalculateIconSize();
+            _resizeIcon = new ImageAwesome
+            {
+                Icon = FontAwesomeIcon.ArrowsAlt,
+                Width = iconSize,
+                Height = iconSize,
+                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(140, 30, 144, 255)), // Semi-transparent DodgerBlue (never solid)
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            Canvas.SetLeft(_resizeIcon, _selectionCenterPosition.X - iconSize / 2);
+            Canvas.SetTop(_resizeIcon, _selectionCenterPosition.Y - iconSize / 2);
+            Panel.SetZIndex(_resizeIcon, 17);
+            _canvas.Children.Add(_resizeIcon);
+        }
+        else if (!isHoveringResize && _mode != SelectionMode.Resizing)
+        {
+            // Hide the resize hover visuals when not hovering and not resizing
+            ClearResizeHoverVisuals();
+        }
+        
+        // During rotation, make the icon more transparent to indicate active rotation
+        if (_mode == SelectionMode.Rotating && _rotateIcon != null)
+        {
+            _rotateIcon.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(80, 30, 144, 255)); // More transparent during rotation (never solid)
+        }
+        
+        // During resizing, make the icon more transparent to indicate active resizing
+        if (_mode == SelectionMode.Resizing && _resizeIcon != null)
+        {
+            _resizeIcon.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(80, 30, 144, 255)); // More transparent during resizing (never solid)
+        }
+    }
+    
+    /// <summary>
+    /// Checks if the mouse is hovering over any resize handle.
+    /// </summary>
+    private (bool IsHovering, int HandleIndex) CheckResizeHandleHover(PointMm point)
+    {
+        for (int i = 0; i < _resizeHandlePositions.Count; i++)
+        {
+            var handlePos = _resizeHandlePositions[i];
+            var distance = Distance(point, new PointMm(handlePos.X, handlePos.Y));
+            if (distance <= HANDLE_HIT_RADIUS)
+            {
+                return (true, i);
+            }
+        }
+        return (false, -1);
+    }
+    
+    /// <summary>
+    /// Clears the rotation hover visuals.
+    /// </summary>
+    private void ClearRotateHoverVisuals()
+    {
+        if (_rotateHandleHoverRing != null)
+        {
+            _canvas.Children.Remove(_rotateHandleHoverRing);
+            _rotateHandleHoverRing = null;
+        }
+        
+        if (_rotateIcon != null)
+        {
+            _canvas.Children.Remove(_rotateIcon);
+            _rotateIcon = null;
+        }
+    }
+    
+    /// <summary>
+    /// Clears the resize hover visuals.
+    /// </summary>
+    private void ClearResizeHoverVisuals()
+    {
+        if (_resizeHandleHoverRing != null)
+        {
+            _canvas.Children.Remove(_resizeHandleHoverRing);
+            _resizeHandleHoverRing = null;
+        }
+        
+        if (_resizeIcon != null)
+        {
+            _canvas.Children.Remove(_resizeIcon);
+            _resizeIcon = null;
         }
     }
 
@@ -408,6 +643,66 @@ public sealed class SelectionController
     }
 
     /// <summary>
+    /// Gets the currently selected strokes.
+    /// </summary>
+    public List<LineStroke> GetSelectedStrokes()
+    {
+        var doc = _getDocument();
+        return _selectedIndices
+            .OrderBy(i => i)
+            .Where(i => i >= 0 && i < doc.Strokes.Count)
+            .Select(i => doc.Strokes[i])
+            .ToList();
+    }
+
+    /// <summary>
+    /// Gets the currently selected paint wells.
+    /// </summary>
+    public List<PaintWell> GetSelectedPaintWells()
+    {
+        var doc = _getDocument();
+        return _selectedPaintWellIds
+            .Select(id => doc.PaintWells.FirstOrDefault(w => w.Id == id))
+            .Where(w => w != null)
+            .Select(w => w!)
+            .ToList();
+    }
+
+    /// <summary>
+    /// Selects the strokes at the specified indices.
+    /// </summary>
+    public void SelectStrokes(IEnumerable<int> indices)
+    {
+        var doc = _getDocument();
+        foreach (var idx in indices)
+        {
+            if (idx >= 0 && idx < doc.Strokes.Count)
+            {
+                _selectedIndices.Add(idx);
+            }
+        }
+        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+        _requestRender();
+    }
+
+    /// <summary>
+    /// Selects the paint wells with the specified IDs.
+    /// </summary>
+    public void SelectPaintWells(IEnumerable<Guid> ids)
+    {
+        var doc = _getDocument();
+        foreach (var id in ids)
+        {
+            if (doc.PaintWells.Any(w => w.Id == id))
+            {
+                _selectedPaintWellIds.Add(id);
+            }
+        }
+        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+        _requestRender();
+    }
+
+    /// <summary>
     /// Renders selection visuals (bounding box, handles) on the canvas.
     /// Call this from RenderAll after drawing strokes.
     /// </summary>
@@ -507,11 +802,12 @@ public sealed class SelectionController
         var topEdgeDy = topRight.Y - topLeft.Y;
         var topEdgeLength = Math.Sqrt(topEdgeDx * topEdgeDx + topEdgeDy * topEdgeDy);
         
-        // Perpendicular direction (rotate 90 degrees counter-clockwise for "up" relative to the box)
-        double perpX = -topEdgeDy / topEdgeLength;
-        double perpY = topEdgeDx / topEdgeLength;
+        // Perpendicular direction pointing OUTWARD from the box (away from center)
+        // In screen coordinates (Y down), we need to rotate 90° clockwise to point "up" relative to the edge
+        double perpX = topEdgeDy / topEdgeLength;   // Flipped sign to point outward
+        double perpY = -topEdgeDx / topEdgeLength;  // Flipped sign to point outward
         
-        // Rotation handle position
+        // Rotation handle position - OUTSIDE the box
         var rotateHandleX = topCenter.X + perpX * ROTATE_HANDLE_OFFSET;
         var rotateHandleY = topCenter.Y + perpY * ROTATE_HANDLE_OFFSET;
 
@@ -532,22 +828,64 @@ public sealed class SelectionController
 
         _rotateHandle = new Ellipse
         {
-            Width = HANDLE_SIZE,
-            Height = HANDLE_SIZE,
+            Width = ROTATE_HANDLE_SIZE,
+            Height = ROTATE_HANDLE_SIZE,
             Fill = Brushes.White,
             Stroke = Brushes.DodgerBlue,
-            StrokeThickness = 1.5,
+            StrokeThickness = 2,
             Cursor = Cursors.Hand,
             IsHitTestVisible = false,
             SnapsToDevicePixels = true
         };
-        Canvas.SetLeft(_rotateHandle, rotateHandleX - HANDLE_SIZE / 2);
-        Canvas.SetTop(_rotateHandle, rotateHandleY - HANDLE_SIZE / 2);
+        Canvas.SetLeft(_rotateHandle, rotateHandleX - ROTATE_HANDLE_SIZE / 2);
+        Canvas.SetTop(_rotateHandle, rotateHandleY - ROTATE_HANDLE_SIZE / 2);
         Panel.SetZIndex(_rotateHandle, 19);
         _canvas.Children.Add(_rotateHandle);
         
+        // Store positions for hover detection and icon placement
+        _rotateHandlePosition = new Point(rotateHandleX, rotateHandleY);
+        _selectionCenterPosition = new Point(centerX, centerY);
+        
         // Store the rotation center for hit testing
         _selectionRotationCenter = new Point(centerX, centerY);
+        
+        // If we're actively rotating, show the icon at the center (more transparent), scaled to selection size
+        if (_mode == SelectionMode.Rotating && _rotateIcon == null)
+        {
+            var iconSize = CalculateIconSize();
+            _rotateIcon = new ImageAwesome
+            {
+                Icon = FontAwesomeIcon.Refresh,
+                Width = iconSize,
+                Height = iconSize,
+                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(80, 30, 144, 255)), // More transparent during rotation (never solid)
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            Canvas.SetLeft(_rotateIcon, centerX - iconSize / 2);
+            Canvas.SetTop(_rotateIcon, centerY - iconSize / 2);
+            Panel.SetZIndex(_rotateIcon, 17);
+            _canvas.Children.Add(_rotateIcon);
+        }
+        
+        // If we're actively resizing, show the resize icon at the center (more transparent), scaled to selection size
+        if (_mode == SelectionMode.Resizing && _resizeIcon == null)
+        {
+            var iconSize = CalculateIconSize();
+            _resizeIcon = new ImageAwesome
+            {
+                Icon = FontAwesomeIcon.ArrowsAlt,
+                Width = iconSize,
+                Height = iconSize,
+                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(80, 30, 144, 255)), // More transparent during resizing (never solid)
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            Canvas.SetLeft(_resizeIcon, centerX - iconSize / 2);
+            Canvas.SetTop(_resizeIcon, centerY - iconSize / 2);
+            Panel.SetZIndex(_resizeIcon, 17);
+            _canvas.Children.Add(_resizeIcon);
+        }
     }
     
     /// <summary>
@@ -589,6 +927,9 @@ public sealed class SelectionController
         Panel.SetZIndex(handle, 19);
         _canvas.Children.Add(handle);
         _handles.Add(handle);
+        
+        // Store position for hover detection
+        _resizeHandlePositions.Add(new Point(x, y));
     }
 
     private void RemoveSelectionVisuals()
@@ -604,6 +945,7 @@ public sealed class SelectionController
             _canvas.Children.Remove(h);
         }
         _handles.Clear();
+        _resizeHandlePositions.Clear();
 
         if (_rotateHandle != null)
         {
@@ -611,10 +953,35 @@ public sealed class SelectionController
             _rotateHandle = null;
         }
 
+        if (_rotateIcon != null)
+        {
+            _canvas.Children.Remove(_rotateIcon);
+            _rotateIcon = null;
+        }
+
+        if (_rotateHandleHoverRing != null)
+        {
+            _canvas.Children.Remove(_rotateHandleHoverRing);
+            _rotateHandleHoverRing = null;
+        }
+
         if (_rotateConnector != null)
         {
             _canvas.Children.Remove(_rotateConnector);
             _rotateConnector = null;
+        }
+        
+        // Clear resize hover visuals
+        if (_resizeHandleHoverRing != null)
+        {
+            _canvas.Children.Remove(_resizeHandleHoverRing);
+            _resizeHandleHoverRing = null;
+        }
+        
+        if (_resizeIcon != null)
+        {
+            _canvas.Children.Remove(_resizeIcon);
+            _resizeIcon = null;
         }
     }
 
@@ -698,6 +1065,11 @@ public sealed class SelectionController
             : _selectionBounds;
             
         if (boundsToUse.IsEmpty) return SelectionHandle.None;
+        
+        // Don't allow clicking the rotation handle while already rotating
+        // This prevents the second click from disrupting the selection box orientation
+        if (_mode == SelectionMode.Rotating)
+            return SelectionHandle.None;
 
         // Paint wells are rendered with ruler offset, strokes are not.
         var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
@@ -728,12 +1100,13 @@ public sealed class SelectionController
         var topEdgeDx = topRight.X - topLeft.X;
         var topEdgeDy = topRight.Y - topLeft.Y;
         var topEdgeLength = Math.Sqrt(topEdgeDx * topEdgeDx + topEdgeDy * topEdgeDy);
-        double perpX = topEdgeLength > 0 ? -topEdgeDy / topEdgeLength : 0;
-        double perpY = topEdgeLength > 0 ? topEdgeDx / topEdgeLength : -1;
+        // Perpendicular pointing OUTWARD (same direction as in RenderSelectionVisuals)
+        double perpX = topEdgeLength > 0 ? topEdgeDy / topEdgeLength : 0;
+        double perpY = topEdgeLength > 0 ? -topEdgeDx / topEdgeLength : -1;
         var rotateHandlePos = new Point(topCenter.X + perpX * ROTATE_HANDLE_OFFSET, topCenter.Y + perpY * ROTATE_HANDLE_OFFSET);
 
         // Check rotate handle first - use larger hit radius for easier clicking
-        if (Distance(point, new PointMm(rotateHandlePos.X, rotateHandlePos.Y)) <= HANDLE_HIT_RADIUS * 1.5)
+        if (Distance(point, new PointMm(rotateHandlePos.X, rotateHandlePos.Y)) <= ROTATE_HANDLE_HIT_RADIUS)
             return SelectionHandle.Rotate;
 
         // Check corner handles
@@ -1029,6 +1402,10 @@ public sealed class SelectionController
         {
             _mode = SelectionMode.Rotating;
             
+            // Save the current rotation angle as the base for this rotation operation
+            // This allows cumulative rotation across multiple drag operations
+            _baseRotationAngle = _selectionRotationAngle;
+            
             // The rotation handle visual is in canvas coordinates.
             // For paint wells, handles are rendered at (offset + bounds), so mouse coords match.
             // Calculate the visual center where handles are displayed.
@@ -1271,7 +1648,8 @@ public sealed class SelectionController
         var deltaAngle = currentAngle - _originalAngle;
 
         // Update the selection rotation angle for visual display
-        _selectionRotationAngle = deltaAngle;
+        // Add base angle to support cumulative rotation across multiple operations
+        _selectionRotationAngle = _baseRotationAngle + deltaAngle;
 
         // The actual rotation center for transforming objects is in document coordinates
         var transformCenter = new PointMm(
@@ -1424,5 +1802,26 @@ public sealed class SelectionController
     private static double CrossProduct(double ax, double ay, double bx, double by)
     {
         return ax * by - ay * bx;
+    }
+    
+    /// <summary>
+    /// Calculates the appropriate icon size based on the selection bounds.
+    /// The icon scales with the selection but is capped at MAX_ICON_SIZE and has a minimum of MIN_ICON_SIZE.
+    /// </summary>
+    private double CalculateIconSize()
+    {
+        if (_selectionBounds.IsEmpty) return MAX_ICON_SIZE;
+        
+        // Use the smaller dimension to determine icon size
+        var smallerDimension = Math.Min(_selectionBounds.Width, _selectionBounds.Height);
+        
+        // Add padding to get the visual bounds size
+        var visualSize = smallerDimension + (SELECTION_PADDING * 2);
+        
+        // Calculate icon size as a ratio of the visual bounds
+        var iconSize = visualSize * ICON_SIZE_RATIO;
+        
+        // Clamp to min/max bounds while maintaining aspect ratio (it's square so aspect ratio is always 1:1)
+        return Math.Clamp(iconSize, MIN_ICON_SIZE, MAX_ICON_SIZE);
     }
 }

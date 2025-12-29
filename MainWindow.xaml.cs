@@ -85,6 +85,7 @@ namespace NVSPlotter
         private readonly ShapeDrawingController _shapeController;
         private readonly SelectionController _selectionController;
         private readonly PaintWellController _paintWellController;
+        private readonly ClipboardService _clipboardService = new();
 
         // Undo - stores group sizes for multi-stroke operations (e.g., rectangles, circles, freehand)
         private readonly Stack<int> _undoGroupSizes = new();
@@ -127,7 +128,10 @@ namespace NVSPlotter
 
         // Snap indicator visual
         private Ellipse? _snapIndicator;
-        private const double SNAP_INDICATOR_SIZE = 10.0;
+        private Line? _snapIndicatorLineH; // Horizontal dashed line through indicator
+        private Line? _snapIndicatorLineV; // Vertical dashed line through indicator
+        private const double SNAP_INDICATOR_SIZE = 24.0; // Large indicator for better visibility
+        private const double SNAP_INDICATOR_LINE_EXTEND = 12.0; // How far the dashed lines extend beyond the circle
 
         private readonly DispatcherTimer _filterThrottle;
         private ConsoleWindow? _consoleWindow;
@@ -182,6 +186,9 @@ namespace NVSPlotter
                 stroke => { _doc.Strokes.Add(stroke); _lastGcode = ""; },
                 RenderAll,
                 () => _paintWellController?.ActiveColorWell?.Id);
+
+            // Subscribe to shape completion to auto-select the drawn shape
+            _shapeController.ShapeCompleted += OnShapeCompleted;
 
             // Track stroke count for grouped undo
             _strokeCountBeforeOperation = 0;
@@ -692,6 +699,214 @@ namespace NVSPlotter
             RenderAll();
         }
 
+        /// <summary>
+        /// Called when a shape (rectangle, circle, polyline, bezier, poly-bezier, freedraw) is completed.
+        /// Automatically selects the newly created shape and switches to the Select tool.
+        /// </summary>
+        private void OnShapeCompleted(int strokeCount)
+        {
+            if (strokeCount <= 0) return;
+
+            // Select the newly created strokes (the last N strokes in the document)
+            var startIndex = _doc.Strokes.Count - strokeCount;
+            if (startIndex < 0) startIndex = 0;
+
+            var indices = Enumerable.Range(startIndex, strokeCount).ToList();
+            
+            // Clear any existing selection and select the new shape
+            _selectionController.ClearSelection();
+            _selectionController.SelectStrokes(indices);
+
+            // Switch to Select tool so user can immediately manipulate the shape
+            if (_toolsWindow != null)
+            {
+                _toolsWindow.SelectTool(ToolMode.Select);
+            }
+
+            RenderAll();
+            AppendLog($"Shape created with {strokeCount} stroke(s) - auto-selected.");
+        }
+
+        // ===== CLIPBOARD OPERATIONS =====
+
+        private void PerformCopy()
+        {
+            if (!_selectionController.HasSelection)
+            {
+                AppendLog("Nothing selected to copy.");
+                return;
+            }
+
+            var strokes = _selectionController.GetSelectedStrokes();
+            var wells = _selectionController.GetSelectedPaintWells();
+            var bounds = _selectionController.SelectionBounds;
+
+            _clipboardService.CopyToClipboard(strokes, wells, bounds);
+            AppendLog($"Copied {strokes.Count} stroke(s) and {wells.Count} paint well(s) to clipboard.");
+        }
+
+        private void PerformCut()
+        {
+            if (!_selectionController.HasSelection)
+            {
+                AppendLog("Nothing selected to cut.");
+                return;
+            }
+
+            // First copy
+            var strokes = _selectionController.GetSelectedStrokes();
+            var wells = _selectionController.GetSelectedPaintWells();
+            var bounds = _selectionController.SelectionBounds;
+            _clipboardService.CopyToClipboard(strokes, wells, bounds);
+
+            // Then delete
+            _selectionController.DeleteSelection();
+            _lastGcode = "";
+
+            AppendLog($"Cut {strokes.Count} stroke(s) and {wells.Count} paint well(s) to clipboard.");
+        }
+
+        private void PerformPaste()
+        {
+            if (!_clipboardService.HasClipboardData())
+            {
+                AppendLog("Clipboard is empty or contains incompatible data.");
+                return;
+            }
+
+            var result = _clipboardService.PasteFromClipboard();
+            if (result == null)
+            {
+                AppendLog("Failed to paste from clipboard.");
+                return;
+            }
+
+            var (strokes, wells) = result.Value;
+
+            // Add strokes to document
+            var startIndex = _doc.Strokes.Count;
+            foreach (var stroke in strokes)
+            {
+                _doc.Strokes.Add(stroke);
+            }
+
+            // Add paint wells to document
+            foreach (var well in wells)
+            {
+                _doc.PaintWells.Add(well);
+            }
+
+            // Select the pasted items
+            _selectionController.ClearSelection();
+            
+            // Select strokes
+            var indices = Enumerable.Range(startIndex, strokes.Count).ToList();
+            _selectionController.SelectStrokes(indices);
+
+            // Select paint wells
+            _selectionController.SelectPaintWells(wells.Select(w => w.Id));
+
+            // Switch to Select tool to show the pasted items
+            if (_toolsWindow != null)
+            {
+                _toolsWindow.SelectTool(ToolMode.Select);
+            }
+
+            _lastGcode = "";
+            UpdatePaintWellsUI();
+            RenderAll();
+
+            AppendLog($"Pasted {strokes.Count} stroke(s) and {wells.Count} paint well(s).");
+        }
+
+        private void PerformSelectAll()
+        {
+            _selectionController.ClearSelection();
+
+            // Select all strokes
+            var allIndices = Enumerable.Range(0, _doc.Strokes.Count);
+            _selectionController.SelectStrokes(allIndices);
+
+            // Select all paint wells
+            _selectionController.SelectPaintWells(_doc.PaintWells.Select(w => w.Id));
+
+            // Switch to Select tool to show the selection
+            if (_toolsWindow != null)
+            {
+                _toolsWindow.SelectTool(ToolMode.Select);
+            }
+
+            RenderAll();
+            AppendLog($"Selected all: {_doc.Strokes.Count} stroke(s) and {_doc.PaintWells.Count} paint well(s).");
+        }
+
+        // ===== CONTEXT MENU HANDLERS =====
+
+        private void CanvasContextMenu_Opened(object sender, RoutedEventArgs e)
+        {
+            // Update menu item enabled states based on current selection
+            var hasSelection = _selectionController.HasSelection;
+            var hasClipboard = _clipboardService.HasClipboardData();
+            var hasContent = _doc.Strokes.Count > 0 || _doc.PaintWells.Count > 0;
+
+            if (sender is not ContextMenu menu) return;
+
+            foreach (var item in menu.Items.OfType<MenuItem>())
+            {
+                switch (item.Name)
+                {
+                    case "CutMenuItem":
+                    case "CopyMenuItem":
+                    case "DeleteMenuItem":
+                    case "DeselectMenuItem":
+                        item.IsEnabled = hasSelection;
+                        break;
+                    case "PasteMenuItem":
+                        item.IsEnabled = hasClipboard;
+                        break;
+                    case "SelectAllMenuItem":
+                        item.IsEnabled = hasContent;
+                        break;
+                }
+            }
+        }
+
+        private void CutMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            PerformCut();
+        }
+
+        private void CopyMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            PerformCopy();
+        }
+
+        private void PasteMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            PerformPaste();
+        }
+
+        private void DeleteMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (_selectionController.HasSelection)
+            {
+                _selectionController.DeleteSelection();
+                _lastGcode = "";
+                AppendLog("Deleted selected items.");
+            }
+        }
+
+        private void SelectAllMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            PerformSelectAll();
+        }
+
+        private void DeselectMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            _selectionController.ClearSelection();
+            AppendLog("Selection cleared.");
+        }
+
         private void SetZoom(double z)
         {
             if (z <= 0) z = 1;
@@ -882,6 +1097,12 @@ namespace NVSPlotter
                     e.Handled = true;
                     return;
                 }
+            }
+            // Also handle hover detection when Select tool is active but not dragging
+            else if (GetCurrentTool() == ToolMode.Select && _selectionController.HasSelection)
+            {
+                var selPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                _selectionController.HandleMouseMove(selPoint);
             }
 
             if (_measurementOverlay.IsMeasuring)
@@ -1142,6 +1363,8 @@ namespace NVSPlotter
                 {
                     _undoGroupSizes.Push(strokesAdded);
                 }
+                _lastGcode = ""; // Invalidate G-code cache
+                RenderAll(); // Ensure visual update after shape completion
                 e.Handled = true;
                 return;
             }
@@ -1263,26 +1486,22 @@ namespace NVSPlotter
                 return;
             }
 
-            // Colors: Green for start, Blue for end, Orange for grid
+            // Colors: Use heat map for endpoint snap based on position along stroke group, Orange for grid
             Brush fillBrush;
             Brush strokeBrush;
+            double progress = 0.5; // Default to middle
             if (snapPoint != null)
             {
-                if (snapType == SnapType.Start)
-                {
-                    fillBrush = new SolidColorBrush(Color.FromArgb(128, 0, 200, 0));
-                    strokeBrush = Brushes.LimeGreen;
-                }
-                else
-                {
-                    fillBrush = new SolidColorBrush(Color.FromArgb(128, 30, 90, 180));
-                    strokeBrush = new SolidColorBrush(Color.FromRgb(50, 120, 200)); // Mid blue
-                }
+                // Calculate heat map color based on position along the stroke group
+                progress = CalculateSnapPointProgress(snapPoint.Value);
+                var (fillColor, borderColor) = GetHeatMapColor(progress);
+                fillBrush = new SolidColorBrush(fillColor);
+                strokeBrush = new SolidColorBrush(borderColor);
             }
             else
             {
                 // Grid snap - orange/yellow color
-                fillBrush = new SolidColorBrush(Color.FromArgb(128, 255, 165, 0));
+                fillBrush = new SolidColorBrush(Color.FromArgb(150, 255, 165, 0));
                 strokeBrush = Brushes.Orange;
             }
 
@@ -1294,7 +1513,7 @@ namespace NVSPlotter
                     Height = SNAP_INDICATOR_SIZE,
                     IsHitTestVisible = false,
                     SnapsToDevicePixels = true,
-                    StrokeThickness = 2
+                    StrokeThickness = 3 // Thicker border for better visibility
                 };
                 DrawCanvas.Children.Add(_snapIndicator);
                 Panel.SetZIndex(_snapIndicator, 20);
@@ -1303,8 +1522,136 @@ namespace NVSPlotter
             _snapIndicator.Fill = fillBrush;
             _snapIndicator.Stroke = strokeBrush;
 
-            Canvas.SetLeft(_snapIndicator, displayPoint.Value.X - SNAP_INDICATOR_SIZE / 2.0);
-            Canvas.SetTop(_snapIndicator, displayPoint.Value.Y - SNAP_INDICATOR_SIZE / 2.0);
+            var centerX = displayPoint.Value.X;
+            var centerY = displayPoint.Value.Y;
+
+            Canvas.SetLeft(_snapIndicator, centerX - SNAP_INDICATOR_SIZE / 2.0);
+            Canvas.SetTop(_snapIndicator, centerY - SNAP_INDICATOR_SIZE / 2.0);
+
+            // Add dashed crosshair lines ONLY for start (t ≈ 0) and end (t ≈ 1) points
+            // Not for intermediate points or grid snaps
+            const double endpointThreshold = 0.01; // Tolerance for determining if it's a start/end point
+            bool isStartOrEnd = snapPoint != null && (progress <= endpointThreshold || progress >= 1.0 - endpointThreshold);
+
+            if (isStartOrEnd)
+            {
+                var lineExtend = SNAP_INDICATOR_SIZE / 2.0 + SNAP_INDICATOR_LINE_EXTEND;
+
+                // Horizontal dashed line
+                if (_snapIndicatorLineH == null)
+                {
+                    _snapIndicatorLineH = new Line
+                    {
+                        StrokeThickness = 3,
+                        StrokeDashArray = [3, 2],
+                        IsHitTestVisible = false,
+                        SnapsToDevicePixels = true
+                    };
+                    DrawCanvas.Children.Add(_snapIndicatorLineH);
+                    Panel.SetZIndex(_snapIndicatorLineH, 19); // Below the circle
+                }
+
+                _snapIndicatorLineH.X1 = centerX - lineExtend;
+                _snapIndicatorLineH.Y1 = centerY;
+                _snapIndicatorLineH.X2 = centerX + lineExtend;
+                _snapIndicatorLineH.Y2 = centerY;
+                _snapIndicatorLineH.Stroke = strokeBrush;
+
+                // Vertical dashed line
+                if (_snapIndicatorLineV == null)
+                {
+                    _snapIndicatorLineV = new Line
+                    {
+                        StrokeThickness = 3,
+                        StrokeDashArray = [3, 2],
+                        IsHitTestVisible = false,
+                        SnapsToDevicePixels = true
+                    };
+                    DrawCanvas.Children.Add(_snapIndicatorLineV);
+                    Panel.SetZIndex(_snapIndicatorLineV, 19); // Below the circle
+                }
+
+                _snapIndicatorLineV.X1 = centerX;
+                _snapIndicatorLineV.Y1 = centerY - lineExtend;
+                _snapIndicatorLineV.X2 = centerX;
+                _snapIndicatorLineV.Y2 = centerY + lineExtend;
+                _snapIndicatorLineV.Stroke = strokeBrush;
+            }
+            else
+            {
+                // Not a start/end point - remove the crosshair lines (only show circle)
+                RemoveSnapIndicatorLines();
+            }
+        }
+
+        /// <summary>
+        /// Calculates the progress (0.0 to 1.0) of a snap point along its stroke group.
+        /// 0.0 = group start, 1.0 = group end.
+        /// For ungrouped strokes, returns 0.0 for point A and 1.0 for point B.
+        /// </summary>
+        private double CalculateSnapPointProgress(PointMm snapPoint)
+        {
+            const double tolerance = 0.5; // mm tolerance for point matching
+
+            // Find which stroke(s) contain this point
+            LineStroke? matchedStroke = null;
+            bool isPointA = false;
+
+            foreach (var stroke in _doc.Strokes)
+            {
+                if (Math.Abs(stroke.A.X - snapPoint.X) < tolerance && Math.Abs(stroke.A.Y - snapPoint.Y) < tolerance)
+                {
+                    matchedStroke = stroke;
+                    isPointA = true;
+                    break;
+                }
+                if (Math.Abs(stroke.B.X - snapPoint.X) < tolerance && Math.Abs(stroke.B.Y - snapPoint.Y) < tolerance)
+                {
+                    matchedStroke = stroke;
+                    isPointA = false;
+                    break;
+                }
+            }
+
+            if (matchedStroke == null)
+                return 0.5; // Default to middle if not found
+
+            // If stroke has no group, it's a single stroke: A = 0.0, B = 1.0
+            if (matchedStroke.GroupId == null)
+            {
+                return isPointA ? 0.0 : 1.0;
+            }
+
+            // Find all strokes in the same group
+            var groupId = matchedStroke.GroupId.Value;
+            var groupStrokes = _doc.Strokes.Where(s => s.GroupId == groupId).ToList();
+
+            if (groupStrokes.Count == 0)
+                return isPointA ? 0.0 : 1.0;
+
+            // Build ordered list of all points in the group
+            // Start from the stroke marked as IsGroupStart
+            var points = new List<PointMm>();
+            var startStroke = groupStrokes.FirstOrDefault(s => s.IsGroupStart) ?? groupStrokes[0];
+            points.Add(startStroke.A);
+            foreach (var stroke in groupStrokes)
+            {
+                points.Add(stroke.B);
+            }
+
+            // Find which point index matches the snap point
+            for (int i = 0; i < points.Count; i++)
+            {
+                var pt = points[i];
+                if (Math.Abs(pt.X - snapPoint.X) < tolerance && Math.Abs(pt.Y - snapPoint.Y) < tolerance)
+                {
+                    // Return progress: 0.0 for first point, 1.0 for last point
+                    return points.Count > 1 ? (double)i / (points.Count - 1) : 0.0;
+                }
+            }
+
+            // Fallback: use the matched stroke's position
+            return isPointA ? 0.0 : 1.0;
         }
 
         private void RemoveSnapIndicator()
@@ -1313,6 +1660,24 @@ namespace NVSPlotter
             {
                 DrawCanvas.Children.Remove(_snapIndicator);
                 _snapIndicator = null;
+            }
+            RemoveSnapIndicatorLines();
+        }
+
+        private void RemoveSnapIndicatorLines()
+        {
+            if (DrawCanvas != null)
+            {
+                if (_snapIndicatorLineH != null)
+                {
+                    DrawCanvas.Children.Remove(_snapIndicatorLineH);
+                    _snapIndicatorLineH = null;
+                }
+                if (_snapIndicatorLineV != null)
+                {
+                    DrawCanvas.Children.Remove(_snapIndicatorLineV);
+                    _snapIndicatorLineV = null;
+                }
             }
         }
 
@@ -1799,6 +2164,30 @@ namespace NVSPlotter
             {
                 e.Handled = true;
                 return;
+            }
+
+            // Clipboard shortcuts (Ctrl+X, Ctrl+C, Ctrl+V, Ctrl+A) - work in any tool when there's a selection
+            if ((Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control && e.OriginalSource is not TextBox)
+            {
+                switch (e.Key)
+                {
+                    case Key.X:
+                        PerformCut();
+                        e.Handled = true;
+                        return;
+                    case Key.C:
+                        PerformCopy();
+                        e.Handled = true;
+                        return;
+                    case Key.V:
+                        PerformPaste();
+                        e.Handled = true;
+                        return;
+                    case Key.A:
+                        PerformSelectAll();
+                        e.Handled = true;
+                        return;
+                }
             }
 
             // Selection tool: Escape cancels, Delete removes selected strokes
@@ -2330,8 +2719,8 @@ namespace NVSPlotter
                 DrawCanvas.Children.Add(ln);
             }
 
-            // Draw start/end indicators for selected strokes (grouped by GroupId)
-            DrawSelectionIndicators();
+            // Note: Selection indicators are now shown only via hover snap indicator with heat map colors
+            // The DrawSelectionIndicators method was removed to avoid showing all points when selected
 
             // Selection visuals (bounding box, handles)
             _selectionController.RenderSelectionVisuals();
@@ -2398,6 +2787,7 @@ namespace NVSPlotter
 
         /// <summary>
         /// Draws indicators for a group of strokes using their IsGroupStart/IsGroupEnd markers.
+        /// Creates a heat map gradient from green (start) to red (end) for all intermediate points.
         /// </summary>
         private void DrawIndicatorsUsingMarkers(List<LineStroke> strokes, double indicatorSize, double closedLoopTolerance)
         {
@@ -2435,37 +2825,91 @@ namespace NVSPlotter
             }
             else
             {
-                // Open path: green start, red end
-                var startIndicator = new Ellipse
+                // Open path: draw indicators at all stroke endpoints with gradient from green to red
+                // Collect all unique points in order: start of first stroke, then end of each stroke
+                var points = new List<PointMm>();
+                
+                // Add start point
+                points.Add(strokes[0].A);
+                
+                // Add end point of each stroke
+                foreach (var stroke in strokes)
                 {
-                    Width = indicatorSize,
-                    Height = indicatorSize,
-                    Fill = new SolidColorBrush(Color.FromArgb(180, 0, 180, 0)),
-                    Stroke = Brushes.DarkGreen,
-                    StrokeThickness = 2,
-                    IsHitTestVisible = false,
-                    SnapsToDevicePixels = true
-                };
-                Canvas.SetLeft(startIndicator, startPoint.X - indicatorSize / 2.0);
-                Canvas.SetTop(startIndicator, startPoint.Y - indicatorSize / 2.0);
-                Panel.SetZIndex(startIndicator, 5);
-                DrawCanvas.Children.Add(startIndicator);
-
-                var endIndicator = new Ellipse
+                    points.Add(stroke.B);
+                }
+                
+                // Calculate indicator size - slightly smaller for intermediate points
+                var intermediateSize = indicatorSize * 0.7;
+                
+                // Draw indicators with heat map gradient
+                for (int i = 0; i < points.Count; i++)
                 {
-                    Width = indicatorSize,
-                    Height = indicatorSize,
-                    Fill = new SolidColorBrush(Color.FromArgb(180, 220, 50, 50)), // Red fill
-                    Stroke = new SolidColorBrush(Color.FromRgb(180, 30, 30)), // Dark red border
-                    StrokeThickness = 2,
-                    IsHitTestVisible = false,
-                    SnapsToDevicePixels = true
-                };
-                Canvas.SetLeft(endIndicator, endPoint.X - indicatorSize / 2.0);
-                Canvas.SetTop(endIndicator, endPoint.Y - indicatorSize / 2.0);
-                Panel.SetZIndex(endIndicator, 5);
-                DrawCanvas.Children.Add(endIndicator);
+                    var point = points[i];
+                    var t = points.Count > 1 ? (double)i / (points.Count - 1) : 0.0; // 0.0 = start, 1.0 = end
+                    
+                    // Calculate heat map color: green (0, 180, 0) -> yellow (180, 180, 0) -> red (220, 50, 50)
+                    var (fillColor, strokeColor) = GetHeatMapColor(t);
+                    
+                    // Use full size for start and end, smaller for intermediate
+                    var currentSize = (i == 0 || i == points.Count - 1) ? indicatorSize : intermediateSize;
+                    var strokeThickness = (i == 0 || i == points.Count - 1) ? 2.0 : 1.5;
+                    
+                    var indicator = new Ellipse
+                    {
+                        Width = currentSize,
+                        Height = currentSize,
+                        Fill = new SolidColorBrush(fillColor),
+                        Stroke = new SolidColorBrush(strokeColor),
+                        StrokeThickness = strokeThickness,
+                        IsHitTestVisible = false,
+                        SnapsToDevicePixels = true
+                    };
+                    Canvas.SetLeft(indicator, point.X - currentSize / 2.0);
+                    Canvas.SetTop(indicator, point.Y - currentSize / 2.0);
+                    Panel.SetZIndex(indicator, 5);
+                    DrawCanvas.Children.Add(indicator);
+                }
             }
+        }
+
+        /// <summary>
+        /// Calculates a heat map color gradient from green (t=0) through yellow (t=0.5) to red (t=1).
+        /// Returns both fill color (semi-transparent) and stroke color (darker border).
+        /// </summary>
+        private static (Color fill, Color stroke) GetHeatMapColor(double t)
+        {
+            // Clamp t to [0, 1]
+            t = Math.Clamp(t, 0.0, 1.0);
+            
+            byte r, g, b;
+            
+            if (t < 0.5)
+            {
+                // Green to Yellow: increase red from 0 to 220
+                var localT = t * 2.0; // 0 to 1 within first half
+                r = (byte)(localT * 220);
+                g = 180;
+                b = 0;
+            }
+            else
+            {
+                // Yellow to Red: decrease green from 180 to 50
+                var localT = (t - 0.5) * 2.0; // 0 to 1 within second half
+                r = 220;
+                g = (byte)(180 - localT * 130); // 180 -> 50
+                b = (byte)(localT * 50); // Add slight blue tint to red
+            }
+            
+            // Fill is semi-transparent
+            var fill = Color.FromArgb(180, r, g, b);
+            
+            // Stroke is darker version
+            var stroke = Color.FromRgb(
+                (byte)(r * 0.7),
+                (byte)(g * 0.5),
+                (byte)(b * 0.5));
+            
+            return (fill, stroke);
         }
 
         private void RenderReferenceImage()

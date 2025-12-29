@@ -79,7 +79,9 @@ public sealed class ShapeDrawingController
     private Ellipse? _polyBezierHandleControl;
     private Line? _polyBezierControlLine1;
     private Line? _polyBezierControlLine2;
+    private Ellipse? _polyBezierCloseIndicator; // Visual indicator when mouse is near start point
     private readonly List<(PointMm P0, PointMm P1, PointMm P2, PointMm P3)> _polyBezierSegments = new();
+    private const double POLYBEZIER_CLOSE_TOLERANCE = 10.0; // mm - distance threshold to show close indicator
 
     // FreeDraw state: continuous drawing while mouse is held
     // Collects points and fits smooth Bezier curves through them
@@ -95,6 +97,12 @@ public sealed class ShapeDrawingController
     public bool IsBezierActive => _isBezierActive;
     public bool IsPolyBezierActive => _isPolyBezierActive;
     public bool IsFreeDrawing => _isFreeDrawing;
+
+    /// <summary>
+    /// Event raised when a multi-stroke shape (rectangle, circle, polyline, bezier, etc.) is completed.
+    /// The parameter indicates how many strokes were added.
+    /// </summary>
+    public event Action<int>? ShapeCompleted;
 
     public ShapeDrawingController(Canvas canvas, Action<LineStroke> commitStroke, Action requestRender, Func<Guid?>? getActivePaintWellId = null)
     {
@@ -176,27 +184,39 @@ public sealed class ShapeDrawingController
     {
         if (!_isDrawing) return;
 
+        int strokesAdded = 0;
         switch (_activeTool)
         {
             case ToolMode.Rectangle:
                 _currentGroupId = Guid.NewGuid(); // All rectangle strokes share same group
+                _strokeCountInGroup = 0;
                 FinalizeRectangle(_start, end);
+                strokesAdded = _strokeCountInGroup;
                 _currentGroupId = null;
                 break;
             case ToolMode.Circle:
                 _currentGroupId = Guid.NewGuid(); // All circle strokes share same group
+                _strokeCountInGroup = 0;
                 FinalizeEllipse(_start, end);
+                strokesAdded = _strokeCountInGroup;
                 _currentGroupId = null;
                 break;
             default:
                 // Single line - no group (null GroupId)
                 _currentGroupId = null;
                 AddStroke(_start, end);
+                strokesAdded = 1;
                 break;
         }
 
         CancelPreview();
         _requestRender();
+
+        // Notify that a shape was completed (for rectangle/circle auto-select)
+        if (strokesAdded > 0 && _activeTool is ToolMode.Rectangle or ToolMode.Circle)
+        {
+            ShapeCompleted?.Invoke(strokesAdded);
+        }
     }
 
     public void HandlePolylineClick(PointMm point, bool isDoubleClick)
@@ -277,10 +297,17 @@ public sealed class ShapeDrawingController
     public void FinishPolyline()
     {
         if (!_isPolylineActive) return;
+        var strokesAdded = _strokeCountInGroup;
         _isPolylineActive = false;
         _currentGroupId = null; // Clear group ID
         _activeTool = ToolMode.Line;
         CancelPreview();
+
+        // Notify that a polyline was completed
+        if (strokesAdded > 0)
+        {
+            ShapeCompleted?.Invoke(strokesAdded);
+        }
     }
 
     public void CancelAll()
@@ -750,12 +777,20 @@ public sealed class ShapeDrawingController
             AddStroke(samples[i], samples[i + 1], isGroupStart: isFirst, isGroupEnd: isLast);
         }
 
+        var strokesAdded = _strokeCountInGroup;
+
         CancelBezierPreview();
         _isBezierActive = false;
         _bezierClickCount = 0;
         _currentGroupId = null; // Clear group ID
         _activeTool = ToolMode.Line;
         _requestRender();
+
+        // Notify that a bezier was completed
+        if (strokesAdded > 0)
+        {
+            ShapeCompleted?.Invoke(strokesAdded);
+        }
     }
 
     private static IEnumerable<PointMm> SampleCubicBezier(PointMm p0, PointMm p1, PointMm p2, PointMm p3, int segments)
@@ -1043,6 +1078,9 @@ public sealed class ShapeDrawingController
             _polyBezierControlLine2.X2 = _polyBezierControl.X;
             _polyBezierControlLine2.Y2 = _polyBezierControl.Y;
         }
+
+        // Show close indicator when mouse is near the starting point (only after at least one segment)
+        UpdatePolyBezierCloseIndicator(current);
     }
 
     private void HidePolyBezierControlHandles()
@@ -1061,6 +1099,62 @@ public sealed class ShapeDrawingController
         {
             _canvas.Children.Remove(_polyBezierControlLine2);
             _polyBezierControlLine2 = null;
+        }
+    }
+
+    /// <summary>
+    /// Shows or hides the close indicator based on mouse proximity to the starting point.
+    /// Only shows after at least one segment has been committed.
+    /// </summary>
+    private void UpdatePolyBezierCloseIndicator(PointMm current)
+    {
+        // Only show close indicator if we have at least one committed segment
+        // (need something to close back to)
+        if (_polyBezierSegments.Count == 0)
+        {
+            HidePolyBezierCloseIndicator();
+            return;
+        }
+
+        var distanceToStart = Utility.Distance(current, _polyBezierStart);
+        var isNearStart = distanceToStart <= POLYBEZIER_CLOSE_TOLERANCE;
+
+        if (isNearStart)
+        {
+            // Show close indicator
+            if (_polyBezierCloseIndicator == null)
+            {
+                _polyBezierCloseIndicator = new Ellipse
+                {
+                    Width = POLYBEZIER_CLOSE_TOLERANCE * 2,
+                    Height = POLYBEZIER_CLOSE_TOLERANCE * 2,
+                    Stroke = Brushes.LimeGreen,
+                    StrokeThickness = 2,
+                    StrokeDashArray = [3, 2],
+                    Fill = new SolidColorBrush(System.Windows.Media.Color.FromArgb(40, 0, 255, 0)), // Semi-transparent green
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                _canvas.Children.Add(_polyBezierCloseIndicator);
+                Panel.SetZIndex(_polyBezierCloseIndicator, 17); // Above other handles
+            }
+
+            // Position the indicator centered on the start point
+            Canvas.SetLeft(_polyBezierCloseIndicator, _polyBezierStart.X - POLYBEZIER_CLOSE_TOLERANCE);
+            Canvas.SetTop(_polyBezierCloseIndicator, _polyBezierStart.Y - POLYBEZIER_CLOSE_TOLERANCE);
+        }
+        else
+        {
+            HidePolyBezierCloseIndicator();
+        }
+    }
+
+    private void HidePolyBezierCloseIndicator()
+    {
+        if (_polyBezierCloseIndicator != null)
+        {
+            _canvas.Children.Remove(_polyBezierCloseIndicator);
+            _polyBezierCloseIndicator = null;
         }
     }
 
@@ -1117,6 +1211,8 @@ public sealed class ShapeDrawingController
             AddStroke(allStrokes[i].A, allStrokes[i].B, isGroupStart: isFirst, isGroupEnd: isLast);
         }
 
+        var strokesAdded = _strokeCountInGroup;
+
         CancelPolyBezierPreview();
         _isPolyBezierActive = false;
         _polyBezierPhase = PolyBezierPhase.PlacingStart;
@@ -1124,6 +1220,12 @@ public sealed class ShapeDrawingController
         _currentGroupId = null; // Clear group ID
         _activeTool = ToolMode.Line;
         _requestRender();
+
+        // Notify that a poly-bezier was completed
+        if (strokesAdded > 0)
+        {
+            ShapeCompleted?.Invoke(strokesAdded);
+        }
     }
 
     private void CancelPolyBezierPreview()
@@ -1153,6 +1255,7 @@ public sealed class ShapeDrawingController
         }
 
         HidePolyBezierControlHandles();
+        HidePolyBezierCloseIndicator();
 
         if (_canvas.IsMouseCaptured)
         {
@@ -1318,9 +1421,13 @@ public sealed class ShapeDrawingController
                     }
                 }
 
+                var strokesAdded = _strokeCountInGroup;
                 _freeDrawPoints.Clear();
                 _currentGroupId = null; // Clear group ID
                 _requestRender();
+
+                // NOTE: FreeDraw does NOT trigger ShapeCompleted event
+                // to allow continuous free-flowing drawing without interruption
             }
 
             /// <summary>

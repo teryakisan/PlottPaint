@@ -513,7 +513,21 @@
                     MouseLeave="DrawCanvas_MouseLeave"
                     MouseRightButtonDown="DrawCanvas_MouseRightButtonDown"
                     MouseLeftButtonDown="DrawCanvas_MouseLeftButtonDown"
-                    MouseLeftButtonUp="DrawCanvas_MouseLeftButtonUp"/>
+                    MouseLeftButtonUp="DrawCanvas_MouseLeftButtonUp">
+                                <Canvas.ContextMenu>
+                                    <ContextMenu x:Name="CanvasContextMenu" Opened="CanvasContextMenu_Opened">
+                                        <!-- Edit operations -->
+                                        <MenuItem x:Name="CutMenuItem" Header="_Cut" InputGestureText="Ctrl+X" Click="CutMenuItem_Click"/>
+                                        <MenuItem x:Name="CopyMenuItem" Header="_Copy" InputGestureText="Ctrl+C" Click="CopyMenuItem_Click"/>
+                                        <MenuItem x:Name="PasteMenuItem" Header="_Paste" InputGestureText="Ctrl+V" Click="PasteMenuItem_Click"/>
+                                        <Separator/>
+                                        <MenuItem x:Name="DeleteMenuItem" Header="_Delete" InputGestureText="Del" Click="DeleteMenuItem_Click"/>
+                                        <Separator/>
+                                        <MenuItem x:Name="SelectAllMenuItem" Header="Select _All" InputGestureText="Ctrl+A" Click="SelectAllMenuItem_Click"/>
+                                        <MenuItem x:Name="DeselectMenuItem" Header="D_eselect" InputGestureText="Esc" Click="DeselectMenuItem_Click"/>
+                                    </ContextMenu>
+                                </Canvas.ContextMenu>
+                            </Canvas>
                             <Canvas x:Name="RulerCanvas" IsHitTestVisible="False" Panel.ZIndex="10"/>
                         </Grid>
                     </ScrollViewer>
