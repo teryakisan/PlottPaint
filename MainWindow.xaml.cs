@@ -140,6 +140,9 @@ namespace NVSPlotter
         // Project file state
         private string? _currentProjectPath;
 
+        // Track which GroupIds should show intermediate points (toggle per selection)
+        private readonly HashSet<Guid> _showIntermediatePointsForGroups = new();
+
         public MainWindow()
         {
             _filterThrottle = new DispatcherTimer
@@ -849,6 +852,27 @@ namespace NVSPlotter
             var hasClipboard = _clipboardService.HasClipboardData();
             var hasContent = _doc.Strokes.Count > 0 || _doc.PaintWells.Count > 0;
 
+            // Check if selection contains grouped strokes (for intermediate points toggle and separate)
+            var hasGroupedStrokes = false;
+            var anyGroupShowingIntermediate = false;
+            if (hasSelection)
+            {
+                var selectedGroupIds = new HashSet<Guid>();
+                foreach (var idx in _selectionController.SelectedIndices)
+                {
+                    if (idx >= 0 && idx < _doc.Strokes.Count)
+                    {
+                        var stroke = _doc.Strokes[idx];
+                        if (stroke.GroupId.HasValue)
+                        {
+                            selectedGroupIds.Add(stroke.GroupId.Value);
+                            hasGroupedStrokes = true;
+                        }
+                    }
+                }
+                anyGroupShowingIntermediate = selectedGroupIds.Any(id => _showIntermediatePointsForGroups.Contains(id));
+            }
+
             if (sender is not ContextMenu menu) return;
 
             foreach (var item in menu.Items.OfType<MenuItem>())
@@ -866,6 +890,13 @@ namespace NVSPlotter
                         break;
                     case "SelectAllMenuItem":
                         item.IsEnabled = hasContent;
+                        break;
+                    case "SeparateFromGroupMenuItem":
+                        item.IsEnabled = hasGroupedStrokes;
+                        break;
+                    case "ToggleIntermediatePointsMenuItem":
+                        item.IsEnabled = hasGroupedStrokes;
+                        item.IsChecked = anyGroupShowingIntermediate;
                         break;
                 }
             }
@@ -905,6 +936,75 @@ namespace NVSPlotter
         {
             _selectionController.ClearSelection();
             AppendLog("Selection cleared.");
+        }
+
+        private void SeparateFromGroupMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_selectionController.HasSelection)
+            {
+                AppendLog("No strokes selected to separate.");
+                return;
+            }
+
+            if (_selectionController.SeparateFromGroup())
+            {
+                _lastGcode = ""; // Invalidate G-code cache
+                var count = _selectionController.SelectedIndices.Count;
+                AppendLog($"Separated {count} stroke(s) into a standalone object.");
+            }
+            else
+            {
+                AppendLog("Selected strokes are not part of a group (already standalone).");
+            }
+        }
+
+        private void ToggleIntermediatePointsMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_selectionController.HasSelection) return;
+
+            // Get all unique GroupIds from selected strokes
+            var selectedGroupIds = new HashSet<Guid>();
+            foreach (var idx in _selectionController.SelectedIndices)
+            {
+                if (idx >= 0 && idx < _doc.Strokes.Count)
+                {
+                    var stroke = _doc.Strokes[idx];
+                    if (stroke.GroupId.HasValue)
+                    {
+                        selectedGroupIds.Add(stroke.GroupId.Value);
+                    }
+                }
+            }
+
+            if (selectedGroupIds.Count == 0)
+            {
+                AppendLog("No grouped strokes in selection.");
+                return;
+            }
+
+            // Check if any of the selected groups are currently showing intermediate points
+            var anyShowing = selectedGroupIds.Any(id => _showIntermediatePointsForGroups.Contains(id));
+
+            if (anyShowing)
+            {
+                // Hide intermediate points for all selected groups
+                foreach (var groupId in selectedGroupIds)
+                {
+                    _showIntermediatePointsForGroups.Remove(groupId);
+                }
+                AppendLog($"Hidden intermediate points for {selectedGroupIds.Count} group(s).");
+            }
+            else
+            {
+                // Show intermediate points for all selected groups
+                foreach (var groupId in selectedGroupIds)
+                {
+                    _showIntermediatePointsForGroups.Add(groupId);
+                }
+                AppendLog($"Showing intermediate points for {selectedGroupIds.Count} group(s).");
+            }
+
+            RenderAll();
         }
 
         private void SetZoom(double z)
@@ -1966,6 +2066,7 @@ namespace NVSPlotter
 
         /// <summary>
         /// Draws the grid on the canvas if enabled.
+        /// Grid opacity and thickness adapt to zoom level to ensure drawing strokes remain visible.
         /// </summary>
         private void DrawGrid()
         {
@@ -1974,8 +2075,18 @@ namespace NVSPlotter
             var spacing = GetGridSpacing();
             if (spacing <= 0) return;
 
-            var gridBrush = new SolidColorBrush(Color.FromRgb(200, 200, 200)); // Medium gray for visibility
-            const double gridThickness = 1.0; // Thicker lines visible at all zoom levels
+            // Adaptive grid appearance based on zoom level
+            // At low zoom, grid becomes more transparent and thinner to avoid obscuring strokes
+            var currentZoom = _zoom.ScaleX;
+            
+            // Grid opacity: 100% at zoom >= 1.0, fades to 40% at zoom <= 0.2
+            var gridOpacity = Math.Clamp(0.4 + 0.6 * Math.Min(1.0, currentZoom), 0.4, 1.0);
+            
+            // Grid thickness: 1.0 at zoom >= 1.0, thins to 0.5 at low zoom
+            var gridThickness = Math.Clamp(0.5 + 0.5 * Math.Min(1.0, currentZoom), 0.5, 1.0);
+            
+            var gridColor = Color.FromArgb((byte)(200 * gridOpacity), 200, 200, 200);
+            var gridBrush = new SolidColorBrush(gridColor);
             const double rulerThickness = 18.0;
 
             // Draw vertical lines - offset by ruler thickness to align with ruler ticks
@@ -2693,6 +2804,16 @@ namespace NVSPlotter
 
             // Existing strokes - with paint well colors if painting mode is enabled
             var paintModeEnabled = IsPaintModeEnabled;
+            
+            // Calculate zoom-adaptive stroke thickness to ensure strokes are always visible
+            // At low zoom, we increase the logical thickness so strokes remain visible
+            // Minimum desired screen thickness is ~2 pixels
+            var currentZoom = _zoom.ScaleX;
+            const double minScreenThickness = 2.0; // Minimum pixels on screen
+            const double baseThickness = 1.2; // Base logical thickness in mm
+            // Ensure strokes are at least minScreenThickness pixels when rendered
+            var adaptiveThickness = Math.Max(baseThickness, minScreenThickness / currentZoom);
+            
             for (int i = 0; i < _doc.Strokes.Count; i++)
             {
                 var s = _doc.Strokes[i];
@@ -2716,11 +2837,12 @@ namespace NVSPlotter
                     X2 = s.B.X,
                     Y2 = s.B.Y,
                     Stroke = strokeBrush,
-                    StrokeThickness = 1.2,
-                    SnapsToDevicePixels = true,
+                    StrokeThickness = adaptiveThickness,
                     IsHitTestVisible = false
                 };
-                RenderOptions.SetEdgeMode(ln, EdgeMode.Aliased);
+                // Note: Removed SnapsToDevicePixels and EdgeMode.Aliased as they cause
+                // perfectly vertical/horizontal lines to vanish at certain zoom levels
+                // (60%, 40%) when the line falls exactly between device pixels.
                 Panel.SetZIndex(ln, 4);
                 DrawCanvas.Children.Add(ln);
             }
@@ -2832,11 +2954,16 @@ namespace NVSPlotter
         /// <summary>
         /// Draws indicators for a group of strokes using their IsGroupStart/IsGroupEnd markers.
         /// Shows only start (green) and end (red) indicators, or purple if they overlap (closed loop).
+        /// If intermediate points are enabled for this group, also shows all connection points with heat map colors.
         /// The closedLoopPoints set contains points that are both a start AND an end across all selected groups.
         /// </summary>
         private void DrawIndicatorsUsingMarkers(List<LineStroke> strokes, double indicatorSize, double closedLoopTolerance, HashSet<(double X, double Y)> closedLoopPoints)
         {
             if (strokes.Count == 0) return;
+
+            // Check if any stroke in this group has intermediate points enabled
+            var groupId = strokes.FirstOrDefault(s => s.GroupId.HasValue)?.GroupId;
+            var showIntermediatePoints = groupId.HasValue && _showIntermediatePointsForGroups.Contains(groupId.Value);
 
             // Find the start point (stroke with IsGroupStart=true)
             var startStroke = strokes.FirstOrDefault(s => s.IsGroupStart);
@@ -2856,6 +2983,60 @@ namespace NVSPlotter
             // Check if start and end of THIS group are at the same position
             bool isSelfClosed = Math.Abs(startPoint.X - endPoint.X) < closedLoopTolerance &&
                                Math.Abs(startPoint.Y - endPoint.Y) < closedLoopTolerance;
+
+            // If showing intermediate points, draw all connection points with heat map colors
+            if (showIntermediatePoints && strokes.Count > 1)
+            {
+                // Collect all unique points in order
+                var allPoints = new List<PointMm>();
+                var seenPoints = new HashSet<(double, double)>();
+                
+                // Add start point
+                allPoints.Add(strokes[0].A);
+                seenPoints.Add((Math.Round(strokes[0].A.X, 2), Math.Round(strokes[0].A.Y, 2)));
+                
+                // Add all B points (and A points if not already added, for non-contiguous paths)
+                foreach (var stroke in strokes)
+                {
+                    var aKey = (Math.Round(stroke.A.X, 2), Math.Round(stroke.A.Y, 2));
+                    var bKey = (Math.Round(stroke.B.X, 2), Math.Round(stroke.B.Y, 2));
+                    
+                    if (!seenPoints.Contains(aKey))
+                    {
+                        allPoints.Add(stroke.A);
+                        seenPoints.Add(aKey);
+                    }
+                    if (!seenPoints.Contains(bKey))
+                    {
+                        allPoints.Add(stroke.B);
+                        seenPoints.Add(bKey);
+                    }
+                }
+
+                // Draw intermediate points (skip first and last which get special treatment)
+                const double intermediateSize = 10.0; // Smaller size for intermediate points
+                for (int i = 1; i < allPoints.Count - 1; i++)
+                {
+                    var point = allPoints[i];
+                    var progress = (double)i / (allPoints.Count - 1);
+                    var (fillColor, strokeColor) = GetHeatMapColor(progress);
+                    
+                    var indicator = new Ellipse
+                    {
+                        Width = intermediateSize,
+                        Height = intermediateSize,
+                        Fill = new SolidColorBrush(fillColor),
+                        Stroke = new SolidColorBrush(strokeColor),
+                        StrokeThickness = 1.5,
+                        IsHitTestVisible = false,
+                        SnapsToDevicePixels = true
+                    };
+                    Canvas.SetLeft(indicator, point.X - intermediateSize / 2.0);
+                    Canvas.SetTop(indicator, point.Y - intermediateSize / 2.0);
+                    Panel.SetZIndex(indicator, 4); // Below main start/end indicators
+                    DrawCanvas.Children.Add(indicator);
+                }
+            }
 
             if (isSelfClosed)
             {

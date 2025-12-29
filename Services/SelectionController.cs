@@ -912,6 +912,66 @@ public sealed class SelectionController
     }
 
     /// <summary>
+    /// Separates the selected strokes from their parent groups by assigning them new unique GroupIds.
+    /// After separation, the selected strokes form a new standalone group (or individual strokes if only one).
+    /// Returns true if any strokes were separated.
+    /// </summary>
+    public bool SeparateFromGroup()
+    {
+        if (_selectedIndices.Count == 0) return false;
+
+        var doc = _getDocument();
+        
+        // Check if any selected strokes are part of a group
+        var hasGroupedStrokes = false;
+        foreach (var idx in _selectedIndices)
+        {
+            if (idx >= 0 && idx < doc.Strokes.Count && doc.Strokes[idx].GroupId.HasValue)
+            {
+                hasGroupedStrokes = true;
+                break;
+            }
+        }
+        
+        if (!hasGroupedStrokes) return false;
+
+        // Generate a new GroupId for the separated strokes (if more than one stroke selected)
+        // If only one stroke is selected, make it an individual stroke (null GroupId)
+        Guid? newGroupId = _selectedIndices.Count > 1 ? Guid.NewGuid() : null;
+        
+        // Get selected strokes in order
+        var orderedIndices = _selectedIndices.OrderBy(i => i).ToList();
+        
+        // Assign new GroupId and update IsGroupStart/IsGroupEnd markers
+        for (int i = 0; i < orderedIndices.Count; i++)
+        {
+            var idx = orderedIndices[i];
+            if (idx < 0 || idx >= doc.Strokes.Count) continue;
+            
+            var stroke = doc.Strokes[idx];
+            
+            // Create a new stroke with the new GroupId
+            var newStroke = new LineStroke(stroke.A, stroke.B)
+            {
+                PaintWellId = stroke.PaintWellId,
+                GroupId = newGroupId,
+                IsGroupStart = i == 0, // First stroke in new group is start
+                IsGroupEnd = i == orderedIndices.Count - 1 // Last stroke in new group is end
+            };
+            
+            doc.Strokes[idx] = newStroke;
+        }
+        
+        // Update the bounds after modification
+        UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+        _logicalBounds = _selectionBounds;
+        _selectionRotationAngle = 0; // Reset rotation for new selection
+        
+        _requestRender();
+        return true;
+    }
+
+    /// <summary>
     /// Checks if a stroke index is selected.
     /// </summary>
     public bool IsSelected(int index) => _selectedIndices.Contains(index);

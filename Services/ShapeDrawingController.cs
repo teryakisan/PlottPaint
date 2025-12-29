@@ -1234,7 +1234,7 @@ public sealed class ShapeDrawingController
         var firstSeg = _polyBezierSegments[0];
         var figure = new PathFigure
         {
-            StartPoint = new Point(firstSeg.P0.X, firstSeg.P0.Y),
+            StartPoint = new Point(P0.X, P0.Y),
             IsClosed = false
         };
 

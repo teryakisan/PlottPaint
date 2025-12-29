@@ -525,6 +525,10 @@
                                         <Separator/>
                                         <MenuItem x:Name="SelectAllMenuItem" Header="Select _All" InputGestureText="Ctrl+A" Click="SelectAllMenuItem_Click"/>
                                         <MenuItem x:Name="DeselectMenuItem" Header="D_eselect" InputGestureText="Esc" Click="DeselectMenuItem_Click"/>
+                                        <Separator/>
+                                        <MenuItem x:Name="SeparateFromGroupMenuItem" Header="Se_parate from Group" Click="SeparateFromGroupMenuItem_Click"/>
+                                        <Separator/>
+                                        <MenuItem x:Name="ToggleIntermediatePointsMenuItem" Header="Show _Intermediate Points" IsCheckable="True" Click="ToggleIntermediatePointsMenuItem_Click"/>
                                     </ContextMenu>
                                 </Canvas.ContextMenu>
                             </Canvas>
