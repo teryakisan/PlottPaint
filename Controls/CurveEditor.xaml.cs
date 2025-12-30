@@ -6,6 +6,11 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using FontAwesome.WPF;
+using System.Windows.Media;
+using System.Windows.Media.Effects;
+using Brush = System.Windows.Media.Brush;
+using Brushes = System.Windows.Media.Brushes;
 
 namespace NVSPlotter.Controls
 {
@@ -21,6 +26,9 @@ namespace NVSPlotter.Controls
         private System.Windows.Shapes.Line verticalLine;
         private System.Windows.Shapes.Ellipse handleP0, handleP1, handleP2, handleP3, handleP4;
         private System.Windows.Shapes.Line baseline;
+        private List<System.Windows.Shapes.Line> _gridVerticalLines = new();
+        private List<System.Windows.Shapes.Line> _gridHorizontalLines = new();
+        private const int GRID_DIVISIONS = 8; // number of equal subdivisions per axis
 
         private const double HANDLE_RADIUS = 6.0;
 
@@ -47,6 +55,26 @@ namespace NVSPlotter.Controls
         public int SampleCount { get => (int)GetValue(SampleCountProperty); set => SetValue(SampleCountProperty, value); }
 
         public event EventHandler<IList<(double Xmm, double Zmm)>>? CurveUpdated;
+        public static readonly DependencyProperty ProfileNameProperty = DependencyProperty.Register(
+            nameof(ProfileName), typeof(string), typeof(CurveEditor), new PropertyMetadata(string.Empty));
+
+        public string ProfileName { get => (string)GetValue(ProfileNameProperty); set => SetValue(ProfileNameProperty, value); }
+
+        public event EventHandler? ProfileSelected;
+        public event EventHandler<string>? ProfileRenamed;
+        public event EventHandler? ProfileDeleted;
+        public static readonly DependencyProperty IsSelectedProperty = DependencyProperty.Register(
+            nameof(IsSelected), typeof(bool), typeof(CurveEditor), new PropertyMetadata(false, OnIsSelectedChanged));
+
+        public bool IsSelected { get => (bool)GetValue(IsSelectedProperty); set => SetValue(IsSelectedProperty, value); }
+
+        private static void OnIsSelectedChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (d is CurveEditor ce)
+            {
+                ce.UpdateSelectionVisual((bool)e.NewValue);
+            }
+        }
 
         // Expose/get set normalized control points (list of points). Returns points with X,Y normalized (0..1, 0=top)
         public IReadOnlyList<System.Windows.Point> GetNormalizedPoints() => controlPoints.AsReadOnly();
@@ -136,6 +164,22 @@ namespace NVSPlotter.Controls
             verticalLine.SetResourceReference(System.Windows.Shapes.Line.StrokeProperty, "RefForegroundBrush");
             c.Children.Add(verticalLine);
 
+            // subdivision grid lines
+            _gridVerticalLines.Clear();
+            _gridHorizontalLines.Clear();
+            for (int i = 1; i < GRID_DIVISIONS; i++)
+            {
+                var v = new System.Windows.Shapes.Line { StrokeThickness = 1, StrokeDashArray = new System.Windows.Media.DoubleCollection { 2, 2 }, Opacity = 0.5 };
+                v.SetResourceReference(System.Windows.Shapes.Line.StrokeProperty, "RefForegroundBrush");
+                c.Children.Add(v);
+                _gridVerticalLines.Add(v);
+
+                var h = new System.Windows.Shapes.Line { StrokeThickness = 1, StrokeDashArray = new System.Windows.Media.DoubleCollection { 2, 2 }, Opacity = 0.5 };
+                h.SetResourceReference(System.Windows.Shapes.Line.StrokeProperty, "RefForegroundBrush");
+                c.Children.Add(h);
+                _gridHorizontalLines.Add(h);
+            }
+
             curvePath = new System.Windows.Shapes.Path { StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round };
             curvePath.SetResourceReference(System.Windows.Shapes.Path.StrokeProperty, "RefAccentBrush");
             c.Children.Add(curvePath);
@@ -149,6 +193,23 @@ namespace NVSPlotter.Controls
             handleP2 = CreateHandle(); c.Children.Add(handleP2);
             handleP3 = CreateHandle(); c.Children.Add(handleP3);
             handleP4 = CreateHandle(); c.Children.Add(handleP4);
+
+            // wire profile management buttons from XAML
+            var root = this.Content as Border;
+            if (root != null)
+            {
+                var grid = root.Child as Grid;
+                if (grid != null)
+                {
+                    var selectBtn = grid.FindName("BtnSelectProfile") as System.Windows.Controls.Button;
+                    var renameBtn = grid.FindName("BtnRenameProfile") as System.Windows.Controls.Button;
+                    var deleteBtn = grid.FindName("BtnDeleteProfile") as System.Windows.Controls.Button;
+                    if (selectBtn != null) selectBtn.Click += (_, __) => OnSelectProfile();
+                    if (renameBtn != null) renameBtn.Click += RenameBtn_Click;
+                    if (deleteBtn != null) deleteBtn.Click += (_, __) => OnDeleteProfile();
+                }
+            }
+            UpdateSelectionVisual(IsSelected);
 
             PART_Canvas.MouseLeftButtonDown += Canvas_MouseLeftButtonDown;
             PART_Canvas.MouseMove += PART_Canvas_MouseMove;
@@ -183,6 +244,79 @@ namespace NVSPlotter.Controls
                 PART_Canvas.CaptureMouse();
                 e.Handled = true;
             }
+        }
+
+        private void OnSelectProfile()
+        {
+            IsSelected = !IsSelected;
+            ProfileSelected?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void UpdateSelectionVisual(bool selected)
+        {
+            if (backgroundRect == null) return;
+            if (selected)
+            {
+                backgroundRect.StrokeThickness = 2;
+                backgroundRect.Stroke = (Brush)FindResource("RefAccentBrush");
+                // apply blue glow effect to indicate active editing
+                backgroundRect.Effect = new DropShadowEffect
+                {
+                    Color = (System.Windows.Media.Color)System.Windows.Media.ColorConverter.ConvertFromString("#FF007ACC"),
+                    BlurRadius = 12,
+                    ShadowDepth = 0,
+                    Opacity = 0.9
+                };
+            }
+            else
+            {
+                backgroundRect.StrokeThickness = 0;
+                backgroundRect.Stroke = null;
+                backgroundRect.Effect = null;
+            }
+            // update active icon color based on IsSelected
+            UpdateActiveIconColor();
+        }
+
+        private void UpdateActiveIconColor()
+        {
+            var root = this.Content as Border;
+            if (root == null) return;
+            var grid = root.Child as Grid;
+            if (grid == null) return;
+            var selectBtn = grid.FindName("BtnSelectProfile") as System.Windows.Controls.Button;
+            if (selectBtn == null) return;
+            var icon = selectBtn.Content as FrameworkElement;
+            // FontAwesome ImageAwesome is used; find it and set Foreground
+            var img = selectBtn.Content as ImageAwesome;
+            if (img != null)
+            {
+                img.Foreground = IsSelected ? Brushes.LimeGreen : (Brush)FindResource("RefForegroundBrush");
+            }
+            else
+            {
+                // fallback: textblock
+                if (selectBtn.Content is TextBlock tb)
+                {
+                    tb.Foreground = IsSelected ? Brushes.LimeGreen : (Brush)FindResource("RefForegroundBrush");
+                }
+            }
+        }
+
+        private void RenameBtn_Click(object? sender, RoutedEventArgs e)
+        {
+            var input = Microsoft.VisualBasic.Interaction.InputBox("Profile name:", "Rename Profile", ProfileName ?? "");
+            if (!string.IsNullOrWhiteSpace(input))
+            {
+                ProfileName = input;
+                ProfileRenamed?.Invoke(this, input);
+            }
+        }
+
+        private void OnDeleteProfile()
+        {
+            // raise event; caller may remove the editor from grid
+            ProfileDeleted?.Invoke(this, EventArgs.Empty);
         }
 
         private void Canvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -255,6 +389,21 @@ namespace NVSPlotter.Controls
 
             // draw quadrant grid by setting baseline (horizontal center) and verticalLine (vertical center)
             baseline.X1 = 0; baseline.X2 = w; baseline.Y1 = h / 2; baseline.Y2 = h / 2;
+            // draw subdivision lines
+            for (int i = 0; i < _gridVerticalLines.Count; i++)
+            {
+                var frac = (double)(i + 1) / GRID_DIVISIONS;
+                var x = frac * w;
+                var line = _gridVerticalLines[i];
+                line.X1 = x; line.X2 = x; line.Y1 = 0; line.Y2 = h;
+            }
+            for (int i = 0; i < _gridHorizontalLines.Count; i++)
+            {
+                var frac = (double)(i + 1) / GRID_DIVISIONS;
+                var y = frac * h;
+                var line = _gridHorizontalLines[i];
+                line.X1 = 0; line.X2 = w; line.Y1 = y; line.Y2 = y;
+            }
 
             // positions from controlPoints
             EnsureEndpointsAndOrdering();
@@ -315,7 +464,40 @@ namespace NVSPlotter.Controls
         private void CurveChangedInternal()
         {
             var samples = SampleCurve(SampleCount);
-            CurveUpdated?.Invoke(this, samples.Select(p => (Xmm: p.X * BedWidthMm, Zmm: MapYToZ(p.Y))).ToList());
+            var converted = samples.Select(p => (Xmm: p.X * BedWidthMm, Zmm: MapYToZ(p.Y))).ToList();
+
+            // Send output to console in format: ControlName - Data
+            try
+            {
+                var controlId = !string.IsNullOrWhiteSpace(ProfileName) ? ProfileName : (!string.IsNullOrWhiteSpace(Name) ? Name : GetType().Name + "@" + GetHashCode().ToString("X"));
+                var dataStr = string.Join(";", converted.Select(s => $"({s.Xmm:F2},{s.Zmm:F2})"));
+
+                // Try to append to the in-app ConsoleWindow if present
+                var app = System.Windows.Application.Current;
+                if (app != null)
+                {
+                    var cw = app.Windows.OfType<global::NVSPlotter.ConsoleWindow>().FirstOrDefault();
+                    if (cw != null)
+                    {
+                        cw.Dispatcher.Invoke(() => cw.AppendLog($"{controlId} - {dataStr}"));
+                    }
+                    else
+                    {
+                        // fallback to standard console
+                        Console.WriteLine($"{controlId} - {dataStr}");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine($"{controlId} - {dataStr}");
+                }
+            }
+            catch
+            {
+                // ignore logging errors
+            }
+
+            CurveUpdated?.Invoke(this, converted);
         }
 
         // returns list of normalized points (x:0..1, y:0..1) where 0 top

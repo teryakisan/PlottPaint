@@ -1,10 +1,11 @@
 <Window x:Class="NVSPlotter.Windows.BrushStrokeProfilesWindow"
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:local="clr-namespace:NVSPlotter.Windows"
-        xmlns:controls="clr-namespace:NVSPlotter.Controls"
-        Title="Brush Stroke Profiles" Height="600" Width="800" WindowStartupLocation="CenterOwner"
-        Style="{DynamicResource ThemedWindow}" Foreground="{DynamicResource RefForegroundBrush}">
+xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+xmlns:local="clr-namespace:NVSPlotter.Windows"
+xmlns:controls="clr-namespace:NVSPlotter.Controls"
+xmlns:fa="http://schemas.fontawesome.io/icons/"
+Title="Brush Stroke Profiles" Height="600" Width="600" WindowStartupLocation="CenterOwner"
+Style="{DynamicResource ThemedWindow}" Foreground="{DynamicResource RefForegroundBrush}">
     <Grid Margin="10">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -14,8 +15,9 @@
 
         <TextBlock Text="Brush Stroke Profiles" FontSize="16" FontWeight="Bold" Margin="4" Foreground="{DynamicResource RefForegroundBrush}"/>
 
-        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto">
-            <UniformGrid x:Name="ProfilesGrid" Columns="3" Rows="2" Margin="6" HorizontalAlignment="Stretch" VerticalAlignment="Top">
+        <ScrollViewer x:Name="ProfilesScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto">
+            <!-- Use WrapPanel so the grid can grow beyond the initial 6 slots and wrap automatically -->
+            <WrapPanel x:Name="ProfilesGrid" Margin="6" HorizontalAlignment="Stretch" VerticalAlignment="Top" ItemWidth="260" ItemHeight="260" Orientation="Horizontal">
                 <!-- cells will contain dotted border and curve editors -->
                 <Border CornerRadius="4" Margin="6" Padding="6" SnapsToDevicePixels="True"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
@@ -27,43 +29,57 @@
                 </Border>
 
                 <!-- placeholder empty cells -->
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource RefBackgroundBrush}">
+                <!-- First empty cell with Add icon -->
+                <Border x:Name="FirstEmptyCell" CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}" Cursor="Hand" MouseLeftButtonDown="FirstEmptyCell_Click">
+                    <Grid>
+                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
+                        <fa:ImageAwesome Icon="Plus" Width="80" Height="80" Foreground="{DynamicResource RefForegroundBrush}" Opacity="0.3" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        <TextBlock Text="Click to add profile" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,20" Foreground="{DynamicResource RefForegroundBrush}" Opacity="0.6"/>
+                    </Grid>
+                </Border>
+                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}">
                     <Grid>
                         <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
                         <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource RefForegroundBrush}"/>
                     </Grid>
                 </Border>
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="Gray" BorderThickness="1" Background="#FFFFFFFF">
+                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}">
                     <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="DarkGray" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="Gray"/>
+                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
+                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource RefForegroundBrush}"/>
                     </Grid>
                 </Border>
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="Gray" BorderThickness="1" Background="#FFFFFFFF">
+                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}">
                     <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="DarkGray" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="Gray"/>
+                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
+                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource RefForegroundBrush}"/>
                     </Grid>
                 </Border>
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="Gray" BorderThickness="1" Background="#FFFFFFFF">
+                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}">
                     <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="DarkGray" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="Gray"/>
+                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
+                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource RefForegroundBrush}"/>
                     </Grid>
                 </Border>
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="Gray" BorderThickness="1" Background="#FFFFFFFF">
-                    <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="DarkGray" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="Gray"/>
-                    </Grid>
-                </Border>
-            </UniformGrid>
+            </WrapPanel>
         </ScrollViewer>
 
-        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="4">
-            <Button x:Name="AddProfileBtn" Content="Add Profile" Width="100" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
-            <Button x:Name="SaveProfileBtn" Content="Save Profile" Width="100" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
-            <Button x:Name="CloseBtn" Content="Close" Width="100" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
-        </StackPanel>
+        <Grid Grid.Row="2" Margin="4">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+            
+            <!-- Left side - Clear All button -->
+            <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left">
+                <Button x:Name="ClearAllBtn" Content="Clear All" Width="70" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
+            </StackPanel>
+            
+            <!-- Right side - Save and Close buttons -->
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="SaveProfileBtn" Content="Save" Width="63" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
+                <Button x:Name="CloseBtn" Content="Close" Width="58" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
+            </StackPanel>
+        </Grid>
     </Grid>
 </Window>
