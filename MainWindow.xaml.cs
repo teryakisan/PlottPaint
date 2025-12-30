@@ -72,6 +72,7 @@ namespace NVSPlotter
         private Rectangle? _workingAreaPreviewRect;
         private Line? _workingAreaCrosshairHorizontal;
         private Line? _workingAreaCrosshairVertical;
+        private TextBlock? _workingAreaSizeLabel;
 
         // Reference image manipulation state
         private bool _suppressRotateSlider;
@@ -104,6 +105,32 @@ namespace NVSPlotter
         private Point _zoomDragCanvasPoint; // Point on canvas to zoom around
         private Point _zoomDragViewportOffset; // Where in viewport the click occurred
 
+        // Subdivide operation state
+        private bool _isSubdividing;
+        private Point _subdivideStartMouse;
+        private int _subdivideCurrentCount = 2; // Current number of points (2 = original line with start/end only)
+        private List<LineStroke>? _subdivideOriginalStrokes; // Original strokes before subdivision
+        private List<int>? _subdivideStrokeIndices; // Indices of strokes being subdivided
+        private Cursor? _subdivideOriginalCursor; // Cursor to restore after subdivision
+        private double _subdivideAccumulatedDelta; // Accumulated vertical movement for smooth subdivision
+        private int _subdivideScreenX; // Fixed X position for cursor (screen coordinates)
+        private HashSet<Guid>? _subdivideOriginalGroupIds; // Original group IDs (for reference)
+        private HashSet<Guid>? _subdivideNewlyAddedGroupIds; // Group IDs we added to intermediate display during THIS operation
+        
+        // P/Invoke for cursor manipulation during subdivision
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool SetCursorPos(int X, int Y);
+        
+        [System.Runtime.InteropServices.DllImport("user32.dll")]
+        private static extern bool GetCursorPos(out POINT lpPoint);
+        
+        [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
+        private struct POINT
+        {
+            public int X;
+            public int Y;
+        }
+
         // G-code cache
         private string _lastGcode = "";
 
@@ -132,6 +159,11 @@ namespace NVSPlotter
         private Line? _snapIndicatorLineV; // Vertical dashed line through indicator
         private const double SNAP_INDICATOR_SIZE = 24.0; // Large indicator for better visibility
         private const double SNAP_INDICATOR_LINE_EXTEND = 12.0; // How far the dashed lines extend beyond the circle
+        
+        // Grid snap indicator extras (full-length crosshair and center dot)
+        private Line? _gridSnapCrosshairH; // Full-width horizontal line for grid snap
+        private Line? _gridSnapCrosshairV; // Full-height vertical line for grid snap
+        private Ellipse? _gridSnapCenterDot; // Tiny center dot for grid snap
 
         private readonly DispatcherTimer _filterThrottle;
         private ConsoleWindow? _consoleWindow;
@@ -142,6 +174,71 @@ namespace NVSPlotter
 
         // Track which GroupIds should show intermediate points (toggle per selection)
         private readonly HashSet<Guid> _showIntermediatePointsForGroups = new();
+
+        /// <summary>
+        /// Recursively finds all descendant group IDs for the given parent group IDs.
+        /// This traverses the parent-child hierarchy to any depth (parent -> child -> grandchild -> etc.)
+        /// </summary>
+        /// <param name="parentGroupIds">The parent group IDs to find descendants for</param>
+        /// <returns>A set containing all parent IDs plus all their descendants at any depth</returns>
+        private HashSet<Guid> GetAllDescendantGroupIds(IEnumerable<Guid> parentGroupIds)
+        {
+            var result = new HashSet<Guid>(parentGroupIds);
+            var toProcess = new Queue<Guid>(parentGroupIds);
+            
+            while (toProcess.Count > 0)
+            {
+                var currentParent = toProcess.Dequeue();
+                
+                // Find all groups whose ParentGroupId matches the current parent
+                foreach (var stroke in _doc.Strokes)
+                {
+                    if (stroke.ParentGroupId == currentParent && stroke.GroupId.HasValue)
+                    {
+                        var childGroupId = stroke.GroupId.Value;
+                        if (result.Add(childGroupId)) // Only process if not already seen
+                        {
+                            toProcess.Enqueue(childGroupId); // This child might have its own children
+                        }
+                    }
+                }
+            }
+            
+            return result;
+        }
+
+        /// <summary>
+        /// Checks if the given group ID or any of its ancestors have intermediate points enabled.
+        /// This walks up the parent chain to check for inherited intermediate point display.
+        /// </summary>
+        /// <param name="groupId">The group ID to check</param>
+        /// <returns>True if this group or any ancestor has intermediate points enabled</returns>
+        private bool HasAncestorWithIntermediatePointsEnabled(Guid groupId)
+        {
+            // First check if this group itself has it enabled
+            if (_showIntermediatePointsForGroups.Contains(groupId))
+                return true;
+            
+            // Find the ParentGroupId for this group (any stroke with this GroupId will have the same parent)
+            var parentGroupId = _doc.Strokes
+                .FirstOrDefault(s => s.GroupId == groupId)?.ParentGroupId;
+            
+            // Walk up the ancestor chain
+            var visited = new HashSet<Guid> { groupId }; // Prevent infinite loops
+            while (parentGroupId.HasValue && !visited.Contains(parentGroupId.Value))
+            {
+                if (_showIntermediatePointsForGroups.Contains(parentGroupId.Value))
+                    return true;
+                
+                visited.Add(parentGroupId.Value);
+                
+                // Find the next parent up the chain
+                parentGroupId = _doc.Strokes
+                    .FirstOrDefault(s => s.GroupId == parentGroupId.Value)?.ParentGroupId;
+            }
+            
+            return false;
+        }
 
         public MainWindow()
         {
@@ -212,6 +309,7 @@ namespace NVSPlotter
              InitializeConsoleWindow();
              InitializeToolsWindow();
              UpdatePaintWellsUI();
+             InitializeThemeToggle();
         }
 
         private void FilterControlSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -291,9 +389,15 @@ namespace NVSPlotter
 
             const double canvasPadding = 20.0; // Fixed padding around the canvas
 
+            // Respect ScrollViewer padding so content never appears beneath the padded area.
+            var padLeft = CanvasScroll?.Padding.Left ?? 0.0;
+            var padTop = CanvasScroll?.Padding.Top ?? 0.0;
+            var padRight = CanvasScroll?.Padding.Right ?? 0.0;
+            var padBottom = CanvasScroll?.Padding.Bottom ?? 0.0;
+
             // With LayoutTransform, the canvas size is automatically scaled for layout purposes.
-            // We just need to set the margin for padding around the canvas.
-            var margin = new Thickness(canvasPadding, canvasPadding, canvasPadding, canvasPadding);
+            // We set the margin to include both a fixed internal canvas padding and the ScrollViewer padding.
+            var margin = new Thickness(canvasPadding + padLeft, canvasPadding + padTop, canvasPadding + padRight, canvasPadding + padBottom);
             DrawCanvas.Margin = margin;
             if (RulerCanvas != null)
                 RulerCanvas.Margin = margin;
@@ -325,10 +429,19 @@ namespace NVSPlotter
 
         private void DrawCanvas_MouseWheel(object sender, MouseWheelEventArgs e)
         {
-            // Wheel nudges zoom slider
+            // Wheel zooms towards the mouse position (like the zoom tool drag)
             var delta = e.Delta > 0 ? 0.1 : -0.1;
-            var next = Math.Clamp(ZoomSlider.Value + delta, ZoomSlider.Minimum, ZoomSlider.Maximum);
-            ZoomSlider.Value = next;
+            var newZoom = Math.Clamp(ZoomSlider.Value + delta, ZoomSlider.Minimum, ZoomSlider.Maximum);
+            
+            // Capture mouse position for zoom-around-point calculation
+            // Store the canvas point we're zooming around (mouse position on canvas)
+            _zoomDragCanvasPoint = e.GetPosition(DrawCanvas);
+            // Store where in the viewport the wheel occurred (relative to viewport, not content)
+            _zoomDragViewportOffset = e.GetPosition(CanvasScroll);
+            
+            // Apply zoom centered on the mouse position
+            ZoomAroundPoint(newZoom, _zoomDragCanvasPoint);
+            
             e.Handled = true;
         }
 
@@ -693,10 +806,22 @@ namespace NVSPlotter
 
             // Remove the strokes (up to the group size or remaining strokes)
             countToUndo = Math.Min(countToUndo, _doc.Strokes.Count);
+            
+            // Collect GroupIds of strokes being removed
+            var removedGroupIds = new HashSet<Guid>();
             for (int i = 0; i < countToUndo; i++)
             {
+                var stroke = _doc.Strokes[_doc.Strokes.Count - 1];
+                if (stroke.GroupId.HasValue)
+                {
+                    removedGroupIds.Add(stroke.GroupId.Value);
+                }
                 _doc.Strokes.RemoveAt(_doc.Strokes.Count - 1);
             }
+            
+            // Clean up _showIntermediatePointsForGroups - remove any GroupIds that no longer have strokes
+            var existingGroupIds = new HashSet<Guid>(_doc.Strokes.Where(s => s.GroupId.HasValue).Select(s => s.GroupId!.Value));
+            _showIntermediatePointsForGroups.RemoveWhere(id => !existingGroupIds.Contains(id));
 
             _lastGcode = "";
             RenderAll();
@@ -855,6 +980,9 @@ namespace NVSPlotter
             // Check if selection contains grouped strokes (for intermediate points toggle and separate)
             var hasGroupedStrokes = false;
             var anyGroupShowingIntermediate = false;
+            var hasMultipleStrokes = _selectionController.SelectedIndices.Count > 1;
+            var hasMultipleGroups = false;
+            
             if (hasSelection)
             {
                 var selectedGroupIds = new HashSet<Guid>();
@@ -870,7 +998,11 @@ namespace NVSPlotter
                         }
                     }
                 }
-                anyGroupShowingIntermediate = selectedGroupIds.Any(id => _showIntermediatePointsForGroups.Contains(id));
+                
+                // Find ALL descendant groups recursively for intermediate points display check
+                var allGroupIds = GetAllDescendantGroupIds(selectedGroupIds);
+                anyGroupShowingIntermediate = allGroupIds.Any(id => _showIntermediatePointsForGroups.Contains(id));
+                hasMultipleGroups = selectedGroupIds.Count > 1;
             }
 
             if (sender is not ContextMenu menu) return;
@@ -891,8 +1023,20 @@ namespace NVSPlotter
                     case "SelectAllMenuItem":
                         item.IsEnabled = hasContent;
                         break;
+                    case "GroupMenuItem":
+                        // Enable Group when multiple strokes are selected (can group ungrouped strokes or merge groups)
+                        item.IsEnabled = hasMultipleStrokes;
+                        break;
+                    case "UngroupMenuItem":
+                        // Enable Ungroup when grouped strokes are selected
+                        item.IsEnabled = hasGroupedStrokes;
+                        break;
                     case "SeparateFromGroupMenuItem":
                         item.IsEnabled = hasGroupedStrokes;
+                        break;
+                    case "SubdivideMenuItem":
+                        // Enable Subdivide when strokes are selected (can subdivide any stroke)
+                        item.IsEnabled = hasSelection && _selectionController.SelectedIndices.Count > 0;
                         break;
                     case "ToggleIntermediatePointsMenuItem":
                         item.IsEnabled = hasGroupedStrokes;
@@ -936,6 +1080,83 @@ namespace NVSPlotter
         {
             _selectionController.ClearSelection();
             AppendLog("Selection cleared.");
+        }
+
+        private void GroupMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_selectionController.HasSelection || _selectionController.SelectedIndices.Count < 2)
+            {
+                AppendLog("Select at least 2 strokes to group.");
+                return;
+            }
+
+            var selectedIndices = _selectionController.SelectedIndices.OrderBy(i => i).ToList();
+            var newGroupId = Guid.NewGuid();
+            var count = 0;
+
+            for (int i = 0; i < selectedIndices.Count; i++)
+            {
+                var idx = selectedIndices[i];
+                if (idx >= 0 && idx < _doc.Strokes.Count)
+                {
+                    var stroke = _doc.Strokes[idx];
+                    _doc.Strokes[idx] = new LineStroke(stroke.A, stroke.B)
+                    {
+                        PaintWellId = stroke.PaintWellId,
+                        GroupId = newGroupId,
+                        IsGroupStart = i == 0,
+                        IsGroupEnd = i == selectedIndices.Count - 1
+                    };
+                    count++;
+                }
+            }
+
+            _lastGcode = ""; // Invalidate G-code cache
+            RenderAll();
+            AppendLog($"Grouped {count} stroke(s) into a single object.");
+        }
+
+        private void UngroupMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_selectionController.HasSelection)
+            {
+                AppendLog("No strokes selected to ungroup.");
+                return;
+            }
+
+            var selectedIndices = _selectionController.SelectedIndices.ToList();
+            var ungroupedCount = 0;
+
+            foreach (var idx in selectedIndices)
+            {
+                if (idx >= 0 && idx < _doc.Strokes.Count)
+                {
+                    var stroke = _doc.Strokes[idx];
+                    if (stroke.GroupId.HasValue)
+                    {
+                        // Remove from group - make it a standalone stroke
+                        _doc.Strokes[idx] = new LineStroke(stroke.A, stroke.B)
+                        {
+                            PaintWellId = stroke.PaintWellId,
+                            GroupId = null,
+                            IsGroupStart = false,
+                            IsGroupEnd = false
+                        };
+                        ungroupedCount++;
+                    }
+                }
+            }
+
+            if (ungroupedCount > 0)
+            {
+                _lastGcode = ""; // Invalidate G-code cache
+                RenderAll();
+                AppendLog($"Ungrouped {ungroupedCount} stroke(s) into individual objects.");
+            }
+            else
+            {
+                AppendLog("Selected strokes are not part of any group.");
+            }
         }
 
         private void SeparateFromGroupMenuItem_Click(object sender, RoutedEventArgs e)
@@ -982,29 +1203,409 @@ namespace NVSPlotter
                 return;
             }
 
-            // Check if any of the selected groups are currently showing intermediate points
-            var anyShowing = selectedGroupIds.Any(id => _showIntermediatePointsForGroups.Contains(id));
+            // Find ALL descendant groups recursively (children, grandchildren, great-grandchildren, etc.)
+            var allGroupIds = GetAllDescendantGroupIds(selectedGroupIds);
+
+            // Check if any of the selected groups (or descendants) are currently showing intermediate points
+            var anyShowing = allGroupIds.Any(id => _showIntermediatePointsForGroups.Contains(id));
 
             if (anyShowing)
             {
-                // Hide intermediate points for all selected groups
-                foreach (var groupId in selectedGroupIds)
+                // Hide intermediate points for all groups (parent and all descendants)
+                foreach (var groupId in allGroupIds)
                 {
                     _showIntermediatePointsForGroups.Remove(groupId);
                 }
-                AppendLog($"Hidden intermediate points for {selectedGroupIds.Count} group(s).");
+                AppendLog($"Hidden intermediate points for {allGroupIds.Count} group(s).");
             }
             else
             {
-                // Show intermediate points for all selected groups
-                foreach (var groupId in selectedGroupIds)
+                // Show intermediate points for all groups (parent and all descendants)
+                foreach (var groupId in allGroupIds)
                 {
                     _showIntermediatePointsForGroups.Add(groupId);
                 }
-                AppendLog($"Showing intermediate points for {selectedGroupIds.Count} group(s).");
+                AppendLog($"Showing intermediate points for {allGroupIds.Count} group(s).");
             }
 
             RenderAll();
+        }
+
+        private void SubdivideMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_selectionController.HasSelection)
+            {
+                AppendLog("No strokes selected to subdivide.");
+                return;
+            }
+
+            // Get selected stroke indices
+            var indices = _selectionController.SelectedIndices.OrderBy(i => i).ToList();
+            if (indices.Count == 0)
+            {
+                AppendLog("No strokes selected to subdivide.");
+                return;
+            }
+
+            // Store original strokes for subdivision preview
+            _subdivideOriginalStrokes = new List<LineStroke>();
+            _subdivideStrokeIndices = indices;
+            
+            foreach (var idx in indices)
+            {
+                if (idx >= 0 && idx < _doc.Strokes.Count)
+                {
+                    var stroke = _doc.Strokes[idx];
+                    _subdivideOriginalStrokes.Add(stroke);
+                }
+            }
+
+            if (_subdivideOriginalStrokes.Count == 0)
+            {
+                AppendLog("No valid strokes to subdivide.");
+                return;
+            }
+
+            // Enable intermediate points display for selected groups during subdivision
+            // Track which group IDs we're newly adding so we can remove them on cancel
+            _subdivideOriginalGroupIds = new HashSet<Guid>();
+            _subdivideNewlyAddedGroupIds = new HashSet<Guid>();
+            foreach (var idx in indices)
+            {
+                if (idx >= 0 && idx < _doc.Strokes.Count)
+                {
+                    var stroke = _doc.Strokes[idx];
+                    if (stroke.GroupId.HasValue)
+                    {
+                        _subdivideOriginalGroupIds.Add(stroke.GroupId.Value);
+                        // Only track as "newly added" if it wasn't already showing
+                        if (!_showIntermediatePointsForGroups.Contains(stroke.GroupId.Value))
+                        {
+                            _subdivideNewlyAddedGroupIds.Add(stroke.GroupId.Value);
+                        }
+                        _showIntermediatePointsForGroups.Add(stroke.GroupId.Value);
+                    }
+                }
+            }
+
+            // Start subdivision mode
+            _isSubdividing = true;
+            _subdivideStartMouse = Mouse.GetPosition(CanvasScroll);
+            _subdivideCurrentCount = 2; // Start with original (2 points = 1 segment)
+            _subdivideAccumulatedDelta = 0; // Reset accumulated movement
+            _subdivideOriginalCursor = DrawCanvas.Cursor;
+            DrawCanvas.Cursor = Cursors.SizeNS;
+            DrawCanvas.CaptureMouse();
+            
+            // Store the screen X position to lock horizontal movement
+            // Get the current cursor position in screen coordinates
+            if (GetCursorPos(out POINT cursorPos))
+            {
+                _subdivideScreenX = cursorPos.X;
+            }
+            else
+            {
+                // Fallback: calculate from WPF coordinates if P/Invoke fails
+                var screenPoint = CanvasScroll.PointToScreen(_subdivideStartMouse);
+                _subdivideScreenX = (int)screenPoint.X;
+            }
+
+            AppendLog("Subdivide mode: Drag up/down to adjust points. Click or press Escape to finish.");
+            RenderAll();
+        }
+
+        private void UpdateSubdivision(Point currentMouse)
+        {
+            if (!_isSubdividing || _subdivideOriginalStrokes == null || _subdivideStrokeIndices == null) return;
+            
+            // Safety check: if _subdivideScreenX is 0 or invalid, recalculate it
+            if (_subdivideScreenX <= 0)
+            {
+                var screenPoint = CanvasScroll.PointToScreen(currentMouse);
+                _subdivideScreenX = (int)screenPoint.X;
+            }
+
+            // Get current screen cursor position
+            GetCursorPos(out POINT screenPos);
+            
+            // Get screen bounds for wrapping
+            var screen = System.Windows.Forms.Screen.FromPoint(new System.Drawing.Point(screenPos.X, screenPos.Y));
+            var screenTop = screen.Bounds.Top + 50; // Leave some margin
+            var screenBottom = screen.Bounds.Bottom - 50;
+            
+            // Calculate vertical delta from last position
+            var dy = _subdivideStartMouse.Y - currentMouse.Y;
+            
+            // Accumulate the delta for smooth subdivision
+            _subdivideAccumulatedDelta += dy;
+            
+            // Check for cursor wrapping at screen edges
+            bool wrapped = false;
+            int newY = screenPos.Y;
+            
+            if (screenPos.Y <= screenTop)
+            {
+                // Wrap to bottom
+                newY = screenBottom - 10;
+                wrapped = true;
+            }
+            else if (screenPos.Y >= screenBottom)
+            {
+                // Wrap to top
+                newY = screenTop + 10;
+                wrapped = true;
+            }
+            
+            // Lock cursor to fixed X position and apply wrapping
+            // Only move cursor if X position drifted or we need to wrap
+            bool needsXCorrection = Math.Abs(screenPos.X - _subdivideScreenX) > 1;
+            if (needsXCorrection || wrapped)
+            {
+                SetCursorPos(_subdivideScreenX, wrapped ? newY : screenPos.Y);
+            }
+            
+            // Update start position for next delta calculation
+            if (wrapped)
+            {
+                // After wrapping, reset the start mouse to the new wrapped position
+                // Convert screen position to canvas scroll position
+                var canvasScrollScreenPos = CanvasScroll.PointToScreen(new Point(0, 0));
+                _subdivideStartMouse = new Point(
+                    _subdivideScreenX - canvasScrollScreenPos.X,
+                    newY - canvasScrollScreenPos.Y
+                );
+            }
+            else
+            {
+                _subdivideStartMouse = currentMouse;
+            }
+            
+            // Calculate new point count based on accumulated movement
+            const double sensitivity = 20.0; // Pixels per point change (higher = less sensitive)
+            var newCount = 2 + (int)(_subdivideAccumulatedDelta / sensitivity);
+            newCount = Math.Clamp(newCount, 2, 100); // Cap at 100 points max, minimum 2
+
+            // Only update if count changed
+            if (newCount == _subdivideCurrentCount) return;
+            
+            _subdivideCurrentCount = newCount;
+
+            // Apply subdivision to document
+            ApplySubdivision(newCount);
+            
+            AppendLog($"Subdivide: {newCount} points ({newCount - 1} segments)");
+            RenderAll();
+        }
+
+        private int GetCurrentSubdivisionCount()
+        {
+            // Count current segments in subdivided strokes
+            if (_subdivideStrokeIndices == null || _subdivideStrokeIndices.Count == 0) return 2;
+            
+            // For grouped strokes, count all strokes in the group
+            var firstIdx = _subdivideStrokeIndices[0];
+            if (firstIdx >= 0 && firstIdx < _doc.Strokes.Count)
+            {
+                var stroke = _doc.Strokes[firstIdx];
+                if (stroke.GroupId.HasValue)
+                {
+                    var groupCount = _doc.Strokes.Count(s => s.GroupId == stroke.GroupId);
+                    return groupCount + 1; // segments + 1 = points
+                }
+            }
+            return 2;
+        }
+
+        private void ApplySubdivision(int pointCount)
+        {
+            if (_subdivideOriginalStrokes == null || _subdivideStrokeIndices == null) return;
+
+            // For each original stroke, subdivide it into (pointCount - 1) segments
+            // We need to replace the original strokes with new subdivided ones
+
+            // First, remove old strokes that were created during subdivision (keep track of original group structure)
+            // The original strokes are stored in _subdivideOriginalStrokes
+
+            // Get the first original stroke to determine the base properties
+            var firstOriginal = _subdivideOriginalStrokes[0];
+            
+            // Calculate total path from all original strokes
+            var pathPoints = new List<PointMm>();
+            pathPoints.Add(_subdivideOriginalStrokes[0].A);
+            foreach (var stroke in _subdivideOriginalStrokes)
+            {
+                pathPoints.Add(stroke.B);
+            }
+
+            // Calculate total path length
+            double totalLength = 0;
+            for (int i = 0; i < pathPoints.Count - 1; i++)
+            {
+                totalLength += Utility.Distance(pathPoints[i], pathPoints[i + 1]);
+            }
+
+            // Create evenly spaced points along the path
+            var newPoints = new List<PointMm>();
+            newPoints.Add(pathPoints[0]); // Always start at first point
+
+            if (pointCount > 2 && totalLength > 0)
+            {
+                double segmentLength = totalLength / (pointCount - 1);
+                double accumulatedLength = 0;
+                int currentSegment = 0;
+
+                for (int i = 1; i < pointCount - 1; i++)
+                {
+                    double targetLength = i * segmentLength;
+
+                    // Find the segment containing this target length
+                    while (currentSegment < pathPoints.Count - 1)
+                    {
+                        var segLen = Utility.Distance(pathPoints[currentSegment], pathPoints[currentSegment + 1]);
+                        if (accumulatedLength + segLen >= targetLength)
+                        {
+                            // Interpolate within this segment
+                            var t = (targetLength - accumulatedLength) / segLen;
+                            var newPoint = new PointMm(
+                                pathPoints[currentSegment].X + t * (pathPoints[currentSegment + 1].X - pathPoints[currentSegment].X),
+                                pathPoints[currentSegment].Y + t * (pathPoints[currentSegment + 1].Y - pathPoints[currentSegment].Y)
+                            );
+                            newPoints.Add(newPoint);
+                            break;
+                        }
+                        accumulatedLength += segLen;
+                        currentSegment++;
+                    }
+                }
+            }
+
+            newPoints.Add(pathPoints[^1]); // Always end at last point
+
+            // Remove existing strokes at the indices (in reverse order to maintain indices)
+            foreach (var idx in _subdivideStrokeIndices.OrderByDescending(i => i))
+            {
+                if (idx >= 0 && idx < _doc.Strokes.Count)
+                {
+                    _doc.Strokes.RemoveAt(idx);
+                }
+            }
+
+            // Create new strokes from the subdivided points
+            var newGroupId = newPoints.Count > 2 ? Guid.NewGuid() : (Guid?)null;
+            var insertIndex = _subdivideStrokeIndices.Min();
+            var newIndices = new List<int>();
+            
+            // Determine the parent group ID for hierarchical grouping
+            // If original strokes had a GroupId, that becomes the parent
+            // This allows "Show Intermediate Points" on the parent to show child group points too
+            Guid? parentGroupId = firstOriginal.GroupId ?? firstOriginal.ParentGroupId;
+
+            for (int i = 0; i < newPoints.Count - 1; i++)
+            {
+                var newStroke = new LineStroke(newPoints[i], newPoints[i + 1])
+                {
+                    PaintWellId = firstOriginal.PaintWellId,
+                    GroupId = newGroupId,
+                    ParentGroupId = parentGroupId,
+                    IsGroupStart = i == 0,
+                    IsGroupEnd = i == newPoints.Count - 2
+                };
+                
+                _doc.Strokes.Insert(insertIndex + i, newStroke);
+                newIndices.Add(insertIndex + i);
+            }
+
+            // Update the tracked indices
+            _subdivideStrokeIndices = newIndices;
+
+            // Update selection to include new strokes
+            _selectionController.ClearSelection();
+            _selectionController.SelectStrokes(newIndices);
+
+            // Enable intermediate points for the new group
+            if (newGroupId.HasValue)
+            {
+                _showIntermediatePointsForGroups.Add(newGroupId.Value);
+            }
+        }
+
+        private void CompleteSubdivision()
+        {
+            if (!_isSubdividing) return;
+
+            // Keep intermediate points visible for ALL groups involved in this operation:
+            // - Original groups (if they still have strokes in the document)
+            // - New group created during subdivision
+            // The user enabled intermediate points display during this operation,
+            // they can toggle off manually if desired using the context menu
+
+            // Restore cursor
+            DrawCanvas.Cursor = _subdivideOriginalCursor ?? Cursors.Arrow;
+            DrawCanvas.ReleaseMouseCapture();
+
+            var finalCount = _subdivideCurrentCount;
+            
+            // Clean up state
+            _isSubdividing = false;
+            _subdivideOriginalStrokes = null;
+            _subdivideStrokeIndices = null;
+            _subdivideOriginalCursor = null;
+            _subdivideCurrentCount = 2;
+            _subdivideAccumulatedDelta = 0;
+            _subdivideOriginalGroupIds = null;
+            _subdivideNewlyAddedGroupIds = null;
+
+            _lastGcode = ""; // Invalidate G-code cache
+            RenderAll();
+            AppendLog($"Subdivision complete: {finalCount} points.");
+        }
+
+        private void CancelSubdivision()
+        {
+            if (!_isSubdividing || _subdivideOriginalStrokes == null || _subdivideStrokeIndices == null) return;
+
+            // Remove current subdivided strokes
+            foreach (var idx in _subdivideStrokeIndices.OrderByDescending(i => i))
+            {
+                if (idx >= 0 && idx < _doc.Strokes.Count)
+                {
+                    _doc.Strokes.RemoveAt(idx);
+                }
+            }
+
+            // Restore original strokes
+            var insertIndex = _subdivideStrokeIndices.Min();
+            for (int i = 0; i < _subdivideOriginalStrokes.Count; i++)
+            {
+                _doc.Strokes.Insert(insertIndex + i, _subdivideOriginalStrokes[i]);
+            }
+
+            // Only remove intermediate points display for groups we NEWLY added during this operation
+            // Don't remove groups that were already showing before subdivision started
+            if (_subdivideNewlyAddedGroupIds != null)
+            {
+                foreach (var groupId in _subdivideNewlyAddedGroupIds)
+                {
+                    _showIntermediatePointsForGroups.Remove(groupId);
+                }
+            }
+
+            // Restore cursor
+            DrawCanvas.Cursor = _subdivideOriginalCursor ?? Cursors.Arrow;
+            DrawCanvas.ReleaseMouseCapture();
+
+            // Clean up state
+            _isSubdividing = false;
+            _subdivideOriginalStrokes = null;
+            _subdivideStrokeIndices = null;
+            _subdivideOriginalCursor = null;
+            _subdivideCurrentCount = 2;
+            _subdivideAccumulatedDelta = 0;
+            _subdivideOriginalGroupIds = null;
+            _subdivideNewlyAddedGroupIds = null;
+
+            RenderAll();
+            AppendLog("Subdivision cancelled.");
         }
 
         private void SetZoom(double z)
@@ -1032,22 +1633,25 @@ namespace NVSPlotter
             // Skip tiny changes to reduce jitter
             if (Math.Abs(oldZoom - newZoom) < 0.005) return;
 
-            // Account for canvas padding/margin
+            // The goal: keep the canvas point under the cursor at the same viewport position
+            // 
+            // Before zoom: The canvas point appears at viewport position _zoomDragViewportOffset
+            // After zoom: We want the same canvas point to still appear at _zoomDragViewportOffset
+            //
+            // Canvas margin (20px) is part of the scaled content
             const double canvasPadding = 20.0;
 
-            // Calculate where the canvas point now appears in scaled coordinates (including padding)
-            var scaledCanvasX = (canvasPoint.X * newZoom) + (canvasPadding * newZoom);
-            var scaledCanvasY = (canvasPoint.Y * newZoom) + (canvasPadding * newZoom);
+            // Calculate the position of the canvas point in the scrollable content at the NEW zoom level
+            var scaledContentX = (canvasPoint.X + canvasPadding) * newZoom;
+            var scaledContentY = (canvasPoint.Y + canvasPadding) * newZoom;
 
-            // The scroll offset needed to put that point at the stored viewport position
-            var newScrollX = scaledCanvasX - _zoomDragViewportOffset.X;
-            var newScrollY = scaledCanvasY - _zoomDragViewportOffset.Y;
+            // To keep the point at the same viewport position, we need:
+            // scrollOffset + viewportPosition = scaledContentPosition
+            // Therefore: scrollOffset = scaledContentPosition - viewportPosition
+            var targetScrollX = scaledContentX - _zoomDragViewportOffset.X;
+            var targetScrollY = scaledContentY - _zoomDragViewportOffset.Y;
 
-            // Clamp to valid range (can't scroll to negative)
-            newScrollX = Math.Max(0, newScrollX);
-            newScrollY = Math.Max(0, newScrollY);
-
-            // Apply the new zoom
+            // Apply the new zoom first (this changes the content size)
             _zoom.ScaleX = newZoom;
             _zoom.ScaleY = newZoom;
             ZoomSlider.Value = newZoom;
@@ -1055,9 +1659,31 @@ namespace NVSPlotter
 
             UpdateZoomHost();
 
-            // Apply scroll immediately for responsiveness
+            // Calculate valid scroll range
+            var maxScrollX = Math.Max(0, CanvasScroll.ExtentWidth - CanvasScroll.ViewportWidth);
+            var maxScrollY = Math.Max(0, CanvasScroll.ExtentHeight - CanvasScroll.ViewportHeight);
+            
+            // Use soft clamping to reduce jumpiness at edges
+            // If we're close to the edge, smoothly transition rather than hard clamping
+            var newScrollX = SoftClamp(targetScrollX, 0, maxScrollX);
+            var newScrollY = SoftClamp(targetScrollY, 0, maxScrollY);
+
+            // Apply scroll to keep the point fixed
             CanvasScroll.ScrollToHorizontalOffset(newScrollX);
             CanvasScroll.ScrollToVerticalOffset(newScrollY);
+        }
+
+        /// <summary>
+        /// Soft clamps a value to a range, applying smooth easing near the boundaries
+        /// to reduce sudden jumps when hitting scroll limits.
+        /// </summary>
+        private static double SoftClamp(double value, double min, double max)
+        {
+            if (max <= min) return min;
+            
+            // Simple hard clamp for now - the smoothing is handled by the eased progress
+            // in the zoom drag handler
+            return Math.Clamp(value, min, max);
         }
 
         // ----------------------------
@@ -1090,6 +1716,12 @@ namespace NVSPlotter
         {
             RemoveSnapIndicator();
 
+            if (_isSubdividing)
+            {
+                // Don't cancel on mouse leave - subdivision has mouse capture
+                // Just let it continue - user can escape or click to finish
+                return;
+            }
             if (_isPanning)
             {
                 _isPanning = false;
@@ -1130,6 +1762,14 @@ namespace NVSPlotter
 
         private void DrawCanvas_MouseMove(object sender, MouseEventArgs e)
         {
+            // Subdivision mode - drag to adjust point count
+            if (_isSubdividing)
+            {
+                UpdateSubdivision(e.GetPosition(CanvasScroll));
+                e.Handled = true;
+                return;
+            }
+
             if (_imageManipulator.IsManipulating)
             {
                 _imageManipulator.Update(e);
@@ -1159,7 +1799,8 @@ namespace NVSPlotter
                 }
             }
 
-            if (_isPanning && e.MiddleButton == MouseButtonState.Pressed)
+            if (_isPanning && (e.MiddleButton == MouseButtonState.Pressed || 
+                (e.LeftButton == MouseButtonState.Pressed && GetCurrentTool() == ToolMode.Pan)))
             {
                 var cur = e.GetPosition(CanvasScroll);
                 var dx = cur.X - _panStartMouse.X;
@@ -1181,7 +1822,26 @@ namespace NVSPlotter
                 var zoomFactor = 1.0 + (dy / sensitivity);
                 var newZoom = Math.Clamp(_zoomDragStartZoom * zoomFactor, ZoomSlider.Minimum, ZoomSlider.Maximum);
                 
-                // Apply zoom centered on the original mouse position
+                // Calculate how much zoom has changed (as a ratio from start)
+                var zoomProgress = Math.Abs(newZoom - _zoomDragStartZoom) / Math.Max(_zoomDragStartZoom * 0.5, 0.1);
+                zoomProgress = Math.Clamp(zoomProgress, 0, 1);
+                
+                // Use eased progress for smoother transitions
+                var easedProgress = zoomProgress * zoomProgress * (3.0 - 2.0 * zoomProgress); // Smoothstep
+                
+                // Gradually move the viewport target toward the center as zoom changes
+                // This makes the clicked point gravitate toward the center of the viewport
+                var viewportCenterX = CanvasScroll.ViewportWidth / 2.0;
+                var viewportCenterY = CanvasScroll.ViewportHeight / 2.0;
+                
+                // Interpolate between original click position and viewport center based on zoom progress
+                // Use a gentler interpolation factor (0.6) for smoother edge behavior
+                _zoomDragViewportOffset = new Point(
+                    _zoomDragStart.X + (viewportCenterX - _zoomDragStart.X) * easedProgress * 0.6,
+                    _zoomDragStart.Y + (viewportCenterY - _zoomDragStart.Y) * easedProgress * 0.6
+                );
+                
+                // Apply zoom centered on the original mouse position (which will move toward center)
                 ZoomAroundPoint(newZoom, _zoomDragCanvasPoint);
                 
                 e.Handled = true;
@@ -1254,7 +1914,6 @@ namespace NVSPlotter
             if (hitWell != null)
             {
                 _paintWellController.SetActiveColor(hitWell);
-                UpdateActivePaintWellCombo();
                 UpdatePaintWellChipHighlights(); // Update visual highlight on color chips
                 AppendLog($"Active color set to: {hitWell.Name}");
                 RenderAll(); // Update visuals to show active well
@@ -1351,7 +2010,19 @@ namespace NVSPlotter
                 return;
             }
 
-            if (tool == ToolMode.Pan || _isPanning) return; // Pan tool
+            if (tool == ToolMode.Pan)
+            {
+                // Pan tool - start panning with left mouse button (same as middle mouse)
+                _isPanning = true;
+                _panStartMouse = e.GetPosition(CanvasScroll);
+                _panStartH = CanvasScroll.HorizontalOffset;
+                _panStartV = CanvasScroll.VerticalOffset;
+                DrawCanvas.CaptureMouse();
+                e.Handled = true;
+                return;
+            }
+            
+            if (_isPanning) return; // Already panning via middle mouse
 
             // Zoom tool - begin zoom drag
             if (tool == ToolMode.Zoom)
@@ -1386,10 +2057,27 @@ namespace NVSPlotter
         {
             RemoveSnapIndicator();
 
+            // Subdivision mode complete
+            if (_isSubdividing)
+            {
+                CompleteSubdivision();
+                e.Handled = true;
+                return;
+            }
+
             // Zoom tool drag complete
             if (_isZoomDragging)
             {
                 _isZoomDragging = false;
+                DrawCanvas.ReleaseMouseCapture();
+                e.Handled = true;
+                return;
+            }
+
+            // Pan tool drag complete (left mouse button pan)
+            if (_isPanning && GetCurrentTool() == ToolMode.Pan)
+            {
+                _isPanning = false;
                 DrawCanvas.ReleaseMouseCapture();
                 e.Handled = true;
                 return;
@@ -1680,11 +2368,83 @@ namespace NVSPlotter
                 _snapIndicatorLineV.X2 = centerX;
                 _snapIndicatorLineV.Y2 = centerY + lineExtend;
                 _snapIndicatorLineV.Stroke = strokeBrush;
+                
+                // Remove grid snap crosshairs when showing endpoint crosshairs
+                RemoveGridSnapCrosshairs();
+            }
+            else if (snapPoint == null && gridSnapPoint != null)
+            {
+                // Grid snap - show full-length dashed crosshair and center dot
+                RemoveSnapIndicatorLines(); // Remove endpoint-style short crosshairs
+                
+                const double rulerThickness = 18.0;
+                
+                // Full-width horizontal dashed line
+                if (_gridSnapCrosshairH == null)
+                {
+                    _gridSnapCrosshairH = new Line
+                    {
+                        StrokeThickness = 1,
+                        StrokeDashArray = [4, 4],
+                        IsHitTestVisible = false,
+                        SnapsToDevicePixels = true,
+                        Opacity = 0.7
+                    };
+                    DrawCanvas.Children.Add(_gridSnapCrosshairH);
+                    Panel.SetZIndex(_gridSnapCrosshairH, 18); // Below the circle
+                }
+                
+                _gridSnapCrosshairH.X1 = rulerThickness;
+                _gridSnapCrosshairH.Y1 = centerY;
+                _gridSnapCrosshairH.X2 = rulerThickness + _doc.WidthMm;
+                _gridSnapCrosshairH.Y2 = centerY;
+                _gridSnapCrosshairH.Stroke = Brushes.Orange;
+                
+                // Full-height vertical dashed line
+                if (_gridSnapCrosshairV == null)
+                {
+                    _gridSnapCrosshairV = new Line
+                    {
+                        StrokeThickness = 1,
+                        StrokeDashArray = [4, 4],
+                        IsHitTestVisible = false,
+                        SnapsToDevicePixels = true,
+                        Opacity = 0.7
+                    };
+                    DrawCanvas.Children.Add(_gridSnapCrosshairV);
+                    Panel.SetZIndex(_gridSnapCrosshairV, 18); // Below the circle
+                }
+                
+                _gridSnapCrosshairV.X1 = centerX;
+                _gridSnapCrosshairV.Y1 = rulerThickness;
+                _gridSnapCrosshairV.X2 = centerX;
+                _gridSnapCrosshairV.Y2 = rulerThickness + _doc.HeightMm;
+                _gridSnapCrosshairV.Stroke = Brushes.Orange;
+                
+                // Tiny center dot
+                const double dotSize = 4.0;
+                if (_gridSnapCenterDot == null)
+                {
+                    _gridSnapCenterDot = new Ellipse
+                    {
+                        Width = dotSize,
+                        Height = dotSize,
+                        Fill = Brushes.Orange,
+                        IsHitTestVisible = false,
+                        SnapsToDevicePixels = true
+                    };
+                    DrawCanvas.Children.Add(_gridSnapCenterDot);
+                    Panel.SetZIndex(_gridSnapCenterDot, 21); // Above the main indicator
+                }
+                
+                Canvas.SetLeft(_gridSnapCenterDot, centerX - dotSize / 2.0);
+                Canvas.SetTop(_gridSnapCenterDot, centerY - dotSize / 2.0);
             }
             else
             {
-                // Not a start/end point - remove the crosshair lines (only show circle)
+                // Not a start/end point and not grid snap - remove all crosshair lines
                 RemoveSnapIndicatorLines();
+                RemoveGridSnapCrosshairs();
             }
         }
 
@@ -1766,6 +2526,7 @@ namespace NVSPlotter
                 _snapIndicator = null;
             }
             RemoveSnapIndicatorLines();
+            RemoveGridSnapCrosshairs();
         }
 
         private void RemoveSnapIndicatorLines()
@@ -1781,6 +2542,28 @@ namespace NVSPlotter
                 {
                     DrawCanvas.Children.Remove(_snapIndicatorLineV);
                     _snapIndicatorLineV = null;
+                }
+            }
+        }
+
+        private void RemoveGridSnapCrosshairs()
+        {
+            if (DrawCanvas != null)
+            {
+                if (_gridSnapCrosshairH != null)
+                {
+                    DrawCanvas.Children.Remove(_gridSnapCrosshairH);
+                    _gridSnapCrosshairH = null;
+                }
+                if (_gridSnapCrosshairV != null)
+                {
+                    DrawCanvas.Children.Remove(_gridSnapCrosshairV);
+                    _gridSnapCrosshairV = null;
+                }
+                if (_gridSnapCenterDot != null)
+                {
+                    DrawCanvas.Children.Remove(_gridSnapCenterDot);
+                    _gridSnapCenterDot = null;
                 }
             }
         }
@@ -1840,6 +2623,8 @@ namespace NVSPlotter
                 if (_toolsWindow != null)
                 {
                     _toolsWindow.Owner = this;
+                    // Set the constraint element so the tools window stays within the canvas area
+                    _toolsWindow.SetConstraintElement(CanvasScroll, this);
                     _toolsWindow.Show();
                 }
             };
@@ -2139,10 +2924,19 @@ namespace NVSPlotter
             var spacing = GetGridSpacing();
             if (spacing <= 0) return raw;
 
-            var snappedX = Math.Round(raw.X / spacing) * spacing;
-            var snappedY = Math.Round(raw.Y / spacing) * spacing;
+            // Grid lines are drawn at rulerThickness + (n * spacing) positions
+            // To snap to grid intersections, we need to account for this offset
+            const double rulerThickness = 18.0;
+            
+            // Convert to document coordinates (relative to ruler), snap, then convert back
+            var docX = raw.X - rulerThickness;
+            var docY = raw.Y - rulerThickness;
+            
+            var snappedDocX = Math.Round(docX / spacing) * spacing;
+            var snappedDocY = Math.Round(docY / spacing) * spacing;
 
-            return new PointMm(snappedX, snappedY);
+            // Convert back to canvas coordinates
+            return new PointMm(snappedDocX + rulerThickness, snappedDocY + rulerThickness);
         }
 
         /// <summary>
@@ -2274,6 +3068,14 @@ namespace NVSPlotter
 
         private void Window_PreviewKeyDown(object sender, KeyEventArgs e)
         {
+            // Subdivision mode - Escape to cancel
+            if (_isSubdividing && e.Key == Key.Escape)
+            {
+                CancelSubdivision();
+                e.Handled = true;
+                return;
+            }
+
             // Tool keyboard shortcuts (when not in a text box)
             if (e.OriginalSource is not TextBox && _toolsWindow?.HandleKeyboardShortcut(e.Key, Keyboard.Modifiers) == true)
             {
@@ -2300,6 +3102,19 @@ namespace NVSPlotter
                         return;
                     case Key.A:
                         PerformSelectAll();
+                        e.Handled = true;
+                        return;
+                    case Key.G:
+                        if ((Keyboard.Modifiers & ModifierKeys.Shift) == ModifierKeys.Shift)
+                        {
+                            // Ctrl+Shift+G = Ungroup
+                            UngroupMenuItem_Click(sender, e);
+                        }
+                        else
+                        {
+                            // Ctrl+G = Group
+                            GroupMenuItem_Click(sender, e);
+                        }
                         e.Handled = true;
                         return;
                 }
@@ -2482,6 +3297,7 @@ namespace NVSPlotter
             var current = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
             var rect = _workingAreaManager.UpdateDrag(current);
             UpdateWorkingAreaPreview(rect);
+            UpdateWorkingAreaSizeLabel(current, rect);
             UpdateWorkingAreaStatus();
             e.Handled = true;
         }
@@ -2593,6 +3409,59 @@ namespace NVSPlotter
             {
                 DrawCanvas.Children.Remove(_workingAreaCrosshairVertical);
                 _workingAreaCrosshairVertical = null;
+            }
+
+            RemoveWorkingAreaSizeLabel();
+        }
+
+        private void UpdateWorkingAreaSizeLabel(PointMm cursorPos, Rect rect)
+        {
+            if (DrawCanvas == null) return;
+
+            // Create the label if it doesn't exist
+            if (_workingAreaSizeLabel == null)
+            {
+                _workingAreaSizeLabel = new TextBlock
+                {
+                    Foreground = Brushes.DeepSkyBlue,
+                    FontSize = 12,
+                    FontWeight = FontWeights.SemiBold,
+                    Background = new SolidColorBrush(Color.FromArgb(200, 30, 30, 30)),
+                    Padding = new Thickness(6, 3, 6, 3),
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                DrawCanvas.Children.Add(_workingAreaSizeLabel);
+                Panel.SetZIndex(_workingAreaSizeLabel, 20);
+            }
+
+            // Update the size text
+            _workingAreaSizeLabel.Text = $"{rect.Width:0.#} mm × {rect.Height:0.#} mm";
+
+            // Measure the label to position it correctly
+            _workingAreaSizeLabel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+            var labelWidth = _workingAreaSizeLabel.DesiredSize.Width;
+            var labelHeight = _workingAreaSizeLabel.DesiredSize.Height;
+
+            // Position centered below the cursor with a small offset
+            const double verticalOffset = 15;
+            var labelX = cursorPos.X - (labelWidth / 2);
+            var labelY = cursorPos.Y + verticalOffset;
+
+            // Clamp to keep within canvas bounds
+            labelX = Math.Max(0, Math.Min(labelX, _doc.WidthMm - labelWidth));
+            labelY = Math.Max(0, Math.Min(labelY, _doc.HeightMm - labelHeight));
+
+            Canvas.SetLeft(_workingAreaSizeLabel, labelX);
+            Canvas.SetTop(_workingAreaSizeLabel, labelY);
+        }
+
+        private void RemoveWorkingAreaSizeLabel()
+        {
+            if (DrawCanvas != null && _workingAreaSizeLabel != null)
+            {
+                DrawCanvas.Children.Remove(_workingAreaSizeLabel);
+                _workingAreaSizeLabel = null;
             }
         }
 
@@ -2902,6 +3771,75 @@ namespace NVSPlotter
                 }
             }
 
+            // During subdivision, also include ANCESTOR groups (parent, grandparent, etc.)
+            // This ensures parent indicators remain visible while subdividing a child
+            if (_isSubdividing)
+            {
+                // Find all ancestor group IDs for the selected groups
+                var ancestorGroupIds = new HashSet<Guid>();
+                foreach (var groupId in groupedStrokes.Keys.ToList())
+                {
+                    // Walk up the ancestor chain
+                    var currentGroupId = groupId;
+                    var visited = new HashSet<Guid> { currentGroupId };
+                    
+                    while (true)
+                    {
+                        var parentGroupId = _doc.Strokes
+                            .FirstOrDefault(s => s.GroupId == currentGroupId)?.ParentGroupId;
+                        
+                        if (!parentGroupId.HasValue || visited.Contains(parentGroupId.Value))
+                            break;
+                        
+                        ancestorGroupIds.Add(parentGroupId.Value);
+                        visited.Add(parentGroupId.Value);
+                        currentGroupId = parentGroupId.Value;
+                    }
+                }
+                
+                // Add ancestor group strokes if they have intermediate points enabled
+                foreach (var ancestorId in ancestorGroupIds)
+                {
+                    if (_showIntermediatePointsForGroups.Contains(ancestorId))
+                    {
+                        if (!groupedStrokes.ContainsKey(ancestorId))
+                        {
+                            var ancestorStrokes = _doc.Strokes.Where(s => s.GroupId == ancestorId).ToList();
+                            if (ancestorStrokes.Count > 0)
+                            {
+                                groupedStrokes[ancestorId] = ancestorStrokes;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Find and add child groups if parent group has intermediate points enabled
+            // This allows child group indicators to be shown when the parent is selected
+            // Note: We iterate over a copy of the keys to avoid modifying the dictionary while iterating
+            // Use recursive lookup to find ALL descendants (children, grandchildren, etc.)
+            var parentGroupIds = groupedStrokes.Keys.ToList();
+            var allDescendantGroupIds = GetAllDescendantGroupIds(
+                parentGroupIds.Where(id => _showIntermediatePointsForGroups.Contains(id)));
+            
+            // Add all descendant group strokes to the rendering
+            foreach (var stroke in _doc.Strokes)
+            {
+                if (stroke.GroupId.HasValue && allDescendantGroupIds.Contains(stroke.GroupId.Value))
+                {
+                    // Add this descendant group's strokes (if not already added)
+                    if (!groupedStrokes.TryGetValue(stroke.GroupId.Value, out var childList))
+                    {
+                        childList = new List<LineStroke>();
+                        groupedStrokes[stroke.GroupId.Value] = childList;
+                    }
+                    if (!childList.Contains(stroke))
+                    {
+                        childList.Add(stroke);
+                    }
+                }
+            }
+
             // Collect ALL start and end points from all groups to detect cross-group closed loops
             var allStartPoints = new List<PointMm>();
             var allEndPoints = new List<PointMm>();
@@ -2963,8 +3901,11 @@ namespace NVSPlotter
             if (strokes.Count == 0) return;
 
             // Check if any stroke in this group has intermediate points enabled
+            // Also check if any ANCESTOR group has intermediate points enabled (hierarchical - any depth)
             var groupId = strokes.FirstOrDefault(s => s.GroupId.HasValue)?.GroupId;
-            var showIntermediatePoints = groupId.HasValue && _showIntermediatePointsForGroups.Contains(groupId.Value);
+            
+            // Use the helper method to check the entire ancestor chain
+            var showIntermediatePoints = groupId.HasValue && HasAncestorWithIntermediatePointsEnabled(groupId.Value);
 
             // Find the start point (stroke with IsGroupStart=true)
             var startStroke = strokes.FirstOrDefault(s => s.IsGroupStart);
@@ -4204,20 +5145,6 @@ namespace NVSPlotter
                     }
                 }
 
-                // Update active paint well combo
-                if (FindName("ActivePaintWellCombo") is ComboBox combo)
-                {
-                    var activeId = _paintWellController.ActiveColorWell?.Id;
-                    combo.ItemsSource = null;
-                    combo.ItemsSource = _doc.PaintWells;
-                    
-                    if (activeId.HasValue)
-                    {
-                        var active = _doc.PaintWells.FirstOrDefault(w => w.Id == activeId);
-                        if (active != null) combo.SelectedItem = active;
-                    }
-                }
-
                 // Update selected well properties
                     UpdateSelectedWellPropertiesUI();
                 
@@ -4232,6 +5159,7 @@ namespace NVSPlotter
 
         /// <summary>
         /// Updates the visual highlight on paint well chips to show which is active.
+        /// Uses a bright cyan/blue glow effect for the selected chip that's visible in both light and dark modes.
         /// </summary>
         private void UpdatePaintWellChipHighlights()
         {
@@ -4239,10 +5167,8 @@ namespace NVSPlotter
 
             var activeWellId = _paintWellController.ActiveColorWell?.Id;
 
-            // Standard system blue for selection highlight
-            var highlightColor = Color.FromRgb(0, 120, 215); // Windows accent blue (#0078D7)
-            var highlightBrush = new SolidColorBrush(highlightColor);
-            var highlightBackground = new SolidColorBrush(Color.FromArgb(30, highlightColor.R, highlightColor.G, highlightColor.B));
+            // Bright cyan-blue glow color that's visible in both light and dark modes
+            var glowColor = Color.FromRgb(0, 200, 255); // Bright cyan (#00C8FF)
 
             // Iterate through all items in the grid
             for (int i = 0; i < grid.Items.Count; i++)
@@ -4258,18 +5184,22 @@ namespace NVSPlotter
                 var wellChip = FindVisualChild<Border>(container, "WellChip");
                 if (wellChip?.Tag is not PaintWell well) continue;
 
-                // Apply highlight if this is the active well
+                // Apply glow effect if this is the active well
                 if (activeWellId.HasValue && well.Id == activeWellId.Value)
                 {
-                    // Active well: show highlight border with standard blue
-                    highlightBorder.BorderBrush = highlightBrush;
-                    highlightBorder.Background = highlightBackground;
+                    // Active well: show bright glow effect with large blur radius for prominence
+                    wellChip.Effect = new System.Windows.Media.Effects.DropShadowEffect
+                    {
+                        Color = glowColor,
+                        BlurRadius = 20,
+                        ShadowDepth = 0,
+                        Opacity = 1.0
+                    };
                 }
                 else
                 {
-                    // Not active: transparent border
-                    highlightBorder.BorderBrush = Brushes.Transparent;
-                    highlightBorder.Background = Brushes.Transparent;
+                    // Not active: remove glow effect
+                    wellChip.Effect = null;
                 }
             }
         }
@@ -4337,36 +5267,23 @@ namespace NVSPlotter
             }
         }
 
-        private void ActivePaintWellCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (_suppressPaintWellUIUpdate) return;
-            if (sender is not ComboBox combo) return;
-
-            var well = combo.SelectedItem as PaintWell;
-            _paintWellController.SetActiveColor(well);
-        }
-
-        /// <summary>
-        /// Updates the ActivePaintWellCombo to reflect the current active color well.
-        /// Called when the active color is changed programmatically (e.g., by clicking a paint well on canvas).
-        /// </summary>
-        private void UpdateActivePaintWellCombo()
-        {
-            if (FindName("ActivePaintWellCombo") is ComboBox combo)
-            {
-                _suppressPaintWellUIUpdate = true;
-                combo.SelectedItem = _paintWellController.ActiveColorWell;
-                _suppressPaintWellUIUpdate = false;
-            }
-        }
-
         private void ClearActivePaintWell_Click(object sender, RoutedEventArgs e)
         {
             _paintWellController.SetActiveColor(null);
-            if (FindName("ActivePaintWellCombo") is ComboBox combo)
+            _paintWellController.SelectWell(null); // Clear selection in drawing area (removes resize handles)
+            
+            // Also clear the hidden ListBox selection (controls property panel visibility)
+            _suppressPaintWellUIUpdate = true;
+            if (FindName("PaintWellsList") is ListBox list)
             {
-                combo.SelectedItem = null;
+                list.SelectedItem = null;
             }
+            _suppressPaintWellUIUpdate = false;
+            
+            UpdatePaintWellChipHighlights(); // Clear the glow effect from all chips
+            UpdateSelectedWellPropertiesUI(); // Update the properties panel
+            RenderAll();
+            AppendLog("Active color cleared (using black).");
         }
 
         private void PaintWellsList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -4394,7 +5311,6 @@ namespace NVSPlotter
             
             // Also set as active color for painting new strokes
             _paintWellController.SetActiveColor(well);
-            UpdateActivePaintWellCombo();
             
             // AUTO-APPLY: If strokes are selected, apply this color to them immediately
             if (_selectionController.HasSelection && _selectionController.SelectedIndices.Count > 0)
@@ -5014,6 +5930,40 @@ namespace NVSPlotter
                 ? "Untitled"
                 : System.IO.Path.GetFileName(_currentProjectPath);
             Title = $"NVS Plotter - {projectName}";
+        }
+
+        // ===== THEME TOGGLE =====
+
+        private void ThemeToggle_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is System.Windows.Controls.Primitives.ToggleButton toggle)
+            {
+                ThemeManager.Instance.ToggleTheme();
+                toggle.IsChecked = ThemeManager.Instance.IsDarkMode;
+            }
+        }
+
+        /// <summary>
+        /// Initializes the theme toggle button state based on current theme.
+        /// </summary>
+        private void InitializeThemeToggle()
+        {
+            if (FindName("ThemeToggle") is System.Windows.Controls.Primitives.ToggleButton toggle)
+            {
+                toggle.IsChecked = ThemeManager.Instance.IsDarkMode;
+            }
+
+            // Subscribe to theme changes to update toggle state
+            ThemeManager.Instance.ThemeChanged += (_, isDark) =>
+            {
+                Dispatcher.Invoke(() =>
+                {
+                    if (FindName("ThemeToggle") is System.Windows.Controls.Primitives.ToggleButton t)
+                    {
+                        t.IsChecked = isDark;
+                    }
+                });
+            };
         }
 
     }

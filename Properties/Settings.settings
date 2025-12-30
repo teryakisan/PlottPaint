@@ -23,5 +23,11 @@
     <Setting Name="ToolsWindowTop" Type="System.Double" Scope="User">
       <Value Profile="(Default)">150</Value>
     </Setting>
+    <Setting Name="IsDarkMode" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="UseSystemTheme" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">True</Value>
+    </Setting>
   </Settings>
 </SettingsFile>

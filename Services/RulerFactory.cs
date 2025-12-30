@@ -69,14 +69,14 @@ namespace NVSPlotter.Services
             Canvas.SetTop(corner, 0);
             mw.RulerCanvas.Children.Add(corner);
 
-            // Top ruler (shifted right by corner width)
-            var topBackground = CreateBackground(mw._doc.WidthMm - rulerThickness, rulerThickness);
+            // Top ruler (shifted right by corner width, covers full document width)
+            var topBackground = CreateBackground(mw._doc.WidthMm, rulerThickness);
             Canvas.SetLeft(topBackground, ox);
             Canvas.SetTop(topBackground, 0);
             mw.RulerCanvas.Children.Add(topBackground);
 
-            // Left ruler (shifted down by corner height)
-            var leftBackground = CreateBackground(rulerThickness, mw._doc.HeightMm - rulerThickness);
+            // Left ruler (shifted down by corner height, covers full document height)
+            var leftBackground = CreateBackground(rulerThickness, mw._doc.HeightMm);
             Canvas.SetLeft(leftBackground, 0);
             Canvas.SetTop(leftBackground, oy);
             mw.RulerCanvas.Children.Add(leftBackground);

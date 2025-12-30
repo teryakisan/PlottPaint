@@ -155,6 +155,9 @@ public sealed class SelectionController
                     _selectedPaintWellIds.Remove(hitWell.Id);
                 else
                     _selectedPaintWellIds.Add(hitWell.Id);
+                    
+                // Reset rotation when selection changes - pivot point needs to be recalculated
+                _selectionRotationAngle = 0;
             }
             else
             {
@@ -210,6 +213,9 @@ public sealed class SelectionController
                         _selectedIndices.Add(idx);
                     }
                 }
+                
+                // Reset rotation when selection changes - pivot point needs to be recalculated
+                _selectionRotationAngle = 0;
             }
             else
             {
@@ -353,7 +359,7 @@ public sealed class SelectionController
             };
             Canvas.SetLeft(_rotateIcon, _selectionCenterPosition.X - iconSize / 2);
             Canvas.SetTop(_rotateIcon, _selectionCenterPosition.Y - iconSize / 2);
-            Panel.SetZIndex(_rotateIcon, 17);
+            Panel.SetZIndex(_rotateIcon, 3); // Above grid (2) but below strokes (4)
             _canvas.Children.Add(_rotateIcon);
         }
         else if (!isHoveringRotate && _mode != SelectionMode.Rotating)
@@ -425,7 +431,7 @@ public sealed class SelectionController
             };
             Canvas.SetLeft(_resizeIcon, _selectionCenterPosition.X - iconSize / 2);
             Canvas.SetTop(_resizeIcon, _selectionCenterPosition.Y - iconSize / 2);
-            Panel.SetZIndex(_resizeIcon, 17);
+            Panel.SetZIndex(_resizeIcon, 3); // Above grid (2) but below strokes (4)
             _canvas.Children.Add(_resizeIcon);
         }
         else if (!isHoveringResize && _mode != SelectionMode.Resizing)
@@ -878,7 +884,7 @@ public sealed class SelectionController
             };
             Canvas.SetLeft(_rotateIcon, centerX - iconSize / 2);
             Canvas.SetTop(_rotateIcon, centerY - iconSize / 2);
-            Panel.SetZIndex(_rotateIcon, 17);
+            Panel.SetZIndex(_rotateIcon, 3); // Above grid (2) but below strokes (4)
             _canvas.Children.Add(_rotateIcon);
         }
         
@@ -897,7 +903,7 @@ public sealed class SelectionController
             };
             Canvas.SetLeft(_resizeIcon, centerX - iconSize / 2);
             Canvas.SetTop(_resizeIcon, centerY - iconSize / 2);
-            Panel.SetZIndex(_resizeIcon, 17);
+            Panel.SetZIndex(_resizeIcon, 3); // Above grid (2) but below strokes (4)
             _canvas.Children.Add(_resizeIcon);
         }
     }
@@ -1483,6 +1489,7 @@ public sealed class SelectionController
 
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
         _logicalBounds = _selectionBounds; // Initialize logical bounds for new selection
+        _selectionRotationAngle = 0; // Reset rotation - pivot point is recalculated for new selection
         _requestRender();
     }
 

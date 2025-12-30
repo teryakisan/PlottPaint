@@ -12,6 +12,7 @@ namespace NVSPlotter.Converters;
 
 /// <summary>
 /// Converts a Color to a SolidColorBrush for data binding.
+/// Optional parameter: opacity value (e.g., "0.7" for 70% opacity).
 /// </summary>
 public class ColorToBrushConverter : IValueConverter
 {
@@ -19,7 +20,19 @@ public class ColorToBrushConverter : IValueConverter
     {
         if (value is Color color)
         {
-            return new SolidColorBrush(color);
+            var brush = new SolidColorBrush(color);
+            
+            // Apply opacity if parameter is provided
+            if (parameter is string opacityStr && double.TryParse(opacityStr, NumberStyles.Float, CultureInfo.InvariantCulture, out var opacity))
+            {
+                brush.Opacity = opacity;
+            }
+            else if (parameter is double opacityDouble)
+            {
+                brush.Opacity = opacityDouble;
+            }
+            
+            return brush;
         }
         return Brushes.Black;
     }

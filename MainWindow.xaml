@@ -14,7 +14,7 @@
         </Grid.ColumnDefinitions>
 
         <!-- LEFT PANEL -->
-        <Border Grid.Column="0" BorderBrush="#DDD" BorderThickness="0,0,1,0" Background="#FAFAFA">
+        <Border Grid.Column="0" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0" Background="{DynamicResource SecondaryBackgroundBrush}">
             <ScrollViewer VerticalScrollBarVisibility="Auto" Margin="0,0,-1,0">
                 <StackPanel Margin="10" Orientation="Vertical">
 
@@ -132,29 +132,6 @@
                                ToolTip="Automatically rinse and wipe brush when changing colors"/>
                                 </StackPanel>
 
-                                <!-- Active Paint Color Selection -->
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="Active Color:" Width="80" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="ActivePaintWellCombo" Width="140" 
-                               SelectionChanged="ActivePaintWellCombo_SelectionChanged">
-                                        <ComboBox.ItemTemplate>
-                                            <DataTemplate>
-                                                <StackPanel Orientation="Horizontal">
-                                                    <Rectangle Width="16" Height="16" Margin="0,0,8,0"
-                                                Stroke="Gray" StrokeThickness="1">
-                                                        <Rectangle.Fill>
-                                                            <SolidColorBrush Color="{Binding Color}"/>
-                                                        </Rectangle.Fill>
-                                                    </Rectangle>
-                                                    <TextBlock Text="{Binding Name}"/>
-                                                </StackPanel>
-                                            </DataTemplate>
-                                        </ComboBox.ItemTemplate>
-                                    </ComboBox>
-                                    <Button Content="None" Width="50" Margin="5,0,0,0" 
-                             Click="ClearActivePaintWell_Click" ToolTip="Clear active paint (use black)"/>
-                                </StackPanel>
-
                                 <!-- Paint Wells Grid -->
                                 <TextBlock Text="Paint Wells:" Margin="0,5,0,3" FontWeight="SemiBold"/>
                                 <ItemsControl x:Name="PaintWellsGrid" Margin="0,0,0,8">
@@ -165,22 +142,17 @@
                                     </ItemsControl.ItemsPanel>
                                     <ItemsControl.ItemTemplate>
                                         <DataTemplate>
-                                            <!-- Outer border for selection highlight -->
+                                            <!-- Outer border for selection highlight with glow effect -->
                                             <Border x:Name="SelectionHighlight" 
-                                                    Width="42" Height="42" Margin="1" 
-                                                    BorderThickness="3" CornerRadius="6"
-                                                    BorderBrush="Transparent"
+                                                    Width="42" Height="42" Margin="3" 
+                                                    BorderThickness="0" CornerRadius="6"
                                                     Background="Transparent">
                                                 <Border x:Name="WellChip" Width="36" Height="36"
                                                         BorderThickness="2" CornerRadius="4" Cursor="Hand"
                                                         MouseLeftButtonDown="PaintWellChip_MouseLeftButtonDown"
-                                                        Tag="{Binding}">
-                                                    <Border.BorderBrush>
-                                                        <SolidColorBrush Color="{Binding Color}"/>
-                                                    </Border.BorderBrush>
-                                                    <Border.Background>
-                                                        <SolidColorBrush Color="{Binding Color}" Opacity="0.7"/>
-                                                    </Border.Background>
+                                                        Tag="{Binding}"
+                                                        BorderBrush="{Binding Color, Converter={StaticResource ColorToBrushConverter}}"
+                                                        Background="{Binding Color, Converter={StaticResource ColorToBrushConverter}, ConverterParameter=0.7}">
                                                     <Border.ToolTip>
                                                         <StackPanel MaxWidth="200">
                                                             <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="12"/>
@@ -235,6 +207,8 @@
 
                                 <!-- Paint Well Actions -->
                                 <WrapPanel Margin="0,0,0,8">
+                                    <Button x:Name="ClearActivePaintWellBtn" Content="None" Width="50" Margin="0,0,5,0" 
+                                            Click="ClearActivePaintWell_Click" ToolTip="Clear active paint selection (use black)"/>
                                     <Button x:Name="AddPaintWellBtn" Content="Add Well" Width="70" Margin="0,0,5,0" 
                                     Click="AddPaintWellBtn_Click" ToolTip="Create a new paint well at the center of the canvas"/>
                                     <Button x:Name="RemovePaintWellBtn" Content="Remove" Width="60" Margin="0,0,5,0" 
@@ -479,7 +453,7 @@
         <!-- RIGHT PANEL -->
         <Grid Grid.Column="1">
             <!-- CANVAS AREA -->
-            <Border Background="#EEE">
+            <Border Background="{DynamicResource CanvasBackgroundBrush}">
                 <Grid>
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
@@ -487,19 +461,34 @@
                     </Grid.RowDefinitions>
                     
                     <!-- Toolbar -->
-                    <StackPanel Grid.Row="0" Orientation="Horizontal" Background="#F0F0F0" Height="28">
-                        <Button x:Name="NewProjectBtn" Content="📄 New" Width="60" Margin="5,2" Click="NewProjectBtn_Click" ToolTip="New Project (Ctrl+N)"/>
-                        <Button x:Name="OpenProjectBtn" Content="📂 Open" Width="65" Margin="0,2" Click="OpenProjectBtn_Click" ToolTip="Open Project (Ctrl+O)"/>
-                        <Button x:Name="SaveProjectBtn" Content="💾 Save" Width="60" Margin="0,2" Click="SaveProjectBtn_Click" ToolTip="Save Project (Ctrl+S)"/>
-                        <Button x:Name="SaveAsProjectBtn" Content="Save As" Width="55" Margin="0,2" Click="SaveAsProjectBtn_Click" ToolTip="Save Project As (Ctrl+Shift+S)"/>
-                        <Separator Width="1" Background="#CCC" Margin="5,4"/>
-                        <Button x:Name="ShowConsoleBtn" Content="📋 Console" Width="80" Margin="5,2" Click="ShowConsoleBtn_Click" ToolTip="Show/Hide Console Window"/>
-                    </StackPanel>
+                    <DockPanel Grid.Row="0" Background="{DynamicResource TertiaryBackgroundBrush}" Height="30" LastChildFill="False">
+                       
+                        <!-- Left side buttons -->
+                        <Button x:Name="NewProjectBtn" DockPanel.Dock="Left" Content="📄 New" Width="60" Margin="5,2" Click="NewProjectBtn_Click" ToolTip="New Project (Ctrl+N)"/>
+                        <Button x:Name="OpenProjectBtn" DockPanel.Dock="Left" Content="📂 Open" Width="85" Margin="0,2,5,2" Click="OpenProjectBtn_Click" ToolTip="Open Project (Ctrl+O)"/>
+                        <Button x:Name="SaveProjectBtn" DockPanel.Dock="Left" Content="💾 Save" Width="77" Margin="0,2,5,2" Click="SaveProjectBtn_Click" ToolTip="Save Project (Ctrl+S)"/>
+                        <Button x:Name="SaveAsProjectBtn" DockPanel.Dock="Left" Content="Save As" Width="80" Margin="0,2,5,2" Click="SaveAsProjectBtn_Click" ToolTip="Save Project As (Ctrl+Shift+S)"/>
+                        <Separator DockPanel.Dock="Left" Width="1" Background="{DynamicResource BorderBrush}" Margin="5,4"/>
+                        <Button x:Name="ShowConsoleBtn" DockPanel.Dock="Left" Content="📋 Console" Width="87" Margin="5,2" Click="ShowConsoleBtn_Click" ToolTip="Show/Hide Console Window"/>
+                        
+                        <!-- Theme Toggle Switch - docked to the right -->
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0,10,0">
+                            <TextBlock Text="☀" FontSize="12" FontFamily="Segoe UI Emoji" VerticalAlignment="Center" Margin="0,0,4,0" 
+                                       Foreground="{DynamicResource SecondaryTextBrush}"/>
+                            <ToggleButton x:Name="ThemeToggle" 
+                                          Style="{StaticResource ThemeToggleSwitchStyle}"
+                                          Click="ThemeToggle_Click"
+                                          ToolTip="Toggle Dark/Light Mode"/>
+                            <TextBlock Text="🌙" FontSize="12" FontFamily="Segoe UI Emoji" VerticalAlignment="Center" Margin="4,0,0,0"
+                                       Foreground="{DynamicResource SecondaryTextBrush}"/>
+                        </StackPanel>
+                    </DockPanel>
                     
                     <ScrollViewer x:Name="CanvasScroll" Grid.Row="1"
                       SizeChanged="CanvasScroll_SizeChanged"
                       HorizontalScrollBarVisibility="Visible"
-                      VerticalScrollBarVisibility="Visible">
+                      VerticalScrollBarVisibility="Visible"
+                      Padding="40,0,0,0">
                         <Grid x:Name="CanvasHost" Background="Transparent">
                             <Canvas x:Name="DrawCanvas" Background="Transparent"
                     MouseWheel="DrawCanvas_MouseWheel"
@@ -522,13 +511,17 @@
                                         <MenuItem x:Name="SelectAllMenuItem" Header="Select _All" InputGestureText="Ctrl+A" Click="SelectAllMenuItem_Click"/>
                                         <MenuItem x:Name="DeselectMenuItem" Header="D_eselect" InputGestureText="Esc" Click="DeselectMenuItem_Click"/>
                                         <Separator/>
+                                        <MenuItem x:Name="GroupMenuItem" Header="_Group" InputGestureText="Ctrl+G" Click="GroupMenuItem_Click"/>
+                                        <MenuItem x:Name="UngroupMenuItem" Header="_Ungroup" InputGestureText="Ctrl+Shift+G" Click="UngroupMenuItem_Click"/>
                                         <MenuItem x:Name="SeparateFromGroupMenuItem" Header="Se_parate from Group" Click="SeparateFromGroupMenuItem_Click"/>
                                         <Separator/>
+                                        <MenuItem x:Name="SubdivideMenuItem" Header="Su_bdivide..." Click="SubdivideMenuItem_Click" 
+                                                  ToolTip="Drag up/down to add or remove intermediate points along the stroke"/>
                                         <MenuItem x:Name="ToggleIntermediatePointsMenuItem" Header="Show _Intermediate Points" IsCheckable="True" Click="ToggleIntermediatePointsMenuItem_Click"/>
                                     </ContextMenu>
                                 </Canvas.ContextMenu>
                             </Canvas>
-                            <Canvas x:Name="RulerCanvas" IsHitTestVisible="False" Panel.ZIndex="10"/>
+                            <Canvas x:Name="RulerCanvas" IsHitTestVisible="False"  Panel.ZIndex="10"/>
                         </Grid>
                     </ScrollViewer>
                 </Grid>

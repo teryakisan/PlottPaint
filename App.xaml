@@ -5,9 +5,18 @@
              xmlns:converters="clr-namespace:NVSPlotter.Converters"
              StartupUri="MainWindow.xaml">
     <Application.Resources>
-        <converters:ColorToBrushConverter x:Key="ColorToBrushConverter"/>
-        <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter"/>
-        <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
-        <converters:FirstLetterConverter x:Key="FirstLetterConverter"/>
+        <ResourceDictionary>
+            <ResourceDictionary.MergedDictionaries>
+                <!-- Theme files loaded dynamically by ThemeManager -->
+                <ResourceDictionary Source="/Themes/LightTheme.xaml"/>
+                <ResourceDictionary Source="/Themes/ToggleSwitchStyle.xaml"/>
+            </ResourceDictionary.MergedDictionaries>
+            
+            <!-- Converters -->
+            <converters:ColorToBrushConverter x:Key="ColorToBrushConverter"/>
+            <converters:NullToVisibilityConverter x:Key="NullToVisibilityConverter"/>
+            <converters:BoolToVisibilityConverter x:Key="BoolToVisibilityConverter"/>
+            <converters:FirstLetterConverter x:Key="FirstLetterConverter"/>
+        </ResourceDictionary>
     </Application.Resources>
 </Application>

@@ -9,6 +9,7 @@ using System.Windows.Input;
 // Avoid ambiguity with System.Windows.Forms types
 using Button = System.Windows.Controls.Button;
 using Screen = System.Windows.Forms.Screen;
+using Point = System.Windows.Point;
 
 namespace NVSPlotter;
 
@@ -22,6 +23,16 @@ public partial class ToolsWindow : Window
     private ToolMode _currentTool = ToolMode.Select;
     private bool _isClosingForReal;
     private bool _positionRestored;
+    
+    // Reference to the CanvasScroll for constraining position
+    private FrameworkElement? _constraintElement;
+    private Window? _ownerWindow;
+    
+    // Track relative position within constraint element (0.0 to 1.0)
+    private double _relativeX;
+    private double _relativeY;
+    private Rect _lastConstraintBounds;
+    private bool _isDragging;
 
     public ToolMode CurrentTool => _currentTool;
 
@@ -39,6 +50,189 @@ public partial class ToolsWindow : Window
                 _toolButtons[tag] = btn;
             }
         }
+    }
+
+    /// <summary>
+    /// Sets the element that the tools window should be constrained within.
+    /// </summary>
+    public void SetConstraintElement(FrameworkElement element, Window ownerWindow)
+    {
+        // Unsubscribe from previous element
+        if (_constraintElement != null)
+        {
+            _constraintElement.SizeChanged -= ConstraintElement_SizeChanged;
+        }
+        if (_ownerWindow != null)
+        {
+            _ownerWindow.LocationChanged -= OwnerWindow_LocationChanged;
+            _ownerWindow.StateChanged -= OwnerWindow_StateChanged;
+        }
+        
+        _constraintElement = element;
+        _ownerWindow = ownerWindow;
+        
+        // Subscribe to size and position changes
+        if (_constraintElement != null)
+        {
+            _constraintElement.SizeChanged += ConstraintElement_SizeChanged;
+        }
+        if (_ownerWindow != null)
+        {
+            _ownerWindow.LocationChanged += OwnerWindow_LocationChanged;
+            _ownerWindow.StateChanged += OwnerWindow_StateChanged;
+        }
+        
+        // Store initial bounds
+        var bounds = GetConstraintBounds();
+        if (bounds != null)
+        {
+            _lastConstraintBounds = bounds.Value;
+        }
+    }
+
+    private void ConstraintElement_SizeChanged(object sender, SizeChangedEventArgs e)
+    {
+        // When the constraint element resizes, reposition the tools window
+        // to maintain its relative position
+        RepositionToRelativeLocation();
+    }
+
+    private void OwnerWindow_LocationChanged(object? sender, EventArgs e)
+    {
+        // When the owner window moves, reposition the tools window
+        RepositionToRelativeLocation();
+    }
+
+    private void OwnerWindow_StateChanged(object? sender, EventArgs e)
+    {
+        // When the window state changes (maximize, restore, etc.), reposition
+        // Use dispatcher to ensure layout has updated
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            RepositionToRelativeLocation();
+        }), System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    /// <summary>
+    /// Repositions the tools window based on its stored relative position.
+    /// </summary>
+    private void RepositionToRelativeLocation()
+    {
+        if (!IsLoaded || !_positionRestored || _isDragging) return;
+        
+        var bounds = GetConstraintBounds();
+        if (bounds == null) return;
+        
+        var rect = bounds.Value;
+        
+        // Calculate new position based on relative coordinates
+        var newLeft = rect.Left + (_relativeX * (rect.Width - ActualWidth));
+        var newTop = rect.Top + (_relativeY * (rect.Height - ActualHeight));
+        
+        // Ensure window stays within bounds
+        const double margin = 5;
+        newLeft = Math.Max(rect.Left + margin, Math.Min(newLeft, rect.Right - ActualWidth - margin));
+        newTop = Math.Max(rect.Top + margin, Math.Min(newTop, rect.Bottom - ActualHeight - margin));
+        
+        // Apply position
+        Left = newLeft;
+        Top = newTop;
+        
+        // Update last known bounds
+        _lastConstraintBounds = rect;
+    }
+
+    /// <summary>
+    /// Updates the stored relative position based on current window position.
+    /// </summary>
+    private void UpdateRelativePosition()
+    {
+        var bounds = GetConstraintBounds();
+        if (bounds == null) return;
+        
+        var rect = bounds.Value;
+        
+        // Calculate relative position (0.0 to 1.0)
+        var availableWidth = rect.Width - ActualWidth;
+        var availableHeight = rect.Height - ActualHeight;
+        
+        if (availableWidth > 0)
+            _relativeX = Math.Clamp((Left - rect.Left) / availableWidth, 0, 1);
+        else
+            _relativeX = 0;
+            
+        if (availableHeight > 0)
+            _relativeY = Math.Clamp((Top - rect.Top) / availableHeight, 0, 1);
+        else
+            _relativeY = 0;
+        
+        _lastConstraintBounds = rect;
+    }
+
+    /// <summary>
+    /// Gets the screen bounds of the constraint element.
+    /// </summary>
+    private Rect? GetConstraintBounds()
+    {
+        if (_constraintElement == null || _ownerWindow == null) return null;
+        
+        try
+        {
+            // Get the position of the constraint element in screen coordinates
+            var topLeft = _constraintElement.PointToScreen(new Point(0, 0));
+            var bottomRight = _constraintElement.PointToScreen(
+                new Point(_constraintElement.ActualWidth, _constraintElement.ActualHeight));
+            
+            return new Rect(topLeft, bottomRight);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Constrains the window position to stay within the constraint element bounds.
+    /// </summary>
+    private void ConstrainToElement()
+    {
+        var bounds = GetConstraintBounds();
+        if (bounds == null) return;
+        
+        var rect = bounds.Value;
+        
+        // Ensure the window stays within bounds
+        // Allow a small margin so the window isn't exactly at the edge
+        const double margin = 5;
+        
+        var newLeft = Left;
+        var newTop = Top;
+        
+        // Constrain left edge (window can't go past left of constraint area)
+        if (newLeft < rect.Left + margin)
+            newLeft = rect.Left + margin;
+        
+        // Constrain right edge (window can't go past right of constraint area)
+        if (newLeft + ActualWidth > rect.Right - margin)
+            newLeft = rect.Right - ActualWidth - margin;
+        
+        // Constrain top edge
+        if (newTop < rect.Top + margin)
+            newTop = rect.Top + margin;
+        
+        // Constrain bottom edge
+        if (newTop + ActualHeight > rect.Bottom - margin)
+            newTop = rect.Bottom - ActualHeight - margin;
+        
+        // Apply constrained position if different
+        if (Math.Abs(Left - newLeft) > 0.5 || Math.Abs(Top - newTop) > 0.5)
+        {
+            Left = newLeft;
+            Top = newTop;
+        }
+        
+        // Update relative position after constraining
+        UpdateRelativePosition();
     }
 
     /// <summary>
@@ -63,11 +257,18 @@ public partial class ToolsWindow : Window
     }
 
     /// <summary>
-    /// Gets a default position near the main window or primary screen.
+    /// Gets a default position within the constraint element or near the main window.
     /// </summary>
-    private static (double Left, double Top) GetDefaultPosition()
+    private (double Left, double Top) GetDefaultPosition()
     {
-        // Try to position on primary screen
+        // Try to use constraint bounds if available
+        var bounds = GetConstraintBounds();
+        if (bounds != null)
+        {
+            return (bounds.Value.Left + 10, bounds.Value.Top + 50);
+        }
+        
+        // Fallback to primary screen
         var primaryScreen = Screen.PrimaryScreen;
         if (primaryScreen != null)
         {
@@ -83,9 +284,24 @@ public partial class ToolsWindow : Window
         var savedLeft = Settings.Default.ToolsWindowLeft;
         var savedTop = Settings.Default.ToolsWindowTop;
 
-        // Check if saved position is valid (not default uninitialized values)
-        // and is visible on any screen (supports multi-monitor)
-        if (IsPositionOnAnyScreen(savedLeft, savedTop))
+        // First, check if the saved position is within the constraint element
+        var bounds = GetConstraintBounds();
+        if (bounds != null)
+        {
+            var rect = bounds.Value;
+            if (savedLeft >= rect.Left && savedLeft + ActualWidth <= rect.Right &&
+                savedTop >= rect.Top && savedTop + ActualHeight <= rect.Bottom)
+            {
+                Left = savedLeft;
+                Top = savedTop;
+                _positionRestored = true;
+                UpdateRelativePosition();
+                return;
+            }
+        }
+
+        // Check if saved position is valid on any screen (for backward compatibility)
+        if (bounds == null && IsPositionOnAnyScreen(savedLeft, savedTop))
         {
             Left = savedLeft;
             Top = savedTop;
@@ -93,12 +309,14 @@ public partial class ToolsWindow : Window
         }
         else
         {
-            // Use default position on primary screen
+            // Use default position
             var (defaultLeft, defaultTop) = GetDefaultPosition();
             Left = defaultLeft;
             Top = defaultTop;
             _positionRestored = true;
         }
+        
+        UpdateRelativePosition();
     }
 
     private void Window_Loaded(object sender, RoutedEventArgs e)
@@ -112,6 +330,12 @@ public partial class ToolsWindow : Window
 
     private void Window_LocationChanged(object sender, EventArgs e)
     {
+        // Constrain position to stay within the canvas scroll area
+        if (IsLoaded && _positionRestored && _constraintElement != null && !_isDragging)
+        {
+            ConstrainToElement();
+        }
+        
         // Save position whenever the window is moved (but not during close or before loaded)
         if (!_isClosingForReal && IsLoaded && _positionRestored)
         {
@@ -130,6 +354,17 @@ public partial class ToolsWindow : Window
             e.Cancel = true;
             Hide();
             return;
+        }
+
+        // Unsubscribe from events
+        if (_constraintElement != null)
+        {
+            _constraintElement.SizeChanged -= ConstraintElement_SizeChanged;
+        }
+        if (_ownerWindow != null)
+        {
+            _ownerWindow.LocationChanged -= OwnerWindow_LocationChanged;
+            _ownerWindow.StateChanged -= OwnerWindow_StateChanged;
         }
 
         // Save position on actual close
@@ -152,7 +387,22 @@ public partial class ToolsWindow : Window
         // Allow dragging the window from anywhere
         if (e.LeftButton == MouseButtonState.Pressed)
         {
-            DragMove();
+            _isDragging = true;
+            try
+            {
+                DragMove();
+            }
+            finally
+            {
+                _isDragging = false;
+                
+                // After drag completes, constrain to element bounds and update relative position
+                if (_constraintElement != null)
+                {
+                    ConstrainToElement();
+                    UpdateRelativePosition();
+                }
+            }
         }
     }
 

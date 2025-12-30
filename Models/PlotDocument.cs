@@ -49,6 +49,14 @@ public sealed class LineStroke
     public Guid? GroupId { get; set; }
 
     /// <summary>
+    /// Parent Group ID for hierarchical grouping (used for subdivisions).
+    /// When a portion of a grouped stroke is subdivided, the new group becomes
+    /// a child of the original group. This allows showing all intermediate points
+    /// when the parent group is selected.
+    /// </summary>
+    public Guid? ParentGroupId { get; set; }
+
+    /// <summary>
     /// Indicates this stroke contains the START point of a grouped object.
     /// The start point is this stroke's A point. Used for selection indicators.
     /// For individual strokes (GroupId == null), this is always true.
@@ -63,24 +71,28 @@ public sealed class LineStroke
     public bool IsGroupEnd { get; set; }
 
     public LineStroke(PointMm a, PointMm b, Guid? paintWellId = null, Guid? groupId = null, 
-                      bool isGroupStart = false, bool isGroupEnd = false)
+                      bool isGroupStart = false, bool isGroupEnd = false, Guid? parentGroupId = null)
     {
         A = a;
         B = b;
         PaintWellId = paintWellId;
         GroupId = groupId;
+        ParentGroupId = parentGroupId;
         IsGroupStart = isGroupStart;
         IsGroupEnd = isGroupEnd;
     }
 
-    public LineStroke Reversed() => new LineStroke(B, A, PaintWellId, GroupId, IsGroupEnd, IsGroupStart);
+    public LineStroke Reversed() => new LineStroke(B, A, PaintWellId, GroupId, IsGroupEnd, IsGroupStart, ParentGroupId);
 
     /// <summary>Creates a copy with a different paint well assignment</summary>
-    public LineStroke WithPaintWell(Guid? paintWellId) => new LineStroke(A, B, paintWellId, GroupId, IsGroupStart, IsGroupEnd);
+    public LineStroke WithPaintWell(Guid? paintWellId) => new LineStroke(A, B, paintWellId, GroupId, IsGroupStart, IsGroupEnd, ParentGroupId);
 
     /// <summary>Creates a copy with a different group assignment</summary>
-    public LineStroke WithGroup(Guid? groupId) => new LineStroke(A, B, PaintWellId, groupId, IsGroupStart, IsGroupEnd);
+    public LineStroke WithGroup(Guid? groupId) => new LineStroke(A, B, PaintWellId, groupId, IsGroupStart, IsGroupEnd, ParentGroupId);
+
+    /// <summary>Creates a copy with a new parent group assignment</summary>
+    public LineStroke WithParentGroup(Guid? parentGroupId) => new LineStroke(A, B, PaintWellId, GroupId, IsGroupStart, IsGroupEnd, parentGroupId);
 
     /// <summary>Creates a copy with new start/end markers</summary>
-    public LineStroke WithMarkers(bool isGroupStart, bool isGroupEnd) => new LineStroke(A, B, PaintWellId, GroupId, isGroupStart, isGroupEnd);
+    public LineStroke WithMarkers(bool isGroupStart, bool isGroupEnd) => new LineStroke(A, B, PaintWellId, GroupId, isGroupStart, isGroupEnd, ParentGroupId);
 }
