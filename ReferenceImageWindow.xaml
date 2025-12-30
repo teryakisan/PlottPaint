@@ -1,0 +1,30 @@
+<Window x:Class="NVSPlotter.ReferenceImageWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Reference Image" Height="400" Width="420" WindowStartupLocation="CenterOwner">
+    <Window.Resources>
+        <ResourceDictionary>
+            <!-- Light theme styles for the reference window -->
+            <ResourceDictionary x:Key="LightReferenceResources">
+                <SolidColorBrush x:Key="RefBackgroundBrush" Color="#FFFFFFFF"/>
+                <SolidColorBrush x:Key="RefForegroundBrush" Color="#FF222222"/>
+                <SolidColorBrush x:Key="RefAccentBrush" Color="#FF007ACC"/>
+            </ResourceDictionary>
+
+            <!-- Dark theme styles for the reference window -->
+            <ResourceDictionary x:Key="DarkReferenceResources">
+                <SolidColorBrush x:Key="RefBackgroundBrush" Color="#FF1E1E1E"/>
+                <SolidColorBrush x:Key="RefForegroundBrush" Color="#FFF0F0F0"/>
+                <SolidColorBrush x:Key="RefAccentBrush" Color="#FF42A5F5"/>
+            </ResourceDictionary>
+        </ResourceDictionary>
+    </Window.Resources>
+
+    <Grid Background="{DynamicResource RefBackgroundBrush}">
+        <ScrollViewer VerticalScrollBarVisibility="Auto" Padding="10">
+            <Border Background="Transparent">
+                <ContentControl x:Name="HostContent"/>
+            </Border>
+        </ScrollViewer>
+    </Grid>
+</Window>

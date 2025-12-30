@@ -60,6 +60,11 @@
     <SolidColorBrush x:Key="ScrollBarTrackBrush" Color="{StaticResource ScrollBarTrackColor}"/>
     <SolidColorBrush x:Key="ScrollBarThumbBrush" Color="{StaticResource ScrollBarThumbColor}"/>
     <SolidColorBrush x:Key="ScrollBarThumbHoverBrush" Color="{StaticResource ScrollBarThumbHoverColor}"/>
+
+    <!-- Reference image specific brushes -->
+    <SolidColorBrush x:Key="RefBackgroundBrush" Color="#FF1E1E1E"/>
+    <SolidColorBrush x:Key="RefForegroundBrush" Color="#FFF0F0F0"/>
+    <SolidColorBrush x:Key="RefAccentBrush" Color="#FF42A5F5"/>
     
     <!-- ===== WINDOW STYLE ===== -->
     <Style x:Key="ThemedWindow" TargetType="Window">

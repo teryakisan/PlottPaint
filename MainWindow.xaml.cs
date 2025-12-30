@@ -52,6 +52,10 @@ namespace NVSPlotter
     public partial class MainWindow : Window
     {
 
+        // Floating reference image window
+        private ReferenceImageWindow? _referenceImageWindow;
+        private UIElement? _referenceExpanderContentsParented;
+
         // --- CONFIG
         private readonly Configuration _config = ConfigurationManager.OpenExeConfiguration(ConfigurationUserLevel.None);
 
@@ -129,6 +133,13 @@ namespace NVSPlotter
         {
             public int X;
             public int Y;
+        }
+
+        private void BrushProfilesBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var w = new Windows.BrushStrokeProfilesWindow { Owner = this };
+            w.Show();
+            w.Activate();
         }
 
         // G-code cache
@@ -310,6 +321,18 @@ namespace NVSPlotter
              InitializeToolsWindow();
              UpdatePaintWellsUI();
              InitializeThemeToggle();
+
+            // Wire up ReferenceView events when present
+            if (FindName("ReferenceView") is ReferenceImageView rv)
+            {
+                rv.ImportClicked += ImportImageBtn_Click;
+                rv.ClearClicked += ClearImageBtn_Click;
+                rv.ImageLockCheckBox.Click += ImageLockCheck_Click;
+                rv.RotationChanged += ImageRotateSlider_ValueChanged;
+                rv.RotationResetClicked += ImageRotateResetBtn_Click;
+                rv.FilterChanged += ImageFilterCombo_SelectionChanged;
+                rv.FilterSliderChanged += FilterControlSlider_ValueChanged;
+            }
         }
 
         private void FilterControlSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
@@ -2628,6 +2651,54 @@ namespace NVSPlotter
                     _toolsWindow.Show();
                 }
             };
+        }
+
+        private void ReferenceImageBtn_Click(object sender, RoutedEventArgs e)
+        {
+            // If window already open, activate
+            if (_referenceImageWindow != null)
+            {
+                if (_referenceImageWindow.IsVisible)
+                {
+                    _referenceImageWindow.Activate();
+                    return;
+                }
+            }
+
+            // Use the ReferenceView control instance and detach it from Expander to host in floating window
+            if (FindName("ReferenceView") is ReferenceImageView rv)
+            {
+                // Remove from current parent
+                var parent = VisualTreeHelper.GetParent(rv) as Panel;
+                if (parent != null)
+                {
+                    parent.Children.Remove(rv);
+                }
+
+                _referenceImageWindow = new ReferenceImageWindow
+                {
+                    Owner = this
+                };
+                _referenceImageWindow.SetContent(rv);
+                _referenceImageWindow.Closed += ReferenceImageWindow_Closed;
+                _referenceExpanderContentsParented = rv;
+                _referenceImageWindow.Show();
+            }
+        }
+
+        private void ReferenceImageWindow_Closed(object? sender, System.EventArgs e)
+        {
+            if (_referenceImageWindow == null) return;
+            // Restore contents back into the expander
+            if (_referenceExpanderContentsParented is ReferenceImageView rv && FindName("ReferenceExpander") is Expander exp)
+            {
+                exp.Content = null;
+                exp.Content = rv;
+            }
+
+            _referenceImageWindow.Closed -= ReferenceImageWindow_Closed;
+            _referenceImageWindow = null;
+            _referenceExpanderContentsParented = null;
         }
 
         /// <summary>

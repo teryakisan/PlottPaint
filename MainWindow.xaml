@@ -2,7 +2,7 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:gif="http://wpfanimatedgif.codeplex.com"
-        xmlns:Models="clr-namespace:NVSPlotter.Models" x:Name="MainContainerWindow" x:Class="NVSPlotter.MainWindow"
+        xmlns:Models="clr-namespace:NVSPlotter.Models" xmlns:local="clr-namespace:NVSPlotter" x:Name="MainContainerWindow" x:Class="NVSPlotter.MainWindow"
         Title="NVSPlotter" Width="1280" Height="807"
         WindowStartupLocation="CenterScreen"
         WindowState="Maximized" UseLayoutRounding="True"
@@ -272,69 +272,10 @@
                             </StackPanel>
                         </Expander>
                     </GroupBox>
-                    <GroupBox x:Name="ReferenceImage" Header="Reference Image" Margin="0,0,0,10">
-                        <StackPanel>
-                            <Expander Header="Settings">
-                                <StackPanel Margin="10">
-                                    <StackPanel x:Name="Reference" Orientation="Horizontal" Margin="0,0,0,5">
-                                        <TextBlock Text="Reference:" Width="90" VerticalAlignment="Center"/>
-                                        <Button x:Name="ImportImageBtn" Content="Import image" Width="79" Click="ImportImageBtn_Click"/>
-                                        <Button x:Name="ClearImageBtn" Content="Remove" Width="53" Margin="8,0,0,0" Click="ClearImageBtn_Click"/>
-                                        <CheckBox x:Name="ImageLockCheck" Content="Lock" Margin="8,0,0,0" VerticalAlignment="Center" Click="ImageLockCheck_Click"/>
-                                    </StackPanel>
-
-                                    <StackPanel x:Name="RefRotation" Orientation="Horizontal" Width="307" HorizontalAlignment="Left" Margin="0,0,0,5">
-                                        <TextBlock Text="Rotation:" Width="90" VerticalAlignment="Center"/>
-                                        <Slider x:Name="ImageRotateSlider" Minimum="-180" Maximum="180" Value="0" Width="93"
-                                            ValueChanged="ImageRotateSlider_ValueChanged"/>
-                                        <TextBlock x:Name="ImageRotateValue" Width="40" Margin="10,0,0,0" VerticalAlignment="Center" Text="0°"/>
-                                        <Button x:Name="ImageRotateResetBtn" Content="Reset" Width="50" Margin="8,0,0,0" Click="ImageRotateResetBtn_Click"/>
-                                    </StackPanel>
-
-                                    <StackPanel x:Name="RefImageFilter" Orientation="Horizontal" Margin="0,0,0,5">
-                                        <TextBlock Text="Image filter:" Width="90" VerticalAlignment="Center"/>
-                                        <ComboBox x:Name="ImageFilterCombo" Width="203" SelectedValuePath="Tag" SelectionChanged="ImageFilterCombo_SelectionChanged" IsEnabled="False">
-                                            <ComboBoxItem Content="None" Tag="None" IsSelected="True"/>
-                                            <ComboBoxItem Content="Grayscale" Tag="Grayscale"/>
-                                            <ComboBoxItem Content="Sepia" Tag="Sepia"/>
-                                            <ComboBoxItem Content="Invert" Tag="Invert"/>
-                                            <ComboBoxItem Content="High Contrast" Tag="HighContrast"/>
-                                            <Separator />
-                                            <ComboBoxItem Content="BrightnessUp" Tag="BrightnessUp"/>
-                                            <ComboBoxItem Content="BrightnessDown" Tag="BrightnessDown"/>
-                                            <Separator/>
-                                            <ComboBoxItem Content="ContrastBoost" Tag="ContrastBoost"/>
-                                            <ComboBoxItem Content="ContrastReduce" Tag="ContrastReduce"/>
-                                            <Separator/>
-                                            <ComboBoxItem Content="Gamma22" Tag="Gamma22"/>
-                                            <ComboBoxItem Content="Gamma08" Tag="Gamma08"/>
-                                            <Separator/>
-                                            <ComboBoxItem Content="Threshold128" Tag="Threshold128"/>
-                                            <ComboBoxItem Content="Solarize" Tag="Solarize"/>
-                                            <ComboBoxItem Content="Posterize6" Tag="Posterize6"/>
-                                            <Separator/>
-                                            <ComboBoxItem Content="Warm" Tag="Warm"/>
-                                            <ComboBoxItem Content="Cool" Tag="Cool"/>
-                                            <Separator/>
-                                            <ComboBoxItem Content="NightVision" Tag="NightVision"/>
-                                            <ComboBoxItem Content="RedOnly" Tag="RedOnly"/>
-                                            <ComboBoxItem Content="GreenOnly" Tag="GreenOnly"/>
-                                            <ComboBoxItem Content="BlueOnly" Tag="BlueOnly"/>
-                                            <Separator/>
-                                            <ComboBoxItem Content="SwapRB" Tag="SwapRB"/>
-                                            <ComboBoxItem Content="TintRed" Tag="TintRed"/>
-                                            <ComboBoxItem Content="TintCyan" Tag="TintCyan"/>
-                                            <Separator/>
-                                            <ComboBoxItem Content="BoxBlur3" Tag="BoxBlur3"/>
-                                            <ComboBoxItem Content="GaussianBlur5" Tag="GaussianBlur5"/>
-                                            <ComboBoxItem Content="Sharpen" Tag="Sharpen"/>
-                                            <ComboBoxItem Content="Emboss" Tag="Emboss"/>
-                                            <ComboBoxItem Content="SobelEdge" Tag="SobelEdge"/>
-                                            <ComboBoxItem Content="ReverseSobelEdge" Tag="ReverseSobelEdge"/>
-                                        </ComboBox>
-                                    </StackPanel>
-                                    <Slider x:Name="FilterControlSlider" TickFrequency="1" IsSnapToTickEnabled="True" Maximum="255" Minimum="1" TickPlacement="TopLeft" ValueChanged="FilterControlSlider_ValueChanged" Width="234" VerticalContentAlignment="Stretch" HorizontalContentAlignment="Stretch" HorizontalAlignment="Left"/>
-                                </StackPanel>
+                    <GroupBox x:Name="ReferenceImage" Header="Reference Image" Margin="0,0,0,10" Visibility="Collapsed">
+                        <StackPanel x:Name="ReferenceImagePanel">
+                            <Expander x:Name="ReferenceExpander" Header="Settings">
+                                <local:ReferenceImageView x:Name="ReferenceView"/>
                             </Expander>
                         </StackPanel>
                     </GroupBox>
@@ -470,6 +411,8 @@
                         <Button x:Name="SaveAsProjectBtn" DockPanel.Dock="Left" Content="Save As" Width="80" Margin="0,2,5,2" Click="SaveAsProjectBtn_Click" ToolTip="Save Project As (Ctrl+Shift+S)"/>
                         <Separator DockPanel.Dock="Left" Width="1" Background="{DynamicResource BorderBrush}" Margin="5,4"/>
                         <Button x:Name="ShowConsoleBtn" DockPanel.Dock="Left" Content="📋 Console" Width="87" Margin="5,2" Click="ShowConsoleBtn_Click" ToolTip="Show/Hide Console Window"/>
+                        <Button x:Name="ReferenceImageBtn" DockPanel.Dock="Left" Content="🖼 Reference" Width="95" Margin="5,2" Click="ReferenceImageBtn_Click" ToolTip="Open Reference Image Window"/>
+                        <Button x:Name="BrushProfilesBtn" DockPanel.Dock="Left" Content="🖌 Profiles" Width="95" Margin="5,2" Click="BrushProfilesBtn_Click" ToolTip="Open Brush Stroke Profiles"/>
                         
                         <!-- Theme Toggle Switch - docked to the right -->
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0,10,0">

@@ -1,0 +1,9 @@
+<UserControl x:Class="NVSPlotter.Controls.CurveEditor"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:local="clr-namespace:NVSPlotter.Controls"
+             Width="200" Height="200">
+    <Border Background="Transparent">
+        <Canvas x:Name="PART_Canvas" Background="Transparent" Focusable="True"/>
+    </Border>
+</UserControl>
