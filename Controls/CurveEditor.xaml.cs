@@ -11,6 +11,7 @@ using System.Windows.Media;
 using System.Windows.Media.Effects;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
+using Point = System.Windows.Point;
 
 namespace NVSPlotter.Controls
 {
@@ -19,6 +20,9 @@ namespace NVSPlotter.Controls
         // Control points in normalized coordinates (0..1). Index 0 = left endpoint, last = right endpoint.
         // The endpoints have X fixed at 0 and 1. Inner points can move freely but their X is clamped between neighbors.
         private readonly List<System.Windows.Point> controlPoints = new();
+        
+        // Tangent vectors for inner control points (stored as normalized offsets)
+        private readonly Dictionary<int, (Point leftTangent, Point rightTangent)> tangentVectors = new();
 
         // Visual elements
         private System.Windows.Shapes.Rectangle backgroundRect;
@@ -28,9 +32,15 @@ namespace NVSPlotter.Controls
         private System.Windows.Shapes.Line baseline;
         private List<System.Windows.Shapes.Line> _gridVerticalLines = new();
         private List<System.Windows.Shapes.Line> _gridHorizontalLines = new();
+        
+        // Bezier tangent handle visuals
+        private Dictionary<int, (Ellipse leftHandle, Ellipse rightHandle, Line leftLine, Line rightLine)> _tangentHandles = new();
+        
         private const int GRID_DIVISIONS = 8; // number of equal subdivisions per axis
 
         private const double HANDLE_RADIUS = 6.0;
+        private const double TANGENT_HANDLE_RADIUS = 5.0;
+        private const double DEFAULT_TANGENT_LENGTH = 30.0; // pixels
 
         // Mapping properties
         public static readonly DependencyProperty BedWidthMmProperty = DependencyProperty.Register(
@@ -54,15 +64,55 @@ namespace NVSPlotter.Controls
             nameof(SampleCount), typeof(int), typeof(CurveEditor), new PropertyMetadata(200));
         public int SampleCount { get => (int)GetValue(SampleCountProperty); set => SetValue(SampleCountProperty, value); }
 
+        // Brush stroke properties
+        public static readonly DependencyProperty StrokeSpeedProperty = DependencyProperty.Register(
+            nameof(StrokeSpeed), typeof(double), typeof(CurveEditor), new PropertyMetadata(100.0, OnPropertyChanged));
+        public double StrokeSpeed { get => (double)GetValue(StrokeSpeedProperty); set => SetValue(StrokeSpeedProperty, value); }
+
+        public static readonly DependencyProperty PressureMultiplierProperty = DependencyProperty.Register(
+            nameof(PressureMultiplier), typeof(double), typeof(CurveEditor), new PropertyMetadata(1.0, OnPropertyChanged));
+        public double PressureMultiplier { get => (double)GetValue(PressureMultiplierProperty); set => SetValue(PressureMultiplierProperty, value); }
+
+        public static readonly DependencyProperty EnabledProperty = DependencyProperty.Register(
+            nameof(Enabled), typeof(bool), typeof(CurveEditor), new PropertyMetadata(true, OnPropertyChanged));
+        public bool Enabled { get => (bool)GetValue(EnabledProperty); set => SetValue(EnabledProperty, value); }
+
+        public static readonly DependencyProperty DescriptionProperty = DependencyProperty.Register(
+            nameof(Description), typeof(string), typeof(CurveEditor), new PropertyMetadata(string.Empty, OnPropertyChanged));
+        public string Description { get => (string)GetValue(DescriptionProperty); set => SetValue(DescriptionProperty, value); }
+
+        private static void OnPropertyChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (d is CurveEditor ce)
+            {
+                ce.SettingsChanged?.Invoke(ce, EventArgs.Empty);
+            }
+        }
+
         public event EventHandler<IList<(double Xmm, double Zmm)>>? CurveUpdated;
         public static readonly DependencyProperty ProfileNameProperty = DependencyProperty.Register(
             nameof(ProfileName), typeof(string), typeof(CurveEditor), new PropertyMetadata(string.Empty));
 
         public string ProfileName { get => (string)GetValue(ProfileNameProperty); set => SetValue(ProfileNameProperty, value); }
 
-        public event EventHandler? ProfileSelected;
         public event EventHandler<string>? ProfileRenamed;
         public event EventHandler? ProfileDeleted;
+        public event EventHandler? SettingsChanged; // Raised when icon states or other settings change
+        
+        public static readonly DependencyProperty IsInGroupProperty = DependencyProperty.Register(
+            nameof(IsInGroup), typeof(bool), typeof(CurveEditor), new PropertyMetadata(false, OnIsInGroupChanged));
+
+        public bool IsInGroup { get => (bool)GetValue(IsInGroupProperty); set => SetValue(IsInGroupProperty, value); }
+
+        private static void OnIsInGroupChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (d is CurveEditor ce)
+            {
+                ce.UpdateIsInGroupIcon();
+                ce.SettingsChanged?.Invoke(ce, EventArgs.Empty);
+            }
+        }
+        
         public static readonly DependencyProperty IsSelectedProperty = DependencyProperty.Register(
             nameof(IsSelected), typeof(bool), typeof(CurveEditor), new PropertyMetadata(false, OnIsSelectedChanged));
 
@@ -73,6 +123,22 @@ namespace NVSPlotter.Controls
             if (d is CurveEditor ce)
             {
                 ce.UpdateSelectionVisual((bool)e.NewValue);
+            }
+        }
+
+        public static readonly DependencyProperty ShowTangentHandlesProperty = DependencyProperty.Register(
+            nameof(ShowTangentHandles), typeof(bool), typeof(CurveEditor), new PropertyMetadata(true, OnShowTangentHandlesChanged));
+
+        public bool ShowTangentHandles { get => (bool)GetValue(ShowTangentHandlesProperty); set => SetValue(ShowTangentHandlesProperty, value); }
+
+        private static void OnShowTangentHandlesChanged(DependencyObject d, DependencyPropertyChangedEventArgs e)
+        {
+            if (d is CurveEditor ce)
+            {
+                ce.RenderAll();
+                ce.UpdateTangentHandleToggleIcon();
+                // Auto-save when tangent handle visibility changes
+                ce.SettingsChanged?.Invoke(ce, EventArgs.Empty);
             }
         }
 
@@ -87,8 +153,48 @@ namespace NVSPlotter.Controls
                 controlPoints.Add(new System.Windows.Point(Clamp01(p.X), Clamp01(p.Y)));
             }
             EnsureEndpointsAndOrdering();
+            InitializeDefaultTangents();
             RenderAll();
             CurveChangedInternal();
+        }
+
+        // Expose tangent vectors for serialization
+        public Dictionary<int, (Point leftTangent, Point rightTangent)> GetTangentVectors()
+        {
+            return new Dictionary<int, (Point, Point)>(tangentVectors);
+        }
+
+        public void SetTangentVectors(Dictionary<int, (Point leftTangent, Point rightTangent)> tangents)
+        {
+            tangentVectors.Clear();
+            if (tangents != null)
+            {
+                foreach (var kvp in tangents)
+                {
+                    tangentVectors[kvp.Key] = kvp.Value;
+                }
+            }
+            else
+            {
+                InitializeDefaultTangents();
+            }
+        }
+
+        private void InitializeDefaultTangents()
+        {
+            // Initialize horizontal tangents for inner points (indices 1, 2, 3)
+            // Make them longer and symmetric
+            for (int i = 1; i < controlPoints.Count - 1; i++)
+            {
+                if (!tangentVectors.ContainsKey(i))
+                {
+                    // Default: horizontal tangents, longer length (0.1 normalized units = ~20-40 pixels)
+                    tangentVectors[i] = (
+                        new Point(-0.1, 0), // left tangent
+                        new Point(0.1, 0)   // right tangent (symmetric opposite)
+                    );
+                }
+            }
         }
 
         private void EnsureEndpointsAndOrdering()
@@ -131,6 +237,7 @@ namespace NVSPlotter.Controls
         private void CurveEditor_Loaded(object sender, RoutedEventArgs e)
         {
             SetupVisuals();
+            InitializeDefaultTangents();
             RenderAll();
         }
 
@@ -147,6 +254,7 @@ namespace NVSPlotter.Controls
         {
             var c = PART_Canvas;
             c.Children.Clear();
+            _tangentHandles.Clear();
 
             // background grid (4 quadrants)
             backgroundRect = new System.Windows.Shapes.Rectangle();
@@ -184,7 +292,27 @@ namespace NVSPlotter.Controls
             curvePath.SetResourceReference(System.Windows.Shapes.Path.StrokeProperty, "RefAccentBrush");
             c.Children.Add(curvePath);
 
-            // create five handles
+            // Create tangent handles for inner points (indices 1, 2, 3)
+            for (int i = 1; i < 4; i++)
+            {
+                var leftLine = new Line { StrokeThickness = 2, Opacity = 0.8 };
+                leftLine.SetResourceReference(Line.StrokeProperty, "RefAccentBrush");
+                c.Children.Add(leftLine);
+
+                var rightLine = new Line { StrokeThickness = 2, Opacity = 0.8 };
+                rightLine.SetResourceReference(Line.StrokeProperty, "RefAccentBrush");
+                c.Children.Add(rightLine);
+
+                var leftHandle = CreateTangentHandle();
+                c.Children.Add(leftHandle);
+
+                var rightHandle = CreateTangentHandle();
+                c.Children.Add(rightHandle);
+
+                _tangentHandles[i] = (leftHandle, rightHandle, leftLine, rightLine);
+            }
+
+            // create five main handles
             // ensure control points exist
             EnsureEndpointsAndOrdering();
 
@@ -201,19 +329,39 @@ namespace NVSPlotter.Controls
                 var grid = root.Child as Grid;
                 if (grid != null)
                 {
-                    var selectBtn = grid.FindName("BtnSelectProfile") as System.Windows.Controls.Button;
+                    var toggleTangentBtn = grid.FindName("BtnToggleTangentHandles") as System.Windows.Controls.Button;
+                    var isInGroupBtn = grid.FindName("BtnIsInGroup") as System.Windows.Controls.Button;
                     var renameBtn = grid.FindName("BtnRenameProfile") as System.Windows.Controls.Button;
                     var deleteBtn = grid.FindName("BtnDeleteProfile") as System.Windows.Controls.Button;
-                    if (selectBtn != null) selectBtn.Click += (_, __) => OnSelectProfile();
+                    if (toggleTangentBtn != null) toggleTangentBtn.Click += (_, __) => OnToggleTangentHandles();
+                    if (isInGroupBtn != null) isInGroupBtn.Click += (_, __) => OnToggleIsInGroup();
                     if (renameBtn != null) renameBtn.Click += RenameBtn_Click;
                     if (deleteBtn != null) deleteBtn.Click += (_, __) => OnDeleteProfile();
                 }
             }
             UpdateSelectionVisual(IsSelected);
+            UpdateTangentHandleToggleIcon();
+            UpdateIsInGroupIcon();
 
             PART_Canvas.MouseLeftButtonDown += Canvas_MouseLeftButtonDown;
             PART_Canvas.MouseMove += PART_Canvas_MouseMove;
             PART_Canvas.MouseLeftButtonUp += PART_Canvas_MouseLeftButtonUp;
+        }
+
+        private Ellipse CreateTangentHandle()
+        {
+            var e = new Ellipse
+            {
+                Width = TANGENT_HANDLE_RADIUS * 2,
+                Height = TANGENT_HANDLE_RADIUS * 2,
+                StrokeThickness = 2,
+                Cursor = System.Windows.Input.Cursors.Hand,
+                Opacity = 0.9
+            };
+            e.SetResourceReference(Ellipse.FillProperty, "RefAccentBrush");
+            e.SetResourceReference(Ellipse.StrokeProperty, "ControlBackgroundBrush");
+            e.MouseLeftButtonDown += TangentHandle_MouseLeftButtonDown;
+            return e;
         }
 
         private System.Windows.Shapes.Ellipse CreateHandle()
@@ -233,6 +381,9 @@ namespace NVSPlotter.Controls
         }
 
         private System.Windows.UIElement? draggingHandle = null;
+        private UIElement? draggingTangentHandle = null;
+        private int draggingTangentPointIndex = -1;
+        private bool draggingTangentIsLeft = false;
         private System.Windows.Point dragStart;
 
         private void Handle_MouseLeftButtonDown(object? sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -246,10 +397,59 @@ namespace NVSPlotter.Controls
             }
         }
 
-        private void OnSelectProfile()
+        private void TangentHandle_MouseLeftButtonDown(object? sender, MouseButtonEventArgs e)
         {
-            IsSelected = !IsSelected;
-            ProfileSelected?.Invoke(this, EventArgs.Empty);
+            if (sender is UIElement el)
+            {
+                // Find which tangent handle was clicked
+                foreach (var kvp in _tangentHandles)
+                {
+                    if (ReferenceEquals(kvp.Value.leftHandle, el))
+                    {
+                        draggingTangentHandle = el;
+                        draggingTangentPointIndex = kvp.Key;
+                        draggingTangentIsLeft = true;
+                        PART_Canvas.CaptureMouse();
+                        e.Handled = true;
+                        return;
+                    }
+                    else if (ReferenceEquals(kvp.Value.rightHandle, el))
+                    {
+                        draggingTangentHandle = el;
+                        draggingTangentPointIndex = kvp.Key;
+                        draggingTangentIsLeft = false;
+                        PART_Canvas.CaptureMouse();
+                        e.Handled = true;
+                        return;
+                    }
+                }
+            }
+        }
+
+        private void OnToggleIsInGroup()
+        {
+            IsInGroup = !IsInGroup;
+        }
+
+        private void OnToggleTangentHandles()
+        {
+            ShowTangentHandles = !ShowTangentHandles;
+        }
+
+        private void UpdateTangentHandleToggleIcon()
+        {
+            var root = this.Content as Border;
+            if (root == null) return;
+            var grid = root.Child as Grid;
+            if (grid == null) return;
+            var toggleBtn = grid.FindName("BtnToggleTangentHandles") as System.Windows.Controls.Button;
+            if (toggleBtn == null) return;
+            
+            var img = toggleBtn.Content as ImageAwesome;
+            if (img != null)
+            {
+                img.Foreground = ShowTangentHandles ? (Brush)FindResource("RefAccentBrush") : (Brush)FindResource("RefForegroundBrush");
+            }
         }
 
         private void UpdateSelectionVisual(bool selected)
@@ -280,25 +480,30 @@ namespace NVSPlotter.Controls
 
         private void UpdateActiveIconColor()
         {
+            // This method is kept for backward compatibility but may not be needed
+            // Selection visual is now handled by UpdateSelectionVisual
+        }
+
+        private void UpdateIsInGroupIcon()
+        {
             var root = this.Content as Border;
             if (root == null) return;
             var grid = root.Child as Grid;
             if (grid == null) return;
-            var selectBtn = grid.FindName("BtnSelectProfile") as System.Windows.Controls.Button;
-            if (selectBtn == null) return;
-            var icon = selectBtn.Content as FrameworkElement;
-            // FontAwesome ImageAwesome is used; find it and set Foreground
-            var img = selectBtn.Content as ImageAwesome;
+            var isInGroupBtn = grid.FindName("BtnIsInGroup") as System.Windows.Controls.Button;
+            if (isInGroupBtn == null) return;
+            
+            var img = isInGroupBtn.Content as ImageAwesome;
             if (img != null)
             {
-                img.Foreground = IsSelected ? Brushes.LimeGreen : (Brush)FindResource("RefForegroundBrush");
+                img.Foreground = IsInGroup ? Brushes.LimeGreen : (Brush)FindResource("RefForegroundBrush");
             }
             else
             {
                 // fallback: textblock
-                if (selectBtn.Content is TextBlock tb)
+                if (isInGroupBtn.Content is TextBlock tb)
                 {
-                    tb.Foreground = IsSelected ? Brushes.LimeGreen : (Brush)FindResource("RefForegroundBrush");
+                    tb.Foreground = IsInGroup ? Brushes.LimeGreen : (Brush)FindResource("RefForegroundBrush");
                 }
             }
         }
@@ -310,6 +515,8 @@ namespace NVSPlotter.Controls
             {
                 ProfileName = input;
                 ProfileRenamed?.Invoke(this, input);
+                // Auto-save when profile name changes
+                SettingsChanged?.Invoke(this, EventArgs.Empty);
             }
         }
 
@@ -317,6 +524,37 @@ namespace NVSPlotter.Controls
         {
             // raise event; caller may remove the editor from grid
             ProfileDeleted?.Invoke(this, EventArgs.Empty);
+            
+            // Find and remove the containing Border/Grid element
+            DependencyObject? parent = this;
+            while (parent != null)
+            {
+                parent = System.Windows.Media.VisualTreeHelper.GetParent(parent);
+                
+                // Look for the Border that contains the Grid that contains this CurveEditor
+                if (parent is Border border)
+                {
+                    var borderParent = System.Windows.Media.VisualTreeHelper.GetParent(border);
+                    // Check if the parent has a Children collection (Panel types like WrapPanel, Grid, etc.)
+                    if (borderParent != null)
+                    {
+                        var childrenProperty = borderParent.GetType().GetProperty("Children");
+                        if (childrenProperty != null)
+                        {
+                            var children = childrenProperty.GetValue(borderParent) as System.Windows.Controls.UIElementCollection;
+                            if (children != null)
+                            {
+                                // Remove the entire Border from its parent panel
+                                children.Remove(border);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Auto-save after profile deletion
+            SettingsChanged?.Invoke(this, EventArgs.Empty);
         }
 
         private void Canvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -327,10 +565,46 @@ namespace NVSPlotter.Controls
 
         private void PART_Canvas_MouseMove(object? sender, System.Windows.Input.MouseEventArgs e)
         {
-            if (draggingHandle == null) return;
             var p = e.GetPosition(PART_Canvas);
             var w = PART_Canvas.ActualWidth;
             var h = PART_Canvas.ActualHeight;
+
+            // Handle tangent handle dragging
+            if (draggingTangentHandle != null && draggingTangentPointIndex >= 0)
+            {
+                var centerPt = controlPoints[draggingTangentPointIndex];
+                var centerPixel = new Point(centerPt.X * w, centerPt.Y * h);
+                
+                // Calculate tangent vector in normalized space
+                var dx = (p.X - centerPixel.X) / w;
+                var dy = (p.Y - centerPixel.Y) / h;
+                
+                var tangent = new Point(dx, dy);
+                
+                // Calculate the opposite tangent (mirrored through center point)
+                // If moving left handle, right handle moves opposite
+                // If moving right handle, left handle moves opposite
+                var oppositeTangent = new Point(-dx, -dy);
+                
+                if (draggingTangentIsLeft)
+                {
+                    // Moving left handle: update left, mirror to right
+                    tangentVectors[draggingTangentPointIndex] = (tangent, oppositeTangent);
+                }
+                else
+                {
+                    // Moving right handle: update right, mirror to left
+                    tangentVectors[draggingTangentPointIndex] = (oppositeTangent, tangent);
+                }
+                
+                RenderAll();
+                CurveChangedInternal();
+                return;
+            }
+
+            // Handle main control point dragging
+            if (draggingHandle == null) return;
+            
             var nx = Clamp01(p.X / Math.Max(1, w));
             var ny = Clamp01(p.Y / Math.Max(1, h));
 
@@ -364,10 +638,21 @@ namespace NVSPlotter.Controls
 
         private void PART_Canvas_MouseLeftButtonUp(object? sender, System.Windows.Input.MouseButtonEventArgs e)
         {
-            if (draggingHandle != null)
+            if (draggingHandle != null || draggingTangentHandle != null)
             {
+                // Auto-save when handle dragging completes
+                bool wasDragging = (draggingHandle != null || draggingTangentHandle != null);
+                
                 draggingHandle = null;
+                draggingTangentHandle = null;
+                draggingTangentPointIndex = -1;
                 PART_Canvas.ReleaseMouseCapture();
+                
+                // Trigger auto-save after handle movement completes
+                if (wasDragging)
+                {
+                    SettingsChanged?.Invoke(this, EventArgs.Empty);
+                }
             }
         }
 
@@ -409,28 +694,106 @@ namespace NVSPlotter.Controls
             EnsureEndpointsAndOrdering();
             var pts = controlPoints.ToArray();
             var pixelPts = pts.Select(pt => new System.Windows.Point(pt.X * w, pt.Y * h)).ToArray();
-            var x0 = pixelPts[0].X; var y0 = pixelPts[0].Y;
-            var x3 = pixelPts[pixelPts.Length - 1].X; var y3 = pixelPts[pixelPts.Length - 1].Y;
 
-            // build bezier as poly-bezier through control points (approximate using cubic segments)
+            // Render tangent handles for inner points
+            foreach (var kvp in _tangentHandles)
+            {
+                int idx = kvp.Key;
+                if (idx >= pixelPts.Length) continue;
+                
+                var centerPt = pixelPts[idx];
+                var (leftHandle, rightHandle, leftLine, rightLine) = kvp.Value;
+                
+                // Check if tangent handles should be visible
+                if (ShowTangentHandles && tangentVectors.TryGetValue(idx, out var tangents))
+                {
+                    var leftTangentPixel = new Point(
+                        centerPt.X + tangents.leftTangent.X * w,
+                        centerPt.Y + tangents.leftTangent.Y * h
+                    );
+                    var rightTangentPixel = new Point(
+                        centerPt.X + tangents.rightTangent.X * w,
+                        centerPt.Y + tangents.rightTangent.Y * h
+                    );
+                    
+                    // Position left tangent line and handle
+                    leftLine.X1 = centerPt.X;
+                    leftLine.Y1 = centerPt.Y;
+                    leftLine.X2 = leftTangentPixel.X;
+                    leftLine.Y2 = leftTangentPixel.Y;
+                    leftLine.Visibility = Visibility.Visible;
+                    
+                    Canvas.SetLeft(leftHandle, leftTangentPixel.X - TANGENT_HANDLE_RADIUS);
+                    Canvas.SetTop(leftHandle, leftTangentPixel.Y - TANGENT_HANDLE_RADIUS);
+                    leftHandle.Visibility = Visibility.Visible;
+                    
+                    // Position right tangent line and handle
+                    rightLine.X1 = centerPt.X;
+                    rightLine.Y1 = centerPt.Y;
+                    rightLine.X2 = rightTangentPixel.X;
+                    rightLine.Y2 = rightTangentPixel.Y;
+                    rightLine.Visibility = Visibility.Visible;
+                    
+                    Canvas.SetLeft(rightHandle, rightTangentPixel.X - TANGENT_HANDLE_RADIUS);
+                    Canvas.SetTop(rightHandle, rightTangentPixel.Y - TANGENT_HANDLE_RADIUS);
+                    rightHandle.Visibility = Visibility.Visible;
+                }
+                else
+                {
+                    leftLine.Visibility = Visibility.Collapsed;
+                    rightLine.Visibility = Visibility.Collapsed;
+                    leftHandle.Visibility = Visibility.Collapsed;
+                    rightHandle.Visibility = Visibility.Collapsed;
+                }
+            }
+
+            // build bezier using tangent handles
             var pg = new PathGeometry();
             var pf = new System.Windows.Media.PathFigure { StartPoint = new System.Windows.Point(pixelPts[0].X, pixelPts[0].Y), IsClosed = false };
 
-            // Create cubic bezier segments between successive points using Hermite-style interpolation for smoothness
+            // Create cubic bezier segments between successive points using tangent handles
             for (int i = 1; i < pixelPts.Length; i++)
             {
                 var pPrev = pixelPts[i - 1];
                 var pCurr = pixelPts[i];
-                // simple control handles: tangent-based
-                var dx = (pCurr.X - pPrev.X);
-                var c1 = new System.Windows.Point(pPrev.X + dx * 0.33, pPrev.Y + dx * 0.0);
-                var c2 = new System.Windows.Point(pPrev.X + dx * 0.66, pCurr.Y + dx * 0.0);
+                
+                // Get tangent for control points
+                Point c1, c2;
+                
+                // Right tangent of previous point
+                if (tangentVectors.TryGetValue(i - 1, out var prevTangents))
+                {
+                    c1 = new Point(
+                        pPrev.X + prevTangents.rightTangent.X * w,
+                        pPrev.Y + prevTangents.rightTangent.Y * h
+                    );
+                }
+                else
+                {
+                    var dx = (pCurr.X - pPrev.X);
+                    c1 = new Point(pPrev.X + dx * 0.33, pPrev.Y);
+                }
+                
+                // Left tangent of current point
+                if (tangentVectors.TryGetValue(i, out var currTangents))
+                {
+                    c2 = new Point(
+                        pCurr.X + currTangents.leftTangent.X * w,
+                        pCurr.Y + currTangents.leftTangent.Y * h
+                    );
+                }
+                else
+                {
+                    var dx = (pCurr.X - pPrev.X);
+                    c2 = new Point(pPrev.X + dx * 0.66, pCurr.Y);
+                }
+                
                 pf.Segments.Add(new System.Windows.Media.BezierSegment(c1, c2, pCurr, true));
             }
             pg.Figures.Add(pf);
             curvePath.Data = pg;
 
-            // place handles for up to five control points (or fewer)
+            // place main handles for up to five control points (or fewer)
             var handles = new[] { handleP0, handleP1, handleP2, handleP3, handleP4 };
             for (int i = 0; i < handles.Length; i++)
             {
@@ -480,16 +843,16 @@ namespace NVSPlotter.Controls
                     if (cw != null)
                     {
                         cw.Dispatcher.Invoke(() => cw.AppendLog($"{controlId} - {dataStr}"));
-                    }
-                    else
-                    {
+                      }
+                      else
+                      {
                         // fallback to standard console
                         Console.WriteLine($"{controlId} - {dataStr}");
-                    }
+                      }
                 }
                 else
                 {
-                    Console.WriteLine($"{controlId} - {dataStr}");
+                  Console.WriteLine($"{controlId} - {dataStr}");
                 }
             }
             catch

@@ -14,6 +14,8 @@ namespace NVSPlotter.Windows
     public partial class BrushStrokeProfilesWindow : Window
     {
         private readonly List<CurveEditor> _editors = new();
+        private CurveEditor? _selectedEditor = null;
+        private bool _isUpdatingProperties = false;
 
         public BrushStrokeProfilesWindow()
         {
@@ -23,12 +25,50 @@ namespace NVSPlotter.Windows
             ClearAllBtn.Click += ClearAllBtn_Click;
             SaveProfileBtn.Click += SaveProfileBtn_Click;
             CloseBtn.Click += (_, __) => Close();
+            
+            UpdatePropertiesPanel();
+        }
+
+        private void PropertiesExpander_Expanded(object sender, RoutedEventArgs e)
+        {
+            // Animate from current width to expanded width (current + panel width)
+            double currentWidth = this.ActualWidth;
+            double targetWidth = Math.Max(875, currentWidth + 260); // Ensure we expand by at least 260px
+            AnimateWindowWidth(currentWidth, targetWidth, 1.0);
+        }
+
+        private void PropertiesExpander_Collapsed(object sender, RoutedEventArgs e)
+        {
+            // Animate from current width to collapsed width (MinWidth or current - panel width)
+            double currentWidth = this.ActualWidth;
+            double targetWidth = Math.Max(this.MinWidth, currentWidth - 260); // Respect MinWidth
+            AnimateWindowWidth(currentWidth, targetWidth, 0.5);
+        }
+
+        private void AnimateWindowWidth(double from, double to, double durationSeconds)
+        {
+            // Ensure we respect MinWidth
+            to = Math.Max(this.MinWidth, to);
+            from = Math.Max(this.MinWidth, from);
+            
+            var animation = new System.Windows.Media.Animation.DoubleAnimation
+            {
+                From = from,
+                To = to,
+                Duration = TimeSpan.FromSeconds(durationSeconds),
+                EasingFunction = new System.Windows.Media.Animation.PowerEase { EasingMode = System.Windows.Media.Animation.EasingMode.EaseInOut }
+            };
+            
+            this.BeginAnimation(Window.WidthProperty, animation);
         }
 
         // Use generated InitializeComponent from XAML
 
         private void BrushStrokeProfilesWindow_Loaded(object sender, RoutedEventArgs e)
         {
+            // Set MinWidth to the current width (collapsed state)
+            this.MinWidth = this.ActualWidth;
+            
             // collect editors present
             _editors.Clear();
             foreach (var child in ProfilesGrid.Children)
@@ -36,16 +76,16 @@ namespace NVSPlotter.Windows
                 if (child is Border b && b.Child is Grid g && g.Children.OfType<Controls.CurveEditor>().FirstOrDefault() is CurveEditor ce)
                 {
                     _editors.Add(ce);
-                    ce.ProfileSelected += Editor_ProfileSelected;
                     ce.ProfileRenamed += Editor_ProfileRenamed;
                     ce.ProfileDeleted += Editor_ProfileDeleted;
+                    ce.SettingsChanged += Editor_SettingsChanged;
                 }
                 else if (child is Controls.CurveEditor ce2)
                 {
                     _editors.Add(ce2);
-                    ce2.ProfileSelected += Editor_ProfileSelected;
                     ce2.ProfileRenamed += Editor_ProfileRenamed;
                     ce2.ProfileDeleted += Editor_ProfileDeleted;
+                    ce2.SettingsChanged += Editor_SettingsChanged;
                 }
             }
 
@@ -64,50 +104,64 @@ namespace NVSPlotter.Windows
             // handle updates (e.g., preview or live send)
         }
 
-        private void Editor_ProfileSelected(object? sender, EventArgs e)
-        {
-            // ensure single selection: deselect others
-            foreach (var ce in _editors)
-            {
-                if (!ReferenceEquals(ce, sender))
-                {
-                    ce.ProfileSelected -= Editor_ProfileSelected; // avoid reentrancy
-                    // deselect by toggling select state via reflection: set background stroke thickness
-                    // simplest method: force redraw of editor
-                    ce.InvalidateVisual();
-                    ce.ProfileSelected += Editor_ProfileSelected;
-                }
-            }
-        }
-
         private void Editor_ProfileRenamed(object? sender, string e)
         {
             // optional: persist name mapping when saving
+        }
+
+        private void Editor_SettingsChanged(object? sender, EventArgs e)
+        {
+            // Auto-save when settings like ShowTangentHandles change
+            SaveProfiles();
         }
 
         private void Editor_ProfileDeleted(object? sender, EventArgs e)
         {
             if (sender is CurveEditor ce)
             {
-                // remove from grid
-                foreach (var child in ProfilesGrid.Children)
-                {
-                    if (child is Border b && b.Child is Grid g && g.Children.Contains(ce))
-                    {
-                        g.Children.Remove(ce);
-                        // show placeholder textblock if exists
-                        var tb = g.Children.OfType<TextBlock>().FirstOrDefault();
-                        if (tb != null) tb.Visibility = Visibility.Visible;
-                        break;
-                    }
-                }
+                // The CurveEditor now removes its containing Border element itself,
+                // so we just need to clean up our internal list
                 _editors.Remove(ce);
+                
+                // If the deleted editor was selected, clear the selection
+                if (_selectedEditor == ce)
+                {
+                    _selectedEditor = null;
+                    UpdatePropertiesPanel();
+                }
             }
         }
 
         private void FirstEmptyCell_Click(object sender, MouseButtonEventArgs e)
         {
             AddNewProfile();
+        }
+
+        private void CurveEditorCell_Click(object sender, MouseButtonEventArgs e)
+        {
+            // Find the CurveEditor within the clicked Border
+            if (sender is Border border && border.Child is Grid grid)
+            {
+                var curveEditor = grid.Children.OfType<CurveEditor>().FirstOrDefault();
+                if (curveEditor != null)
+                {
+                    SelectCurveEditor(curveEditor);
+                }
+            }
+        }
+
+        private void SelectCurveEditor(CurveEditor editor)
+        {
+            // Deselect all others
+            foreach (var ce in _editors)
+            {
+                ce.IsSelected = false;
+            }
+            
+            // Select the clicked one
+            editor.IsSelected = true;
+            _selectedEditor = editor;
+            UpdatePropertiesPanel();
         }
 
         private void ClearAllBtn_Click(object? sender, RoutedEventArgs e)
@@ -139,6 +193,7 @@ namespace NVSPlotter.Windows
             initialBorder.SetResourceReference(Border.BorderBrushProperty, "BorderBrush");
             initialBorder.BorderThickness = new Thickness(1);
             initialBorder.SetResourceReference(Border.BackgroundProperty, "RefBackgroundBrush");
+            initialBorder.MouseLeftButtonDown += CurveEditorCell_Click;
 
             var initialGrid = new Grid();
             var initialRect = new System.Windows.Shapes.Rectangle
@@ -164,9 +219,9 @@ namespace NVSPlotter.Windows
             ProfilesGrid.Children.Add(initialBorder);
             
             initialCe.CurveUpdated += Editor_CurveUpdated;
-            initialCe.ProfileSelected += Editor_ProfileSelected;
             initialCe.ProfileRenamed += Editor_ProfileRenamed;
             initialCe.ProfileDeleted += Editor_ProfileDeleted;
+            initialCe.SettingsChanged += Editor_SettingsChanged;
             _editors.Add(initialCe);
 
             // Add first empty cell with plus icon
@@ -259,10 +314,15 @@ namespace NVSPlotter.Windows
                 var ce = new CurveEditor { Width = 220, Height = 220 };
                 grid.Children.Add(ce);
                 ce.CurveUpdated += Editor_CurveUpdated;
-                ce.ProfileSelected += Editor_ProfileSelected;
                 ce.ProfileRenamed += Editor_ProfileRenamed;
                 ce.ProfileDeleted += Editor_ProfileDeleted;
+                ce.SettingsChanged += Editor_SettingsChanged;
                 _editors.Add(ce);
+                
+                // Add click handler to the border for selection
+                border.MouseLeftButtonDown -= FirstEmptyCell_Click; // Remove the "add" click handler
+                border.MouseLeftButtonDown += CurveEditorCell_Click; // Add the selection click handler
+                border.Cursor = System.Windows.Input.Cursors.Arrow; // Change cursor back to normal
                 
                 // ensure newly created editor is visible
                 EnsureElementFullyVisible(ce);
@@ -449,7 +509,22 @@ namespace NVSPlotter.Windows
             {
                 var pts = ce.GetNormalizedPoints();
                 var list = pts.Select(p => new SerializablePoint { X = p.X, Y = p.Y }).ToList();
-                profiles.Add(new SerializableProfile { Points = list, Name = ce.ProfileName ?? string.Empty, IsSelected = ce.IsSelected });
+                profiles.Add(new SerializableProfile 
+                { 
+                    Points = list, 
+                    Name = ce.ProfileName ?? string.Empty, 
+                    IsSelected = ce.IsSelected,
+                    IsInGroup = ce.IsInGroup,
+                    ShowTangentHandles = ce.ShowTangentHandles,
+                    StrokeSpeed = ce.StrokeSpeed,
+                    PressureMultiplier = ce.PressureMultiplier,
+                    Enabled = ce.Enabled,
+                    Description = ce.Description ?? string.Empty,
+                    BedWidthMm = ce.BedWidthMm,
+                    MinZ = ce.MinZ,
+                    MaxZ = ce.MaxZ,
+                    SampleCount = ce.SampleCount
+                });
             }
 
             var path = GetProfilesPath();
@@ -480,9 +555,15 @@ namespace NVSPlotter.Windows
                             ce = new CurveEditor { Width = 220, Height = 220 };
                             g.Children.Add(ce);
                             ce.CurveUpdated += Editor_CurveUpdated;
+                            ce.ProfileRenamed += Editor_ProfileRenamed;
+                            ce.ProfileDeleted += Editor_ProfileDeleted;
+                            ce.SettingsChanged += Editor_SettingsChanged;
                             _editors.Add(ce);
                             var tb = g.Children.OfType<TextBlock>().FirstOrDefault();
                             if (tb != null) tb.Visibility = Visibility.Collapsed;
+                            
+                            // Add click handler to the border for selection
+                            b.MouseLeftButtonDown += CurveEditorCell_Click;
                         }
 
                         // ensure background for this cell exists
@@ -492,6 +573,23 @@ namespace NVSPlotter.Windows
                         ce.SetNormalizedPoints(pts);
                         if (!string.IsNullOrWhiteSpace(profiles[i].Name)) ce.ProfileName = profiles[i].Name;
                         ce.IsSelected = profiles[i].IsSelected;
+                        ce.IsInGroup = profiles[i].IsInGroup;
+                        ce.ShowTangentHandles = profiles[i].ShowTangentHandles;
+                        ce.StrokeSpeed = profiles[i].StrokeSpeed;
+                        ce.PressureMultiplier = profiles[i].PressureMultiplier;
+                        ce.Enabled = profiles[i].Enabled;
+                        ce.Description = profiles[i].Description ?? string.Empty;
+                        ce.BedWidthMm = profiles[i].BedWidthMm;
+                        ce.MinZ = profiles[i].MinZ;
+                        ce.MaxZ = profiles[i].MaxZ;
+                        ce.SampleCount = profiles[i].SampleCount;
+                        
+                        // If this profile is selected, update the properties panel
+                        if (ce.IsSelected)
+                        {
+                            _selectedEditor = ce;
+                            UpdatePropertiesPanel();
+                        }
                     }
                 }
             }
@@ -541,12 +639,152 @@ namespace NVSPlotter.Windows
             public List<SerializablePoint> Points { get; set; } = new();
             public string Name { get; set; } = string.Empty;
             public bool IsSelected { get; set; } = false;
+            public bool IsInGroup { get; set; } = false;
+            public bool ShowTangentHandles { get; set; } = true;
+            public double StrokeSpeed { get; set; } = 100.0;
+            public double PressureMultiplier { get; set; } = 1.0;
+            public bool Enabled { get; set; } = true;
+            public string Description { get; set; } = string.Empty;
+            public double BedWidthMm { get; set; } = 200.0;
+            public double MinZ { get; set; } = 0.0;
+            public double MaxZ { get; set; } = 10.0;
+            public int SampleCount { get; set; } = 200;
         }
 
         private class SerializablePoint
         {
             public double X { get; set; }
             public double Y { get; set; }
+        }
+
+        // Properties Panel Methods
+        private void UpdatePropertiesPanel()
+        {
+            _isUpdatingProperties = true;
+            
+            if (_selectedEditor == null)
+            {
+                // Hide all property controls, show "no selection" message
+                PropProfileName.IsEnabled = false;
+                PropStrokeSpeed.IsEnabled = false;
+                PropStrokeSpeedSlider.IsEnabled = false;
+                PropPressureMultiplier.IsEnabled = false;
+                PropPressureMultiplierSlider.IsEnabled = false;
+                PropMinZ.IsEnabled = false;
+                PropMaxZ.IsEnabled = false;
+                PropSampleCount.IsEnabled = false;
+                
+                PropProfileName.Text = "";
+                PropStrokeSpeed.Text = "100";
+                PropStrokeSpeedSlider.Value = 100;
+                PropPressureMultiplier.Text = "1.0";
+                PropPressureMultiplierSlider.Value = 1.0;
+                PropMinZ.Text = "0";
+                PropMaxZ.Text = "10";
+                PropSampleCount.Text = "200";
+                
+                NoSelectionText.Visibility = Visibility.Visible;
+            }
+            else
+            {
+                // Enable all controls and populate with selected editor's values
+                PropProfileName.IsEnabled = true;
+                PropStrokeSpeed.IsEnabled = true;
+                PropStrokeSpeedSlider.IsEnabled = true;
+                PropPressureMultiplier.IsEnabled = true;
+                PropPressureMultiplierSlider.IsEnabled = true;
+                PropMinZ.IsEnabled = true;
+                PropMaxZ.IsEnabled = true;
+                PropSampleCount.IsEnabled = true;
+                
+                PropProfileName.Text = _selectedEditor.ProfileName ?? "";
+                PropStrokeSpeed.Text = _selectedEditor.StrokeSpeed.ToString("F0");
+                PropStrokeSpeedSlider.Value = _selectedEditor.StrokeSpeed;
+                PropPressureMultiplier.Text = _selectedEditor.PressureMultiplier.ToString("F2");
+                PropPressureMultiplierSlider.Value = _selectedEditor.PressureMultiplier;
+                PropMinZ.Text = _selectedEditor.MinZ.ToString("F1");
+                PropMaxZ.Text = _selectedEditor.MaxZ.ToString("F1");
+                PropSampleCount.Text = _selectedEditor.SampleCount.ToString();
+                
+                NoSelectionText.Visibility = Visibility.Collapsed;
+            }
+            
+            _isUpdatingProperties = false;
+        }
+
+        private void PropProfileName_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isUpdatingProperties || _selectedEditor == null) return;
+            _selectedEditor.ProfileName = PropProfileName.Text;
+        }
+
+        private void PropStrokeSpeed_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isUpdatingProperties || _selectedEditor == null) return;
+            if (double.TryParse(PropStrokeSpeed.Text, out double value))
+            {
+                _selectedEditor.StrokeSpeed = value;
+                _isUpdatingProperties = true;
+                PropStrokeSpeedSlider.Value = Math.Max(PropStrokeSpeedSlider.Minimum, Math.Min(PropStrokeSpeedSlider.Maximum, value));
+                _isUpdatingProperties = false;
+            }
+        }
+
+        private void PropStrokeSpeedSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_isUpdatingProperties || _selectedEditor == null) return;
+            _selectedEditor.StrokeSpeed = PropStrokeSpeedSlider.Value;
+            _isUpdatingProperties = true;
+            PropStrokeSpeed.Text = PropStrokeSpeedSlider.Value.ToString("F0");
+            _isUpdatingProperties = false;
+        }
+
+        private void PropPressureMultiplier_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isUpdatingProperties || _selectedEditor == null) return;
+            if (double.TryParse(PropPressureMultiplier.Text, out double value))
+            {
+                _selectedEditor.PressureMultiplier = value;
+                _isUpdatingProperties = true;
+                PropPressureMultiplierSlider.Value = Math.Max(PropPressureMultiplierSlider.Minimum, Math.Min(PropPressureMultiplierSlider.Maximum, value));
+                _isUpdatingProperties = false;
+            }
+        }
+
+        private void PropPressureMultiplierSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
+        {
+            if (_isUpdatingProperties || _selectedEditor == null) return;
+            _selectedEditor.PressureMultiplier = PropPressureMultiplierSlider.Value;
+            _isUpdatingProperties = true;
+            PropPressureMultiplier.Text = PropPressureMultiplierSlider.Value.ToString("F2");
+            _isUpdatingProperties = false;
+        }
+
+        private void PropMinZ_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isUpdatingProperties || _selectedEditor == null) return;
+            if (double.TryParse(PropMinZ.Text, out double value))
+            {
+                _selectedEditor.MinZ = value;
+            }
+        }
+
+        private void PropMaxZ_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isUpdatingProperties || _selectedEditor == null) return;
+            if (double.TryParse(PropMaxZ.Text, out double value))
+            {
+                _selectedEditor.MaxZ = value;
+            }
+        }
+
+        private void PropSampleCount_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isUpdatingProperties || _selectedEditor == null) return;
+            if (int.TryParse(PropSampleCount.Text, out int value))
+            {
+                _selectedEditor.SampleCount = value;
+            }
         }
     }
 }

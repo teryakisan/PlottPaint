@@ -10,8 +10,12 @@
 
             <!-- Profile management icons (bottom-right) -->
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Bottom" Margin="6">
-                <!-- Select -->
-                <Button x:Name="BtnSelectProfile" Width="28" Height="20" Padding="2" ToolTip="Select profile" Background="Transparent" BorderThickness="0" Margin="2,0">
+                <!-- Toggle Tangent Handles -->
+                <Button x:Name="BtnToggleTangentHandles" Width="28" Height="20" Padding="2" ToolTip="Show/Hide Bezier handles" Background="Transparent" BorderThickness="0" Margin="2,0">
+                    <fa:ImageAwesome Icon="Sliders" Width="14" Height="14" Foreground="{DynamicResource RefForegroundBrush}"/>
+                </Button>
+                <!-- Is In Group -->
+                <Button x:Name="BtnIsInGroup" Width="28" Height="20" Padding="2" ToolTip="Include in Use group" Background="Transparent" BorderThickness="0" Margin="2,0">
                     <fa:ImageAwesome Icon="Check" Width="14" Height="14" Foreground="{DynamicResource RefForegroundBrush}"/>
                 </Button>
                 <!-- Rename -->

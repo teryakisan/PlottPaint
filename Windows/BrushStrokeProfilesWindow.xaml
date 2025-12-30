@@ -4,82 +4,200 @@ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 xmlns:local="clr-namespace:NVSPlotter.Windows"
 xmlns:controls="clr-namespace:NVSPlotter.Controls"
 xmlns:fa="http://schemas.fontawesome.io/icons/"
-Title="Brush Stroke Profiles" Height="600" Width="600" WindowStartupLocation="CenterOwner"
-Style="{DynamicResource ThemedWindow}" Foreground="{DynamicResource RefForegroundBrush}">
+Title="Brush Stroke Profiles" Height="680" Width="315" WindowStartupLocation="CenterOwner"
+Style="{DynamicResource ThemedWindow}" Foreground="{DynamicResource RefForegroundBrush}" MaxWidth="605" HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch">
+    <Window.Resources>
+        <Style x:Key="FlatButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="#D32F2F"/>
+            <Setter Property="Foreground" Value="White"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="12,6"/>
+            <Setter Property="FontWeight" Value="Bold"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="border" 
+                                Background="{TemplateBinding Background}" 
+                                BorderBrush="{TemplateBinding BorderBrush}" 
+                                BorderThickness="{TemplateBinding BorderThickness}" 
+                                CornerRadius="2" 
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" TargetName="border" Value="#E53935"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" TargetName="border" Value="#C62828"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" TargetName="border" Value="0.5"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="ButtonStyle1" TargetType="{x:Type Button}">
+            <Setter Property="Background" Value="{StaticResource ControlBackgroundBrush}"/>
+            <Setter Property="Foreground" Value="{StaticResource PrimaryTextBrush}"/>
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrush}"/>
+            <Setter Property="Padding" Value="8,4"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="border" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="3" Padding="{TemplateBinding Padding}">
+                            <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}" OpacityMask="White"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Background" TargetName="border" Value="{StaticResource ControlHoverBrush}"/>
+                                <Setter Property="BorderBrush" TargetName="border" Value="{StaticResource BorderBrushDark}"/>
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter Property="Background" TargetName="border" Value="{StaticResource ControlPressedBrush}"/>
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Foreground" Value="{StaticResource DisabledTextBrush}"/>
+                                <Setter Property="Opacity" TargetName="border" Value="0.6"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
     <Grid Margin="10">
-        <Grid.RowDefinitions>
-            <RowDefinition Height="Auto"/>
-            <RowDefinition Height="*"/>
-            <RowDefinition Height="Auto"/>
-        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition/>
+            <ColumnDefinition x:Name="PropertiesColumn" Width="Auto" MinWidth="24" />
+        </Grid.ColumnDefinitions>
 
-        <TextBlock Text="Brush Stroke Profiles" FontSize="16" FontWeight="Bold" Margin="4" Foreground="{DynamicResource RefForegroundBrush}"/>
+        <!-- Left side: Profile Grid -->
+        <Grid Grid.Column="0">
+            <Grid.Style>
+                <Style/>
+            </Grid.Style>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
 
-        <ScrollViewer x:Name="ProfilesScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto">
-            <!-- Use WrapPanel so the grid can grow beyond the initial 6 slots and wrap automatically -->
-            <WrapPanel x:Name="ProfilesGrid" Margin="6" HorizontalAlignment="Stretch" VerticalAlignment="Top" ItemWidth="260" ItemHeight="260" Orientation="Horizontal">
-                <!-- cells will contain dotted border and curve editors -->
-                <Border CornerRadius="4" Margin="6" Padding="6" SnapsToDevicePixels="True"
+            <TextBlock Text="Brush Stroke Profiles" FontSize="16" FontWeight="Bold" Margin="4" Foreground="{DynamicResource RefForegroundBrush}"/>
+
+            <ScrollViewer x:Name="ProfilesScrollViewer" Grid.Row="1" VerticalScrollBarVisibility="Auto" PanningMode="Both" HorizontalScrollBarVisibility="Auto">
+                <!-- Use WrapPanel so the grid can grow beyond the initial 2 slots and wrap automatically -->
+                <WrapPanel x:Name="ProfilesGrid" Margin="3,3,3,3" HorizontalAlignment="Stretch" VerticalAlignment="Top" ItemWidth="240" ItemHeight="240" Orientation="Vertical">
+                    <!-- Default curve editor -->
+                    <Border CornerRadius="4" Margin="6" Padding="6" SnapsToDevicePixels="True"
                         BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1"
-                        Background="{DynamicResource RefBackgroundBrush}">
-                    <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <controls:CurveEditor x:Name="CurveEditor0" Width="220" Height="220" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                    </Grid>
-                </Border>
+                        Background="{DynamicResource RefBackgroundBrush}"
+                        MouseLeftButtonDown="CurveEditorCell_Click">
+                        <Grid>
+                            <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
+                            <controls:CurveEditor x:Name="CurveEditor0" Width="194" Height="194" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                        </Grid>
+                    </Border>
 
-                <!-- placeholder empty cells -->
-                <!-- First empty cell with Add icon -->
-                <Border x:Name="FirstEmptyCell" CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}" Cursor="Hand" MouseLeftButtonDown="FirstEmptyCell_Click">
-                    <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <fa:ImageAwesome Icon="Plus" Width="80" Height="80" Foreground="{DynamicResource RefForegroundBrush}" Opacity="0.3" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                        <TextBlock Text="Click to add profile" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,20" Foreground="{DynamicResource RefForegroundBrush}" Opacity="0.6"/>
-                    </Grid>
-                </Border>
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}">
-                    <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource RefForegroundBrush}"/>
-                    </Grid>
-                </Border>
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}">
-                    <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource RefForegroundBrush}"/>
-                    </Grid>
-                </Border>
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}">
-                    <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource RefForegroundBrush}"/>
-                    </Grid>
-                </Border>
-                <Border CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}">
-                    <Grid>
-                        <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
-                        <TextBlock Text="Empty" HorizontalAlignment="Center" VerticalAlignment="Center" Foreground="{DynamicResource RefForegroundBrush}"/>
-                    </Grid>
-                </Border>
-            </WrapPanel>
-        </ScrollViewer>
+                    <!-- First empty cell with Add icon -->
+                    <Border x:Name="FirstEmptyCell" CornerRadius="4" Margin="6" Padding="6" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" Background="{DynamicResource ControlBackgroundBrush}" Cursor="Hand" MouseLeftButtonDown="FirstEmptyCell_Click">
+                        <Grid>
+                            <Rectangle StrokeDashArray="4 2" Stroke="{DynamicResource RefForegroundBrush}" StrokeThickness="1" RadiusX="4" RadiusY="4"/>
+                            <fa:ImageAwesome Icon="Plus" Width="80" Height="80" Foreground="{DynamicResource RefForegroundBrush}" Opacity="0.3" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            <TextBlock Text="Click to add profile" FontSize="11" HorizontalAlignment="Center" VerticalAlignment="Bottom" Margin="0,0,0,20" Foreground="{DynamicResource RefForegroundBrush}" Opacity="0.6"/>
+                        </Grid>
+                    </Border>
+                </WrapPanel>
+            </ScrollViewer>
 
-        <Grid Grid.Row="2" Margin="4">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
-            
-            <!-- Left side - Clear All button -->
-            <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left">
-                <Button x:Name="ClearAllBtn" Content="Clear All" Width="70" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
-            </StackPanel>
-            
-            <!-- Right side - Save and Close buttons -->
-            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button x:Name="SaveProfileBtn" Content="Save" Width="63" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
-                <Button x:Name="CloseBtn" Content="Close" Width="58" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
-            </StackPanel>
+            <Grid Grid.Row="2" Margin="4,4,10,4">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="121*"/>
+                    <ColumnDefinition Width="206*"/>
+                </Grid.ColumnDefinitions>
+
+                <!-- Left side - Clear All button -->
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" Width="82">
+                    <Button Style="{StaticResource FlatButtonStyle}" 
+                            x:Name="ClearAllBtn" 
+                            Content="Clear All" 
+                            Width="70" 
+                            Margin="6"/>
+                </StackPanel>
+
+                <!-- Right side - Save and Close buttons -->
+                <StackPanel Grid.Column="1" Orientation="Horizontal" Width="154" HorizontalAlignment="Left">
+                    <Button x:Name="SaveProfileBtn" Content="Save" Width="63" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
+                    <Button x:Name="CloseBtn" Content="Close" Width="58" Margin="6" Background="{DynamicResource ControlBackgroundBrush}" Foreground="{DynamicResource RefForegroundBrush}"/>
+                </StackPanel>
+            </Grid>
         </Grid>
+
+        <!-- Right side: Properties Panel -->
+        <Border x:Name="PropertiesPanelBorder" Grid.Column="1" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1,0,0,0" Background="{DynamicResource SecondaryBackgroundBrush}">
+            <Expander x:Name="PropertiesExpander" Header="Profile Properties" IsExpanded="False" 
+                      ExpandDirection="Right"
+                      Foreground="{DynamicResource RefForegroundBrush}"
+                      Expanded="PropertiesExpander_Expanded" Collapsed="PropertiesExpander_Collapsed">
+                <Expander.HeaderTemplate>
+                    <DataTemplate>
+                        <TextBlock Text="{Binding}" FontSize="12" FontWeight="SemiBold">
+                            <TextBlock.LayoutTransform>
+                                <RotateTransform Angle="-90"/>
+                            </TextBlock.LayoutTransform>
+                        </TextBlock>
+                    </DataTemplate>
+                </Expander.HeaderTemplate>
+                <Border Padding="10" Width="260">
+                    <ScrollViewer VerticalScrollBarVisibility="Disabled" MaxHeight="600">
+                        <StackPanel x:Name="PropertiesPanel" Margin="0,10,0,0">
+                            <!-- Profile Name -->
+                            <TextBlock Text="Name:" Margin="0,0,0,3" Foreground="{DynamicResource RefForegroundBrush}"/>
+                            <TextBox x:Name="PropProfileName" Margin="0,0,0,10" TextChanged="PropProfileName_TextChanged" Width="231" HorizontalAlignment="Left"/>
+
+                            <Separator Margin="0,5,0,10" Background="{DynamicResource BorderBrush}"/>
+
+                            <!-- Stroke Speed -->
+                            <TextBlock Text="Stroke Speed (mm/min):" Margin="0,0,0,3" Foreground="{DynamicResource RefForegroundBrush}"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <TextBox x:Name="PropStrokeSpeed" Width="40" Text="100" TextChanged="PropStrokeSpeed_TextChanged"/>
+                                <Slider x:Name="PropStrokeSpeedSlider" Width="181" Margin="10,0,0,0" Minimum="10" Maximum="500" Value="100" ValueChanged="PropStrokeSpeedSlider_ValueChanged"/>
+                            </StackPanel>
+
+                            <!-- Pressure Multiplier -->
+                            <TextBlock Text="Pressure Multiplier:" Margin="0,0,0,3" Foreground="{DynamicResource RefForegroundBrush}"/>
+                            <StackPanel Orientation="Horizontal" Margin="0,0,0,10">
+                                <TextBox x:Name="PropPressureMultiplier" Width="40" Text="1.0" TextChanged="PropPressureMultiplier_TextChanged"/>
+                                <Slider x:Name="PropPressureMultiplierSlider" Width="176" Margin="10,0,0,0" Minimum="0.1" Maximum="3.0" Value="1.0" TickFrequency="0.1" ValueChanged="PropPressureMultiplierSlider_ValueChanged"/>
+                            </StackPanel>
+
+
+                            <Separator Margin="0,5,0,10" Background="{DynamicResource BorderBrush}"/>
+
+                            <!-- Min Z -->
+                            <TextBlock Text="Min Z (mm):" Margin="0,0,0,3" Foreground="{DynamicResource RefForegroundBrush}" HorizontalAlignment="Left"/>
+                            <TextBox x:Name="PropMinZ" Margin="0,0,0,10" Text="0" TextChanged="PropMinZ_TextChanged" Width="221" HorizontalAlignment="Left"/>
+
+                            <!-- Max Z -->
+                            <TextBlock Text="Max Z (mm):" Margin="0,0,0,3" Foreground="{DynamicResource RefForegroundBrush}" HorizontalAlignment="Left"/>
+                            <TextBox x:Name="PropMaxZ" Margin="0,0,0,10" Text="10" TextChanged="PropMaxZ_TextChanged" Width="221" HorizontalAlignment="Left"/>
+
+                            <!-- Sample Count -->
+                            <TextBlock Text="Sample Count:" Margin="0,0,0,3" Foreground="{DynamicResource RefForegroundBrush}" HorizontalAlignment="Left"/>
+                            <TextBox x:Name="PropSampleCount" Margin="0,0,0,10" Text="200" TextChanged="PropSampleCount_TextChanged" HorizontalAlignment="Left" Width="221"/>
+
+                            <!-- Empty state text -->
+                            <TextBlock x:Name="NoSelectionText" Text="Select a profile to edit properties" 
+                                   TextWrapping="Wrap" FontStyle="Italic" Opacity="0.6" 
+                                   HorizontalAlignment="Left" VerticalAlignment="Center"
+                                   Margin="0,50,0,0" Foreground="{DynamicResource RefForegroundBrush}"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Border>
+            </Expander>
+        </Border>
     </Grid>
 </Window>
