@@ -11,16 +11,15 @@ namespace NVSPlotter.Controls
 {
     public partial class CurveEditor : System.Windows.Controls.UserControl
     {
-        // Points in normalized (0..1) vertical coordinates, X is implicit: left=0,right=1
-        private double p0 = 0.5; // left anchor Y (0 top, 1 bottom)
-        private double p3 = 0.5; // right anchor Y
-        private double? p1 = null; // inner control 1
-        private double? p2 = null; // inner control 2
+        // Control points in normalized coordinates (0..1). Index 0 = left endpoint, last = right endpoint.
+        // The endpoints have X fixed at 0 and 1. Inner points can move freely but their X is clamped between neighbors.
+        private readonly List<System.Windows.Point> controlPoints = new();
 
         // Visual elements
         private System.Windows.Shapes.Rectangle backgroundRect;
         private System.Windows.Shapes.Path curvePath;
-        private System.Windows.Shapes.Ellipse handleP0, handleP1, handleP2, handleP3;
+        private System.Windows.Shapes.Line verticalLine;
+        private System.Windows.Shapes.Ellipse handleP0, handleP1, handleP2, handleP3, handleP4;
         private System.Windows.Shapes.Line baseline;
 
         private const double HANDLE_RADIUS = 6.0;
@@ -49,20 +48,49 @@ namespace NVSPlotter.Controls
 
         public event EventHandler<IList<(double Xmm, double Zmm)>>? CurveUpdated;
 
-        // Expose/get set normalized control points: p0,p1,p2,p3 (0..1, 0=top)
-        public (double p0, double? p1, double? p2, double p3) GetNormalizedPoints()
-        {
-            return (p0, p1, p2, p3);
-        }
+        // Expose/get set normalized control points (list of points). Returns points with X,Y normalized (0..1, 0=top)
+        public IReadOnlyList<System.Windows.Point> GetNormalizedPoints() => controlPoints.AsReadOnly();
 
-        public void SetNormalizedPoints(double p0v, double? p1v, double? p2v, double p3v)
+        public void SetNormalizedPoints(IEnumerable<System.Windows.Point> points)
         {
-            p0 = Clamp01(p0v);
-            p1 = p1v.HasValue ? Clamp01(p1v.Value) : (double?)null;
-            p2 = p2v.HasValue ? Clamp01(p2v.Value) : (double?)null;
-            p3 = Clamp01(p3v);
+            controlPoints.Clear();
+            foreach (var p in points)
+            {
+                controlPoints.Add(new System.Windows.Point(Clamp01(p.X), Clamp01(p.Y)));
+            }
+            EnsureEndpointsAndOrdering();
             RenderAll();
             CurveChangedInternal();
+        }
+
+        private void EnsureEndpointsAndOrdering()
+        {
+            // ensure there are at least 5 points; if not, initialize defaults
+            if (controlPoints.Count < 5)
+            {
+                controlPoints.Clear();
+                controlPoints.Add(new System.Windows.Point(0.0, 0.0));
+                controlPoints.Add(new System.Windows.Point(0.25, 0.5));
+                controlPoints.Add(new System.Windows.Point(0.5, 0.5));
+                controlPoints.Add(new System.Windows.Point(0.75, 0.5));
+                controlPoints.Add(new System.Windows.Point(1.0, 0.0));
+                return;
+            }
+
+            // clamp endpoints X and ensure endpoints Y default to top if NaN
+            controlPoints[0] = new System.Windows.Point(0.0, Clamp01(controlPoints[0].Y));
+            var last = controlPoints.Count - 1;
+            controlPoints[last] = new System.Windows.Point(1.0, Clamp01(controlPoints[last].Y));
+
+            // ensure X ordering
+            for (int i = 1; i < last; i++)
+            {
+                var minX = controlPoints[i - 1].X + 0.001;
+                var maxX = controlPoints[i + 1].X - 0.001;
+                var x = Clamp01(controlPoints[i].X);
+                x = Math.Max(minX, Math.Min(maxX, x));
+                controlPoints[i] = new System.Windows.Point(x, Clamp01(controlPoints[i].Y));
+            }
         }
 
         public CurveEditor()
@@ -103,14 +131,24 @@ namespace NVSPlotter.Controls
             baseline.SetResourceReference(System.Windows.Shapes.Line.StrokeProperty, "RefForegroundBrush");
             c.Children.Add(baseline);
 
+            // vertical mid line for quadrant grid
+            verticalLine = new System.Windows.Shapes.Line { StrokeThickness = 1 };
+            verticalLine.SetResourceReference(System.Windows.Shapes.Line.StrokeProperty, "RefForegroundBrush");
+            c.Children.Add(verticalLine);
+
             curvePath = new System.Windows.Shapes.Path { StrokeThickness = 2, StrokeLineJoin = PenLineJoin.Round };
             curvePath.SetResourceReference(System.Windows.Shapes.Path.StrokeProperty, "RefAccentBrush");
             c.Children.Add(curvePath);
+
+            // create five handles
+            // ensure control points exist
+            EnsureEndpointsAndOrdering();
 
             handleP0 = CreateHandle(); c.Children.Add(handleP0);
             handleP1 = CreateHandle(); c.Children.Add(handleP1);
             handleP2 = CreateHandle(); c.Children.Add(handleP2);
             handleP3 = CreateHandle(); c.Children.Add(handleP3);
+            handleP4 = CreateHandle(); c.Children.Add(handleP4);
 
             PART_Canvas.MouseLeftButtonDown += Canvas_MouseLeftButtonDown;
             PART_Canvas.MouseMove += PART_Canvas_MouseMove;
@@ -149,44 +187,43 @@ namespace NVSPlotter.Controls
 
         private void Canvas_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
         {
-            var pos = e.GetPosition(PART_Canvas);
-            // if curve only has endpoints, insert inner controls
-            if (!p1.HasValue && !p2.HasValue)
-            {
-                // create control points near the click X (normalized space)
-                var nx = pos.X / PART_Canvas.ActualWidth;
-                // place p1 at nx/3 between left and right, p2 at 2*nx/3
-                p1 = 0.5; // default middle
-                p2 = 0.5;
-                // start dragging nearest new handle
-                RenderAll();
-                CurveChangedInternal();
-            }
+            // No-op: controlPoints are initialized with five points by default.
+            // Future: could insert additional points on click.
         }
 
         private void PART_Canvas_MouseMove(object? sender, System.Windows.Input.MouseEventArgs e)
         {
             if (draggingHandle == null) return;
             var p = e.GetPosition(PART_Canvas);
+            var w = PART_Canvas.ActualWidth;
             var h = PART_Canvas.ActualHeight;
-            var normY = Clamp01(p.Y / h);
+            var nx = Clamp01(p.X / Math.Max(1, w));
+            var ny = Clamp01(p.Y / Math.Max(1, h));
 
-            if (draggingHandle == handleP0)
+            // map dragging handle to index
+            var handleList = new List<System.Windows.Shapes.Ellipse> { handleP0, handleP1, handleP2, handleP3, handleP4 };
+            var idx = handleList.IndexOf(draggingHandle as System.Windows.Shapes.Ellipse);
+            if (idx < 0) return;
+
+            // endpoints (0 and last) constrained to X=0/1, move only vertically
+            if (idx == 0)
             {
-                p0 = normY;
+                controlPoints[0] = new System.Windows.Point(controlPoints[0].X, ny);
             }
-            else if (draggingHandle == handleP3)
+            else if (idx == controlPoints.Count - 1)
             {
-                p3 = normY;
+                var last = controlPoints.Count - 1;
+                controlPoints[last] = new System.Windows.Point(controlPoints[last].X, ny);
             }
-            else if (draggingHandle == handleP1 && p1.HasValue)
+            else
             {
-                p1 = normY;
+                // inner points can move freely but must remain between neighbors in X
+                var minX = controlPoints[idx - 1].X + 0.001;
+                var maxX = controlPoints[idx + 1].X - 0.001;
+                var x = Math.Max(minX, Math.Min(maxX, nx));
+                controlPoints[idx] = new System.Windows.Point(x, ny);
             }
-            else if (draggingHandle == handleP2 && p2.HasValue)
-            {
-                p2 = normY;
-            }
+
             RenderAll();
             CurveChangedInternal();
         }
@@ -207,6 +244,8 @@ namespace NVSPlotter.Controls
             if (PART_Canvas == null) return;
             // Ensure visuals initialized
             if (backgroundRect == null || curvePath == null || handleP0 == null) return;
+            // ensure at least 5 control points and endpoints ordering
+            EnsureEndpointsAndOrdering();
             var w = PART_Canvas.ActualWidth;
             var h = PART_Canvas.ActualHeight;
             if (w <= 0 || h <= 0) return;
@@ -214,38 +253,50 @@ namespace NVSPlotter.Controls
             Canvas.SetLeft(backgroundRect, 0); Canvas.SetTop(backgroundRect, 0);
             backgroundRect.Width = w; backgroundRect.Height = h;
 
-            // draw quadrant grid
-            // (simple visual: draw center lines)
-            // remove any previous helper lines (keep shapes added earlier)
-            // for brevity we won't clear the canvas here
-
-            // baseline across center horizontally
+            // draw quadrant grid by setting baseline (horizontal center) and verticalLine (vertical center)
             baseline.X1 = 0; baseline.X2 = w; baseline.Y1 = h / 2; baseline.Y2 = h / 2;
 
-            // positions
-            var y0 = p0 * h;
-            var y3 = p3 * h;
-            var x0 = 0.0;
-            var x3 = w;
+            // positions from controlPoints
+            EnsureEndpointsAndOrdering();
+            var pts = controlPoints.ToArray();
+            var pixelPts = pts.Select(pt => new System.Windows.Point(pt.X * w, pt.Y * h)).ToArray();
+            var x0 = pixelPts[0].X; var y0 = pixelPts[0].Y;
+            var x3 = pixelPts[pixelPts.Length - 1].X; var y3 = pixelPts[pixelPts.Length - 1].Y;
 
-            // compute control points in pixel
-            var c1x = w * 0.33;
-            var c2x = w * 0.66;
-            var c1y = (p1 ?? 0.5) * h;
-            var c2y = (p2 ?? 0.5) * h;
-
-            // build bezier geometry
+            // build bezier as poly-bezier through control points (approximate using cubic segments)
             var pg = new PathGeometry();
-            var pf = new System.Windows.Media.PathFigure { StartPoint = new System.Windows.Point(x0, y0), IsClosed = false };
-            pf.Segments.Add(new System.Windows.Media.BezierSegment(new System.Windows.Point(c1x, c1y), new System.Windows.Point(c2x, c2y), new System.Windows.Point(x3, y3), true));
+            var pf = new System.Windows.Media.PathFigure { StartPoint = new System.Windows.Point(pixelPts[0].X, pixelPts[0].Y), IsClosed = false };
+
+            // Create cubic bezier segments between successive points using Hermite-style interpolation for smoothness
+            for (int i = 1; i < pixelPts.Length; i++)
+            {
+                var pPrev = pixelPts[i - 1];
+                var pCurr = pixelPts[i];
+                // simple control handles: tangent-based
+                var dx = (pCurr.X - pPrev.X);
+                var c1 = new System.Windows.Point(pPrev.X + dx * 0.33, pPrev.Y + dx * 0.0);
+                var c2 = new System.Windows.Point(pPrev.X + dx * 0.66, pCurr.Y + dx * 0.0);
+                pf.Segments.Add(new System.Windows.Media.BezierSegment(c1, c2, pCurr, true));
+            }
             pg.Figures.Add(pf);
             curvePath.Data = pg;
 
-            // place handles
-            PlaceHandle(handleP0, x0, y0);
-            PlaceHandle(handleP1, c1x, c1y);
-            PlaceHandle(handleP2, c2x, c2y);
-            PlaceHandle(handleP3, x3, y3);
+            // place handles for up to five control points (or fewer)
+            var handles = new[] { handleP0, handleP1, handleP2, handleP3, handleP4 };
+            for (int i = 0; i < handles.Length; i++)
+            {
+                if (i < pixelPts.Length)
+                {
+                    PlaceHandle(handles[i], pixelPts[i].X, pixelPts[i].Y);
+                }
+                else
+                {
+                    handles[i].Visibility = Visibility.Collapsed;
+                }
+            }
+
+            // update quadrant lines
+            verticalLine.X1 = w / 2; verticalLine.X2 = w / 2; verticalLine.Y1 = 0; verticalLine.Y2 = h;
 
             // ensure mouse events wired
             PART_Canvas.MouseMove -= PART_Canvas_MouseMove;
@@ -280,18 +331,30 @@ namespace NVSPlotter.Controls
             return list;
         }
 
-        // Evaluate cubic bezier in normalized pixel space (X 0..1, Y 0..1 where 0 top)
+        // Evaluate curve: given normalized X t (0..1), return (X,Y) on the piecewise bezier approximation
         private (double X, double Y) EvaluateCubic(double t)
         {
-            // control points as normalized x,y
-            var x0 = 0.0; var y0 = p0;
-            var x1 = 0.33; var y1 = p1 ?? 0.5;
-            var x2 = 0.66; var y2 = p2 ?? 0.5;
-            var x3 = 1.0; var y3 = p3;
+            EnsureEndpointsAndOrdering();
+            var pts = controlPoints.ToArray();
 
-            double cx = Math.Pow(1 - t, 3) * x0 + 3 * Math.Pow(1 - t, 2) * t * x1 + 3 * (1 - t) * Math.Pow(t, 2) * x2 + Math.Pow(t, 3) * x3;
-            double cy = Math.Pow(1 - t, 3) * y0 + 3 * Math.Pow(1 - t, 2) * t * y1 + 3 * (1 - t) * Math.Pow(t, 2) * y2 + Math.Pow(t, 3) * y3;
-            return (cx, cy);
+            // clamp t
+            var tx = Clamp01(t);
+
+            // find segment containing tx
+            for (int i = 0; i < pts.Length - 1; i++)
+            {
+                var a = pts[i];
+                var b = pts[i + 1];
+                if (tx >= a.X && tx <= b.X)
+                {
+                    var u = (tx - a.X) / Math.Max(1e-6, (b.X - a.X));
+                    var y = a.Y * (1 - u) + b.Y * u; // linear interpolation between control points
+                    return (tx, y);
+                }
+            }
+
+            var last = pts.Last();
+            return (last.X, last.Y);
         }
 
         private double MapYToZ(double normalizedY)
