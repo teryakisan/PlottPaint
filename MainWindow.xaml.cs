@@ -1,4 +1,4 @@
-ï»¿using Microsoft.Win32;
+using Microsoft.Win32;
 using NVSPlotter.Models;
 using NVSPlotter.Properties;
 using NVSPlotter.Services;
@@ -51,6 +51,23 @@ namespace NVSPlotter
 {
     public partial class MainWindow : Window
     {
+        // Coordinate transformer Service
+        private readonly CoordinateTransformService _coordTransform;
+
+        // Snapping Service
+        private readonly SnappingService _snappingService;
+
+        // G-code Generator Service
+        private readonly GcodeGeneratorService _gcodeGenerator;
+
+        // Canvas Renderer Service
+        private readonly CanvasRendererService _canvasRenderer;
+
+        // GRBL Manager Service
+        private readonly GrblManagerService _grblManager;
+
+        // Project File Service
+        private readonly ProjectFileService _projectFileService;
 
         // Floating reference image window
         private ReferenceImageWindow? _referenceImageWindow;
@@ -128,6 +145,13 @@ namespace NVSPlotter
         [System.Runtime.InteropServices.DllImport("user32.dll")]
         private static extern bool GetCursorPos(out POINT lpPoint);
         
+        // P/Invoke for window title bar dark mode
+        [System.Runtime.InteropServices.DllImport("dwmapi.dll", PreserveSig = true)]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+        
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+        private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+        
         [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
         private struct POINT
         {
@@ -144,22 +168,6 @@ namespace NVSPlotter
 
         // G-code cache
         private string _lastGcode = "";
-
-        // Plotter connection
-        private GrblConnection? _grbl;
-        private CancellationTokenSource? _sendCts;
-
-        // --- Machine / GRBL state ---
-        private double _bedX = Settings.Default.bedX;   // $130
-        private double _bedY = Settings.Default.bedY;  // $131
-        private bool _bedFromGrbl;
-
-        // $23 homing dir invert mask => bit set means home toward + (i.e., home at MAX end)
-        private int _homingDirMask = 0;
-        private bool _homeAtMaxX = false; // derived from $23 bit0
-        private bool _homeAtMaxY = false; // derived from $23 bit1
-
-        private bool _isHomed = false;
 
         private const double SAFE_MARGIN_MM = 50.0; // Default fallback, actual value from Settings
         private double SafeMarginMm => Settings.Default.safeMarginMm;
@@ -255,7 +263,7 @@ namespace NVSPlotter
         {
             _filterThrottle = new DispatcherTimer
             {
-                Interval = TimeSpan.FromMilliseconds(60) // adjust (30â€“100ms)
+                Interval = TimeSpan.FromMilliseconds(60) // adjust (30–100ms)
             };
             _filterThrottle.Tick += (_, __) =>
             {
@@ -265,6 +273,34 @@ namespace NVSPlotter
         
 
             InitializeComponent();
+
+            // Initialize GRBL manager service first (needed by coordinate transform)
+            _grblManager = new GrblManagerService(AppendLog);
+
+            // Initialize coordinate transform service
+            _coordTransform = new CoordinateTransformService(
+                DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
+                CanvasScroll ?? throw new InvalidOperationException("CanvasScroll control is missing."),
+                () => _doc,
+                () => _grblManager.BedX,
+                () => _grblManager.BedY,
+                () => _grblManager.HomeAtMaxX,
+                () => _grblManager.HomeAtMaxY,
+                () => SafeMarginMm);
+
+            // Initialize snapping service
+            _snappingService = new SnappingService(
+                () => _doc,
+                () => IsSnapEnabled,
+                () => GetSnapRadius(),
+                () => IsSnapToGridEnabled,
+                () => GetGridSpacing());
+
+            // Initialize G-code generator service
+            _gcodeGenerator = new GcodeGeneratorService(
+                _coordTransform,
+                () => _doc,
+                AppendLog);
 
             DrawCanvas.LayoutTransform = _zoom;
             if (RulerCanvas != null)
@@ -314,6 +350,25 @@ namespace NVSPlotter
                 () => _doc,
                 RenderAll);
 
+            // Initialize canvas renderer service
+            _canvasRenderer = new CanvasRendererService(
+                DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
+                RulerCanvas ?? throw new InvalidOperationException("RulerCanvas control is missing."),
+                () => _doc,
+                _selectionController,
+                _paintWellController,
+                _imageService,
+                _workingAreaManager,
+                AppendLog,
+                () => _showIntermediatePointsForGroups);
+
+            // Initialize project file service
+            _projectFileService = new ProjectFileService(AppendLog);
+
+            // Subscribe to GRBL manager events
+            _grblManager.ConnectionStateChanged += (s, e) => UpdateConnStatus();
+            _grblManager.MachineStateChanged += (s, e) => RenderAll();
+
              RenderAll();
              UpdateConnStatus();
              InitializeSafeMarginBox();
@@ -321,6 +376,12 @@ namespace NVSPlotter
              InitializeToolsWindow();
              UpdatePaintWellsUI();
              InitializeThemeToggle();
+             
+             // Apply window chrome theme after window is loaded
+             Loaded += (s, e) => ApplyWindowChromeTheme();
+             
+             // Subscribe to theme changes to update title bar
+             ThemeManager.Instance.ThemeChanged += (s, isDark) => ApplyWindowChromeTheme();
 
             // Wire up ReferenceView events when present
             if (FindName("ReferenceView") is ReferenceImageView rv)
@@ -376,7 +437,7 @@ namespace NVSPlotter
 
             if (FindName("ImageRotateValue") is TextBlock rotateLabel)
             {
-                rotateLabel.Text = hasImage ? $"{_imageService.Angle:0.#}Â°" : "â€”";
+                rotateLabel.Text = hasImage ? $"{_imageService.Angle:0.#}°" : "—";
             }
 
             if (FindName("ImageRotateResetBtn") is Button resetBtn)
@@ -626,9 +687,9 @@ namespace NVSPlotter
 
         private async void ConnectBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (_grbl?.IsOpen == true)
+            if (_grblManager.IsConnected)
             {
-                await DisconnectAsync();
+                await _grblManager.DisconnectAsync();
                 UpdateConnStatus();
                 return;
             }
@@ -645,42 +706,16 @@ namespace NVSPlotter
             // Show the console window when connecting
             ShowConsoleWindow();
 
-            try
+            var autoHome = FindName("AutoHomeOnConnectCheck") is CheckBox autoHomeCheck && autoHomeCheck.IsChecked == true;
+            
+            var success = await _grblManager.ConnectAsync(port, baud, autoHome);
+            
+            if (success)
             {
-                _grbl?.Dispose();
-                _grbl = new GrblConnection(port, baud, AppendLog);
-
-                UpdateConnStatus();
-                await _grbl.OpenAsync();
-
                 AppendLog("Connected to GRBL.");
-                await LoadGrblSettingsAsync();
-
-                // Auto-home if enabled
-                if (FindName("AutoHomeOnConnectCheck") is CheckBox autoHomeCheck && autoHomeCheck.IsChecked == true)
-                {
-                    AppendLog("Auto-homing...");
-                    try
-                    {
-                        await _grbl.SendLineWaitOkAsync("$H", TimeSpan.FromSeconds(30), _sendCts?.Token ?? CancellationToken.None);
-                        _isHomed = true;
-                        AppendLog("Auto-home completed.");
-                    }
-                    catch (Exception homeEx)
-                    {
-                        AppendLog("Auto-home failed: " + homeEx.Message);
-                    }
-                }
             }
-            catch (Exception ex)
-            {
-                AppendLog("Connect failed: " + ex.Message);
-                await DisconnectAsync();
-            }
-            finally
-            {
-                UpdateConnStatus();
-            }
+            
+            UpdateConnStatus();
         }
 
         /// <summary>
@@ -738,77 +773,6 @@ namespace NVSPlotter
             }
 
             return 115200;
-        }
-
-        private async Task DisconnectAsync()
-        {
-            _sendCts?.Cancel();
-            _sendCts?.Dispose();
-            _sendCts = null;
-
-            if (_grbl != null)
-            {
-                try
-                {
-                    await _grbl.CloseAsync();
-                }
-                catch (Exception ex)
-                {
-                    AppendLog("Error while closing port: " + ex.Message);
-                }
-                finally
-                {
-                    _grbl.Dispose();
-                    _grbl = null;
-                }
-
-                AppendLog("Disconnected.");
-            }
-        }
-
-        private async Task LoadGrblSettingsAsync()
-        {
-            if (_grbl == null) return;
-
-            try
-            {
-                var lines = await _grbl.SendAndCollectAsync("$$", TimeSpan.FromSeconds(3));
-
-                double bedX = _bedX;
-                double bedY = _bedY;
-                int homingMask = _homingDirMask;
-
-                foreach (var line in lines)
-                {
-                    if (line.StartsWith("$130=") && double.TryParse(line[5..], NumberStyles.Float, CultureInfo.InvariantCulture, out var x))
-                    {
-                        bedX = x;
-                        _bedFromGrbl = true;
-                    }
-                    else if (line.StartsWith("$131=") && double.TryParse(line[5..], NumberStyles.Float, CultureInfo.InvariantCulture, out var y))
-                    {
-                        bedY = y;
-                        _bedFromGrbl = true;
-                    }
-                    else if (line.StartsWith("$23=") && int.TryParse(line[4..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var mask))
-                    {
-                        homingMask = mask;
-                    }
-                }
-
-                _bedX = bedX;
-                _bedY = bedY;
-                _homingDirMask = homingMask;
-                _homeAtMaxX = (_homingDirMask & 0x01) != 0;
-                _homeAtMaxY = (_homingDirMask & 0x02) != 0;
-
-                AppendLog($"Read $$: $130={_bedX:0.###}, $131={_bedY:0.###}, $23={_homingDirMask}");
-                RenderAll();
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Failed to query $$: " + ex.Message);
-            }
         }
 
         private void UndoBtn_Click(object sender, RoutedEventArgs e)
@@ -2210,15 +2174,25 @@ namespace NVSPlotter
 
         private PointMm MouseToMm(Point pViewportSpace)
         {
-            var pCanvas = CanvasScroll.TranslatePoint(pViewportSpace, DrawCanvas);
-            return new PointMm(pCanvas.X, pCanvas.Y);
+
+            //old
+            //var pCanvas = CanvasScroll.TranslatePoint(pViewportSpace, DrawCanvas);
+            //return new PointMm(pCanvas.X, pCanvas.Y);
+
+            //new
+            //var canvasPoint = _canvasScroll.TranslatePoint(viewportPoint, _drawCanvas);
+            //return new PointMm(canvasPoint.X, canvasPoint.Y);
+
+            return _coordTransform.MouseToMm(pViewportSpace);
         }
 
         private PointMm ClampToPage(PointMm p)
         {
-            var x = Math.Clamp(p.X, 0, _doc.WidthMm);
-            var y = Math.Clamp(p.Y, 0, _doc.HeightMm);
-            return new PointMm(x, y);
+            //var x = Math.Clamp(p.X, 0, _doc.WidthMm);
+            //var y = Math.Clamp(p.Y, 0, _doc.HeightMm);
+            //return new PointMm(x, y);
+
+            return _coordTransform.ClampToPage(p);
         }
 
         // ===== ENDPOINT SNAPPING =====
@@ -2240,44 +2214,9 @@ namespace NVSPlotter
         /// </summary>
         private PointMm SnapToEndpoint(PointMm raw, out PointMm? snappedTo, out SnapType snapType)
         {
-            snappedTo = null;
-            snapType = SnapType.None;
-            if (!IsSnapEnabled) return raw;
-
-            var radius = GetSnapRadius();
-            if (radius <= 0) return raw;
-
-            double bestDist = double.MaxValue;
-            PointMm? bestPoint = null;
-            SnapType bestSnapType = SnapType.None;
-
-            foreach (var stroke in _doc.Strokes)
-            {
-                var distA = Utility.Distance(raw, stroke.A);
-                if (distA < bestDist && distA <= radius)
-                {
-                    bestDist = distA;
-                    bestPoint = stroke.A;
-                    bestSnapType = SnapType.Start;
-                }
-
-                var distB = Utility.Distance(raw, stroke.B);
-                if (distB < bestDist && distB <= radius)
-                {
-                    bestDist = distB;
-                    bestPoint = stroke.B;
-                    bestSnapType = SnapType.End;
-                }
-            }
-
-            if (bestPoint is PointMm pt)
-            {
-                snappedTo = pt;
-                snapType = bestSnapType;
-                return pt;
-            }
-
-            return raw;
+            var result = _snappingService.SnapToEndpoint(raw, out snappedTo, out var serviceSnapType);
+            snapType = (SnapType)serviceSnapType; // Cast from service enum to local enum
+            return result;
         }
 
         /// <summary>
@@ -2285,7 +2224,7 @@ namespace NVSPlotter
         /// </summary>
         private PointMm SnapToEndpoint(PointMm raw, out PointMm? snappedTo)
         {
-            return SnapToEndpoint(raw, out snappedTo, out _);
+            return _snappingService.SnapToEndpoint(raw, out snappedTo);
         }
 
         private void UpdateSnapIndicator(PointMm? snapPoint, SnapType snapType, PointMm? gridSnapPoint = null)
@@ -2343,7 +2282,7 @@ namespace NVSPlotter
             Canvas.SetLeft(_snapIndicator, centerX - SNAP_INDICATOR_SIZE / 2.0);
             Canvas.SetTop(_snapIndicator, centerY - SNAP_INDICATOR_SIZE / 2.0);
 
-            // Add dashed crosshair lines ONLY for start (t â‰ˆ 0) and end (t â‰ˆ 1) points
+            // Add dashed crosshair lines ONLY for start (t ˜ 0) and end (t ˜ 1) points
             // Not for intermediate points or grid snaps
             const double endpointThreshold = 0.01; // Tolerance for determining if it's a start/end point
             bool isStartOrEnd = snapPoint != null && (progress <= endpointThreshold || progress >= 1.0 - endpointThreshold);
@@ -2478,67 +2417,7 @@ namespace NVSPlotter
         /// </summary>
         private double CalculateSnapPointProgress(PointMm snapPoint)
         {
-            const double tolerance = 0.5; // mm tolerance for point matching
-
-            // Find which stroke(s) contain this point
-            LineStroke? matchedStroke = null;
-            bool isPointA = false;
-
-            foreach (var stroke in _doc.Strokes)
-            {
-                if (Math.Abs(stroke.A.X - snapPoint.X) < tolerance && Math.Abs(stroke.A.Y - snapPoint.Y) < tolerance)
-                {
-                    matchedStroke = stroke;
-                    isPointA = true;
-                    break;
-                }
-                if (Math.Abs(stroke.B.X - snapPoint.X) < tolerance && Math.Abs(stroke.B.Y - snapPoint.Y) < tolerance)
-                {
-                    matchedStroke = stroke;
-                    isPointA = false;
-                    break;
-                }
-            }
-
-            if (matchedStroke == null)
-                return 0.5; // Default to middle if not found
-
-            // If stroke has no group, it's a single stroke: A = 0.0, B = 1.0
-            if (matchedStroke.GroupId == null)
-            {
-                return isPointA ? 0.0 : 1.0;
-            }
-
-            // Find all strokes in the same group
-            var groupId = matchedStroke.GroupId.Value;
-            var groupStrokes = _doc.Strokes.Where(s => s.GroupId == groupId).ToList();
-
-            if (groupStrokes.Count == 0)
-                return isPointA ? 0.0 : 1.0;
-
-            // Build ordered list of all points in the group
-            // Start from the stroke marked as IsGroupStart
-            var points = new List<PointMm>();
-            var startStroke = groupStrokes.FirstOrDefault(s => s.IsGroupStart) ?? groupStrokes[0];
-            points.Add(startStroke.A);
-            foreach (var stroke in groupStrokes)
-            {
-                points.Add(stroke.B);
-            }
-
-            // Find which point index matches the snap point
-            for (int i = 0; i < points.Count; i++)
-            {
-                var pt = points[i];
-                if (Math.Abs(pt.X - snapPoint.X) < tolerance && Math.Abs(pt.Y - snapPoint.Y) < tolerance)
-                {
-                    // Return progress: 0.0 for first point, 1.0 for last point
-                    return points.Count > 1 ? (double)i / (points.Count - 1) : 0.0;
-                }
-            }
-
-            // Fallback: use the matched stroke's position
-            return isPointA ? 0.0 : 1.0;
+            return _snappingService.CalculateSnapPointProgress(snapPoint);
         }
 
         private void RemoveSnapIndicator()
@@ -2990,24 +2869,7 @@ namespace NVSPlotter
         /// </summary>
         private PointMm SnapToGrid(PointMm raw)
         {
-            if (!IsSnapToGridEnabled) return raw;
-
-            var spacing = GetGridSpacing();
-            if (spacing <= 0) return raw;
-
-            // Grid lines are drawn at rulerThickness + (n * spacing) positions
-            // To snap to grid intersections, we need to account for this offset
-            const double rulerThickness = 18.0;
-            
-            // Convert to document coordinates (relative to ruler), snap, then convert back
-            var docX = raw.X - rulerThickness;
-            var docY = raw.Y - rulerThickness;
-            
-            var snappedDocX = Math.Round(docX / spacing) * spacing;
-            var snappedDocY = Math.Round(docY / spacing) * spacing;
-
-            // Convert back to canvas coordinates
-            return new PointMm(snappedDocX + rulerThickness, snappedDocY + rulerThickness);
+            return _snappingService.SnapToGrid(raw);
         }
 
         /// <summary>
@@ -3016,18 +2878,8 @@ namespace NVSPlotter
         /// </summary>
         private PointMm ApplySnapping(PointMm raw, out PointMm? endpointSnap, out SnapType snapType, out bool gridSnapped)
         {
-            // First try endpoint snapping (higher priority)
-            var result = SnapToEndpoint(raw, out endpointSnap, out snapType);
-
-            // If no endpoint snap, try grid snap
-            if (endpointSnap == null && IsSnapToGridEnabled)
-            {
-                var gridSnap = SnapToGrid(raw);
-                gridSnapped = gridSnap.X != raw.X || gridSnap.Y != raw.Y;
-                return gridSnap;
-            }
-
-            gridSnapped = false;
+            var result = _snappingService.ApplySnapping(raw, out endpointSnap, out var serviceSnapType, out gridSnapped);
+            snapType = (SnapType)serviceSnapType; // Cast from service enum to local enum
             return result;
         }
 
@@ -3315,12 +3167,12 @@ namespace NVSPlotter
 
         private void UpdateConnStatus()
         {
-            var isConnected = _grbl?.IsOpen == true;
+            var isConnected = _grblManager.IsConnected;
 
             if (ConnStatusLabel != null)
             {
                 ConnStatusLabel.Text = isConnected
-                    ? $"Connected: {_grbl!.PortName} @ {_grbl.BaudRate}"
+                    ? $"Connected: {_grblManager.PortName} @ {_grblManager.BaudRate}"
                     : "Disconnected";
             }
 
@@ -3507,7 +3359,7 @@ namespace NVSPlotter
             }
 
             // Update the size text
-            _workingAreaSizeLabel.Text = $"{rect.Width:0.#} mm Ã— {rect.Height:0.#} mm";
+            _workingAreaSizeLabel.Text = $"{rect.Width:0.#} mm × {rect.Height:0.#} mm";
 
             // Measure the label to position it correctly
             _workingAreaSizeLabel.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
@@ -3664,7 +3516,7 @@ namespace NVSPlotter
                     var label = CreateRulerLabel(y, rotate: true);
                     // Measure text to center label on tick mark (after rotation, width becomes height)
                     label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-                    var textHeight = label.DesiredSize.Height; // After -90Â° rotation, this is the visual width
+                    var textHeight = label.DesiredSize.Height; // After -90° rotation, this is the visual width
                     Canvas.SetLeft(label, 1);
                     Canvas.SetTop(label, cy - textHeight / 2);
                     RulerCanvas.Children.Add(label);
@@ -3693,112 +3545,112 @@ namespace NVSPlotter
         {
             if (DrawCanvas == null || RulerCanvas == null) return;
 
-            DrawCanvas.Children.Clear();
-            RulerCanvas.Children.Clear();
-
-            const double rulerThickness = 18.0;
-            // Extra margin around document to allow selection handles outside document bounds to be clickable
-            // This accommodates rotation handles (ROTATE_HANDLE_OFFSET = 45) plus selection padding (20) plus handle size (12)
-            const double handleMargin = 100.0;
-
-            // Size canvas to page + ruler thickness + handle margin on all sides
-            DrawCanvas.Width = _doc.WidthMm + rulerThickness + handleMargin * 2;
-            DrawCanvas.Height = _doc.HeightMm + rulerThickness + handleMargin * 2;
-            RulerCanvas.Width = _doc.WidthMm + rulerThickness + handleMargin * 2;
-            RulerCanvas.Height = _doc.HeightMm + rulerThickness + handleMargin * 2;
-
-            // Page border (offset by ruler thickness)
-            var pageRect = new Rectangle
+            // Create render settings from current UI state
+            var settings = new RenderSettings
             {
-                Width = _doc.WidthMm,
-                Height = _doc.HeightMm,
-                Stroke = Brushes.Black,
-                StrokeThickness = 1.0,
-                Fill = Brushes.White
+                IsGridVisible = IsGridVisible,
+                IsMarginOverlayVisible = IsMarginOverlayVisible,
+                IsPaintModeEnabled = IsPaintModeEnabled,
+                GridSpacing = GetGridSpacing(),
+                SafeMarginMm = SafeMarginMm,
+                ZoomScale = _zoom.ScaleX,
+                CanvasRotationAngle = _canvasRotation.Angle,
+                BedX = _grblManager.BedX,
+                BedY = _grblManager.BedY,
+                BedFromGrbl = _grblManager.BedFromGrbl
             };
-            DrawCanvas.Children.Add(pageRect);
-            Canvas.SetLeft(pageRect, rulerThickness);
-            Canvas.SetTop(pageRect, rulerThickness);
-            Panel.SetZIndex(pageRect, 0);
 
-            DrawGrid();
-            DrawRulers();
-            DrawSafeMarginOverlay();
-            RenderReferenceImage();
+            // Delegate to canvas renderer service
+            _canvasRenderer.RenderAll(settings);
 
-            // Working area overlay (visual only)
-            if (_workingAreaManager.DefinedArea is Rect definedArea)
-            {
-                var workRect = CreateWorkingAreaVisual();
-                workRect.Width = definedArea.Width;
-                workRect.Height = definedArea.Height;
-                Canvas.SetLeft(workRect, definedArea.Left);
-                Canvas.SetTop(workRect, definedArea.Top);
-                Panel.SetZIndex(workRect, 3);
-                DrawCanvas.Children.Add(workRect);
-            }
-
-
-            // Paint wells (render before strokes so strokes appear on top)
-            // Pass canvas rotation angle so labels can counter-rotate to stay upright
-            _paintWellController.RenderPaintWells(_canvasRotation.Angle);
-
-            // Existing strokes - with paint well colors if painting mode is enabled
-            var paintModeEnabled = IsPaintModeEnabled;
-            
-            // Calculate zoom-adaptive stroke thickness to ensure strokes are always visible
-            // At low zoom, we increase the logical thickness so strokes remain visible
-            // Minimum desired screen thickness is ~2 pixels
-            var currentZoom = _zoom.ScaleX;
-            const double minScreenThickness = 2.0; // Minimum pixels on screen
-            const double baseThickness = 1.2; // Base logical thickness in mm
-            // Ensure strokes are at least minScreenThickness pixels when rendered
-            var adaptiveThickness = Math.Max(baseThickness, minScreenThickness / currentZoom);
-            
-            for (int i = 0; i < _doc.Strokes.Count; i++)
-            {
-                var s = _doc.Strokes[i];
-                
-                // Determine stroke color - keep original color even when selected
-                Brush strokeBrush;
-                if (paintModeEnabled && s.PaintWellId.HasValue)
-                {
-                    var color = _paintWellController.GetStrokeColor(s);
-                    strokeBrush = new SolidColorBrush(color);
-                }
-                else
-                {
-                    strokeBrush = Brushes.Black;
-                }
-
-                var ln = new Line
-                {
-                    X1 = s.A.X,
-                    Y1 = s.A.Y,
-                    X2 = s.B.X,
-                    Y2 = s.B.Y,
-                    Stroke = strokeBrush,
-                    StrokeThickness = adaptiveThickness,
-                    IsHitTestVisible = false
-                };
-                // Note: Removed SnapsToDevicePixels and EdgeMode.Aliased as they cause
-                // perfectly vertical/horizontal lines to vanish at certain zoom levels
-                // (60%, 40%) when the line falls exactly between device pixels.
-                Panel.SetZIndex(ln, 4);
-                DrawCanvas.Children.Add(ln);
-            }
-
-            // Note: Selection indicators show individual group start/end points within the selection
-            // This allows circle curve segments and other multi-group shapes to display their markers
-            DrawSelectionIndicators();
-
-            // Selection visuals (bounding box, handles)
-            _selectionController.RenderSelectionVisuals();
-
-            AppendLog($"Doc: {_doc.WidthMm:0} x {_doc.HeightMm:0} mm, strokes={_doc.Strokes.Count}, paintWells={_doc.PaintWells.Count}");
-            AppendLog($"Bed: X={_bedX:0.###} Y={_bedY:0.###} {(_bedFromGrbl ? "(from $$)" : "(default)")}, margin={SafeMarginMm:0.###}mm");
+            // Render reference image manipulation handles (requires event handlers in MainWindow)
+            RenderReferenceImageHandles();
 
             UpdateZoomHost();
+        }
+
+        /// <summary>
+        /// Renders the reference image manipulation handles that require event handlers.
+        /// The image itself is rendered by the CanvasRendererService.
+        /// </summary>
+        private void RenderReferenceImageHandles()
+        {
+            if (_imageService.ProcessedImage == null || _imageService.ImageRect is not Rect rect) return;
+            if (_imageService.IsLocked) return;
+
+            // Hit box for moving
+            var hitBox = new Rectangle
+            {
+                Width = rect.Width,
+                Height = rect.Height,
+                Fill = Brushes.Transparent,
+                Cursor = Cursors.SizeAll,
+                Tag = ImageHandle.Move
+            };
+            hitBox.MouseDown += ReferenceHandle_MouseDown;
+            DrawCanvas.Children.Add(hitBox);
+            Canvas.SetLeft(hitBox, rect.Left);
+            Canvas.SetTop(hitBox, rect.Top);
+            Panel.SetZIndex(hitBox, 5);
+
+            void AddHandle(ImageHandle handle, double cx, double cy, Cursor cursor)
+            {
+                const double size = 10;
+                var handleRect = new Rectangle
+                {
+                    Width = size,
+                    Height = size,
+                    Fill = Brushes.White,
+                    Stroke = Brushes.DodgerBlue,
+                    StrokeThickness = 1,
+                    Cursor = cursor,
+                    Tag = handle
+                };
+                handleRect.MouseDown += ReferenceHandle_MouseDown;
+                DrawCanvas.Children.Add(handleRect);
+                Canvas.SetLeft(handleRect, cx - size / 2.0);
+                Canvas.SetTop(handleRect, cy - size / 2.0);
+                Panel.SetZIndex(handleRect, 7);
+            }
+
+            AddHandle(ImageHandle.Nw, rect.Left, rect.Top, Cursors.SizeNWSE);
+            AddHandle(ImageHandle.Ne, rect.Right, rect.Top, Cursors.SizeNESW);
+            AddHandle(ImageHandle.Se, rect.Right, rect.Bottom, Cursors.SizeNWSE);
+            AddHandle(ImageHandle.Sw, rect.Left, rect.Bottom, Cursors.SizeNESW);
+
+            var center = new Point(rect.Left + rect.Width / 2.0, rect.Top + rect.Height / 2.0);
+            var rotatedVector = Utility.RotateVector(new Vector(0, -ROTATE_HANDLE_OFFSET), _imageService.Angle);
+            var handleCenter = new Point(center.X + rotatedVector.X, center.Y + rotatedVector.Y);
+
+            var connector = new Line
+            {
+                X1 = center.X,
+                Y1 = center.Y,
+                X2 = handleCenter.X,
+                Y2 = handleCenter.Y,
+                Stroke = Brushes.DodgerBlue,
+                StrokeThickness = 1,
+                StrokeDashArray = [2, 2],
+                IsHitTestVisible = false
+            };
+            DrawCanvas.Children.Add(connector);
+            Panel.SetZIndex(connector, 6);
+
+            var rotateHandle = new Ellipse
+            {
+                Width = ROTATE_HANDLE_SIZE,
+                Height = ROTATE_HANDLE_SIZE,
+                Fill = Brushes.White,
+                Stroke = Brushes.DodgerBlue,
+                StrokeThickness = 1.2,
+                Cursor = Cursors.Hand,
+                Tag = ImageHandle.Rotate
+            };
+            rotateHandle.MouseDown += ReferenceHandle_MouseDown;
+            DrawCanvas.Children.Add(rotateHandle);
+            Canvas.SetLeft(rotateHandle, handleCenter.X - ROTATE_HANDLE_SIZE / 2.0);
+            Canvas.SetTop(rotateHandle, handleCenter.Y - ROTATE_HANDLE_SIZE / 2.0);
+            Panel.SetZIndex(rotateHandle, 8);
         }
 
         /// <summary>
@@ -4322,61 +4174,31 @@ namespace NVSPlotter
 
         private async void HomeBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (!EnsureConnected()) return;
-
-            try
-            {
-                await _grbl!.SendLineWaitOkAsync("$H", TimeSpan.FromSeconds(30), _sendCts?.Token ?? CancellationToken.None);
-                _isHomed = true;
-                AppendLog("Homing completed.");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Homing failed: " + ex.Message);
-            }
+            await _grblManager.HomeAsync();
         }
 
         private async void UnlockBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (!EnsureConnected()) return;
-
-            try
-            {
-                await _grbl!.SendLineWaitOkAsync("$X", TimeSpan.FromSeconds(5), _sendCts?.Token ?? CancellationToken.None);
-                AppendLog("Machine unlocked.");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Unlock failed: " + ex.Message);
-            }
+            await _grblManager.UnlockAsync();
         }
 
         private async void ResetBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (!EnsureConnected()) return;
-
-            try
-            {
-                await _grbl!.SoftResetAsync();
-                _isHomed = false;
-                AppendLog("Soft reset sent.");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Reset failed: " + ex.Message);
-            }
+            await _grblManager.SoftResetAsync();
         }
 
         private async void ManualSendBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (!EnsureConnected()) return;
+            if (!_grblManager.EnsureConnected()) return;
             var cmd = (ManualCmdBox.Text ?? "").Trim();
             if (cmd.Length == 0) return;
 
             ManualCmdBox.Text = "";
             try
             {
-                await _grbl!.SendLineWaitOkAsync(cmd, TimeSpan.FromSeconds(10));
+                // Use direct connection for manual commands
+                // This requires exposing the connection or adding a method to the service
+                await _grblManager.SendGcodeAsync(cmd);
             }
             catch (Exception ex)
             {
@@ -4386,9 +4208,9 @@ namespace NVSPlotter
 
         private async void SendBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (!EnsureConnected()) return;
+            if (!_grblManager.EnsureConnected()) return;
 
-            if (!_isHomed)
+            if (!_grblManager.IsHomed)
             {
                 AppendLog("Refusing to send: not homed. Click Home first.");
                 return;
@@ -4396,75 +4218,26 @@ namespace NVSPlotter
 
             var g = string.IsNullOrWhiteSpace(_lastGcode) ? BuildGcode() : _lastGcode;
 
-            var lines = g.Split('\n')
-                         .Select(x => x.Trim())
-                         .Where(x => x.Length > 0 && !x.StartsWith(";"))
-                         .ToList();
-
-            if (lines.Count == 0)
+            if (string.IsNullOrWhiteSpace(g))
             {
                 AppendLog("No G-code to send.");
                 return;
             }
 
-            if (_sendCts != null)
+            AppendLog("Sending G-code...");
+            await _grblManager.SendGcodeAsync(g, (current, total) =>
             {
-                AppendLog("Send already in progress.");
-                return;
-            }
-
-            _sendCts = new CancellationTokenSource();
-            var token = _sendCts.Token;
-
-            AppendLog($"Sending {lines.Count} lines...");
-            try
-            {
-                int sent = 0;
-                foreach (var line in lines)
+                if (current % 25 == 0)
                 {
-                    token.ThrowIfCancellationRequested();
-                    // Use generous timeout - long moves and dwell commands can take a while
-                    // Some firmware doesn't send 'ok' until the move is complete
-                    await _grbl!.SendLineWaitOkAsync(line, TimeSpan.FromSeconds(120), token);
-                    sent++;
-                    if (sent % 25 == 0) AppendLog($"Progress: {sent}/{lines.Count}");
+                    AppendLog($"Progress: {current}/{total}");
                 }
-                AppendLog("Send complete.");
-            }
-            catch (OperationCanceledException)
-            {
-                AppendLog("Send canceled.");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Send error: " + ex.Message);
-            }
-            finally
-            {
-                _sendCts?.Dispose();
-                _sendCts = null;
-            }
+            });
         }
 
         private async void StopBtn_Click(object sender, RoutedEventArgs e)
         {
-            if (!EnsureConnected()) return;
-
-            try
-            {
-                _sendCts?.Cancel();
-                await _grbl!.SoftResetAsync();
-                _isHomed = false;
-                AppendLog("Stop: canceled + reset sent.");
-            }
-            catch (Exception ex)
-            {
-                AppendLog("Stop error: " + ex.Message);
-            }
-            finally
-            {
-                RenderAll();
-            }
+            await _grblManager.StopAsync();
+            RenderAll();
         }
 
         // ----------------------------
@@ -4494,650 +4267,61 @@ namespace NVSPlotter
 
         private string BuildGcode()
         {
-            var feedXY = ParseDouble(FeedXYBox.Text, 3000);
-            var zUp = ParseDouble(ZUpBox.Text, 10);
-            var zDown = ParseDouble(ZDownBox.Text, 2);
-            var optimize = OptimizeCheck.IsChecked == true;
-            var paintModeEnabled = IsPaintModeEnabled;
-
-            // Hardware Z is inverted: flip the commanded values
-            var zUpCmd = -zUp;
-            var zDownCmd = -zDown;
-
-            var strokes = _doc.Strokes.ToList();
-            if (optimize) strokes = StrokeOptimizer.OptimizeNearest(strokes);
-
-            // Fit doc into bed (with margin), possibly rotating CW to better fit.
-            var fit = ComputeFit(_doc.WidthMm, _doc.HeightMm, _bedX, _bedY, SafeMarginMm);
-
-            AppendLog($"G-code fit={fit.Mode}, scale={fit.Scale:0.###}, usableBed=({_bedX - 2 * SafeMarginMm:0.###} x {_bedY - 2 * SafeMarginMm:0.###})");
-            AppendLog("G-code convention: X>=0, Y<=0");
-            if (paintModeEnabled && _doc.PaintWells.Count > 0)
+            var settings = new GcodeSettings
             {
-                AppendLog($"Paint mode: {_doc.PaintWells.Count} paint well(s) defined");
-            }
+                FeedXY = ParseDouble(FeedXYBox.Text, 3000),
+                ZUp = ParseDouble(ZUpBox.Text, 10),
+                ZDown = ParseDouble(ZDownBox.Text, 2),
+                SafeMarginMm = SafeMarginMm,
+                BedX = _grblManager.BedX,
+                BedY = _grblManager.BedY,
+                Optimize = OptimizeCheck.IsChecked == true,
+                PaintModeEnabled = IsPaintModeEnabled,
+                AutoWashWipeEnabled = FindName("AutoWashWipeCheck") is CheckBox cb && cb.IsChecked == true
+            };
 
-            var sb = new StringBuilder(64 * 1024);
-            sb.AppendLine("; NVSPlotter");
-            sb.AppendLine("; Units: mm");
-            sb.AppendLine("; Work convention: X positive, Y negative");
-            if (paintModeEnabled && _doc.PaintWells.Count > 0)
-            {
-                sb.AppendLine("; PAINTING MODE ENABLED");
-                foreach (var well in _doc.PaintWells)
-                {
-                    sb.AppendLine($"; Paint Well: {well.Name} at ({well.Center.X:0.#}, {well.Center.Y:0.#}), dip={well.DipDepth:0.#}mm, dwell={well.DwellTimeMs}ms");
-                }
-            }
-            sb.AppendLine("G21");           // mm
-            sb.AppendLine("G90");           // absolute
-            sb.AppendLine("G54");
-            sb.AppendLine("G92.1");         // clear G92 offsets
-            sb.AppendLine("G10 L20 P1 X0 Y0"); // set G54 so current position (home) is work 0,0
-            sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
-
-            const double joinTol = 0.01; // mm
-
-            if (paintModeEnabled && _doc.PaintWells.Count > 0)
-            {
-                // PAINTING MODE: Group strokes by paint well, insert paint refresh sequences
-                BuildPaintingModeGcode(sb, strokes, fit, zUpCmd, zDownCmd, feedXY, joinTol);
-            }
-            else
-            {
-                // NORMAL MODE: Build paths without paint considerations
-                var paths = BuildPaths(strokes, joinTol);
-                BuildNormalGcode(sb, paths, fit, zUpCmd, zDownCmd, feedXY);
-            }
-
-            sb.AppendLine("G0 X0 Y0"); // back to home (work origin)
-            sb.AppendLine("M2");
-
-            _lastGcode = sb.ToString();
-            AppendLog($"Built G-code: lines={_lastGcode.Split('\n').Length}");
+            _lastGcode = _gcodeGenerator.BuildGcode(settings);
             return _lastGcode;
         }
 
-        private void BuildNormalGcode(StringBuilder sb, List<List<LineStroke>> paths, FitSpec fit, double zUpCmd, double zDownCmd, double feedXY)
+        private CoordinateTransformService.FitSpec ComputeFit(double docW, double docH, double bedX, double bedY, double margin)
         {
-            foreach (var path in paths)
-            {
-                if (path.Count == 0) continue;
+            //var ux = Math.Max(1.0, bedX - margin * 2);
+            //var uy = Math.Max(1.0, bedY - margin * 2);
 
-                var first = path[0];
-                var startWork = BedToWork(DocToBed(first.A, fit));
+            //// No-rotate scale
+            //var s0 = Math.Min(ux / docW, uy / docH);
+            //// Rotate CW scale
+            //var s1 = Math.Min(ux / docH, uy / docW);
 
-                sb.AppendLine($"G0 X{Fmt(startWork.X)} Y{Fmt(startWork.Y)}");
-                sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
+            //// Never scale up above 1.0
+            //s0 = Math.Min(s0, 1.0);
+            //s1 = Math.Min(s1, 1.0);
 
-                bool firstMove = true;
-                foreach (var seg in path)
-                {
-                    var endWork = BedToWork(DocToBed(seg.B, fit));
-                    if (firstMove)
-                    {
-                        sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
-                        firstMove = false;
-                    }
-                    else
-                    {
-                        sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
-                    }
-                }
-
-                sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
-            }
-        }
-
-        private void BuildPaintingModeGcode(StringBuilder sb, List<LineStroke> strokes, FitSpec fit, double zUpCmd, double zDownCmd, double feedXY, double joinTol)
-        {
-            // Process strokes in DRAWING ORDER (not grouped by color)
-            // This allows wash/wipe between color changes
-            
-            Guid? currentWellId = null;
-            PaintWell? currentWell = null;
-            double distanceTraveled = 0;
-            double currentRefreshTarget = 0; // Randomized target for next refresh
-            var random = new Random(); // For natural-looking refresh intervals
-            
-            // Helper to get a random refresh distance within the well's range
-            double GetRandomRefreshDistance(PaintWell well)
-            {
-                var min = well.RefreshDistanceMinMm;
-                var max = well.RefreshDistanceMaxMm;
-                if (max <= min || max <= 0) return max; // No range, use max
-                return min + random.NextDouble() * (max - min);
-            }
-            
-            // Check if auto wash/wipe is enabled
-            var autoWashWipeEnabled = FindName("AutoWashWipeCheck") is CheckBox cb && cb.IsChecked == true;
-            
-            // Find wash and wipe wells by name (case-insensitive)
-            var washWell = _doc.PaintWells.FirstOrDefault(w => 
-                w.Name.Equals("Wash", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("wash", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("rinse", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("clean", StringComparison.OrdinalIgnoreCase));
-            
-            var wipeWell = _doc.PaintWells.FirstOrDefault(w => 
-                w.Name.Equals("Wipe", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("wipe", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("dry", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("towel", StringComparison.OrdinalIgnoreCase));
-
-            sb.AppendLine("; Processing strokes in drawing order with color change sequences");
-            sb.AppendLine($"; Auto wash/wipe: {(autoWashWipeEnabled ? "ENABLED" : "DISABLED")}");
-            if (washWell != null) sb.AppendLine($"; Wash well: {washWell.Name} (swirl pattern)");
-            if (wipeWell != null) sb.AppendLine($"; Wipe well: {wipeWell.Name} (zig-zag pattern)");
-
-            // Build continuous paths from strokes while respecting color boundaries
-            var paths = BuildPathsWithColorBoundaries(strokes, joinTol);
-            
-            foreach (var path in paths)
-            {
-                if (path.Count == 0) continue;
-
-                var pathWellId = path[0].PaintWellId;
-                var pathWell = pathWellId.HasValue ? _doc.PaintWells.FirstOrDefault(w => w.Id == pathWellId) : null;
-                
-                // Check if color changed - need to do wash/wipe/dip sequence
-                if (pathWellId != currentWellId)
-                {
-                    // Color is changing!
-                    if (currentWell != null && autoWashWipeEnabled)
-                    {
-                        sb.AppendLine($"; === Color change: {currentWell.Name} -> {pathWell?.Name ?? "Black"} ===");
-                        
-                        // Wash sequence with swirl pattern (if wash well exists and we had a previous color)
-                        if (washWell != null)
-                        {
-                            sb.AppendLine("; Wash brush with swirl pattern");
-                            GenerateWashSwirlPattern(sb, washWell, fit, zUpCmd, feedXY);
-                        }
-                        
-                        // Wipe sequence with zig-zag pattern (if wipe well exists)
-                        if (wipeWell != null)
-                        {
-                            sb.AppendLine("; Wipe brush with zig-zag pattern");
-                            GenerateWipeZigZagPattern(sb, wipeWell, fit, zUpCmd, zDownCmd, feedXY);
-                        }
-                    }
-                    else if (currentWell != null)
-                    {
-                        sb.AppendLine($"; === Color change: {currentWell.Name} -> {pathWell?.Name ?? "Black"} (auto wash/wipe disabled) ===");
-                    }
-                    
-                    // Dip in new color (if it's a paint well, not black)
-                    if (pathWell != null)
-                    {
-                        sb.AppendLine($"; === Paint Well: {pathWell.Name} ===");
-                        GeneratePaintDipSequence(sb, pathWell, fit, zUpCmd, feedXY);
-                        // Set randomized refresh target for this color
-                        currentRefreshTarget = GetRandomRefreshDistance(pathWell);
-                        sb.AppendLine($"; Next refresh at ~{currentRefreshTarget:F0}mm (range: {pathWell.RefreshDistanceMinMm:F0}-{pathWell.RefreshDistanceMaxMm:F0}mm)");
-                    }
-                    else
-                    {
-                        sb.AppendLine("; === No Paint Well (black) ===");
-                        currentRefreshTarget = 0;
-                    }
-                    
-                    currentWellId = pathWellId;
-                    currentWell = pathWell;
-                    distanceTraveled = 0;
-                }
-
-                // Draw this path
-                var first = path[0];
-                var startWork = BedToWork(DocToBed(first.A, fit));
-
-                sb.AppendLine($"G0 X{Fmt(startWork.X)} Y{Fmt(startWork.Y)}");
-                sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
-
-                bool firstMove = true;
-                PointMm lastPosition = startWork;
-
-                foreach (var seg in path)
-                {
-                    var endWork = BedToWork(DocToBed(seg.B, fit));
-                    
-                    // Calculate stroke length
-                    var strokeLength = Math.Sqrt(
-                        Math.Pow(endWork.X - lastPosition.X, 2) + 
-                        Math.Pow(endWork.Y - lastPosition.Y, 2));
-
-                    // Check for paint refresh (within same color) - use randomized target
-                    if (currentWell != null && currentRefreshTarget > 0 && strokeLength > 0.1)
-                    {
-                        var segmentStart = lastPosition;
-                        var segmentEnd = endWork;
-                        var remainingLength = strokeLength;
-                        
-                        while (remainingLength > 0.1)
-                        {
-                            var distanceUntilRefresh = currentRefreshTarget - distanceTraveled;
-                            
-                            if (remainingLength <= distanceUntilRefresh)
-                            {
-                                // Complete this segment without refresh
-                                if (firstMove)
-                                {
-                                    sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} F{Fmt(feedXY)}");
-                                    firstMove = false;
-                                }
-                                else
-                                {
-                                    sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)}");
-                                }
-                                distanceTraveled += remainingLength;
-                                lastPosition = segmentEnd;
-                                remainingLength = 0;
-                            }
-                            else
-                            {
-                                // Need to stop partway for refresh
-                                // But if remaining distance after this refresh would be less than half the max,
-                                // skip the refresh and continue (avoids robotic appearance)
-                                var remainingAfterRefresh = remainingLength - distanceUntilRefresh;
-                                var skipThreshold = currentWell.RefreshDistanceMaxMm / 2.0;
-                                
-                                if (remainingAfterRefresh < skipThreshold && remainingAfterRefresh > 0.1)
-                                {
-                                    // Skip this refresh, just complete the segment
-                                    if (firstMove)
-                                    {
-                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} F{Fmt(feedXY)} ; Skip refresh, only {remainingAfterRefresh:F0}mm left");
-                                        firstMove = false;
-                                    }
-                                    else
-                                    {
-                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} ; Skip refresh, only {remainingAfterRefresh:F0}mm left");
-                                    }
-                                    distanceTraveled += remainingLength;
-                                    lastPosition = segmentEnd;
-                                    remainingLength = 0;
-                                    continue;
-                                }
-                                
-                                var ratio = distanceUntilRefresh / remainingLength;
-                                var breakPoint = new PointMm(
-                                    segmentStart.X + (segmentEnd.X - segmentStart.X) * ratio,
-                                    segmentStart.Y + (segmentEnd.Y - segmentStart.Y) * ratio);
-                                
-                                if (firstMove)
-                                {
-                                    sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} F{Fmt(feedXY)}");
-                                    firstMove = false;
-                                }
-                                else
-                                {
-                                    sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)}");
-                                }
-                                
-                                distanceTraveled += distanceUntilRefresh;
-                                
-                                // Refresh paint (same color, no wash/wipe needed)
-                                sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift for paint refresh (traveled {distanceTraveled:F1}mm)");
-                                GeneratePaintDipSequence(sb, currentWell, fit, zUpCmd, feedXY);
-                                sb.AppendLine($"G0 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} ; Return to position");
-                                sb.AppendLine($"G0 Z{Fmt(zDownCmd)} ; Lower to continue");
-                                
-                                // Reset distance and get NEW random target for natural variation
-                                distanceTraveled = 0;
-                                currentRefreshTarget = GetRandomRefreshDistance(currentWell);
-                                sb.AppendLine($"; Next refresh at ~{currentRefreshTarget:F0}mm");
-                                
-                                remainingLength -= distanceUntilRefresh;
-                                segmentStart = breakPoint;
-                                lastPosition = breakPoint;
-                            }
-                        }
-                    }
-                    else
-                    {
-                        // No refresh tracking - just draw
-                        if (firstMove)
-                        {
-                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
-                            firstMove = false;
-                        }
-                        else
-                        {
-                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
-                        }
-                        
-                        if (currentWell != null && currentRefreshTarget > 0)
-                        {
-                            distanceTraveled += strokeLength;
-                        }
-                        lastPosition = endWork;
-                    }
-                }
-
-                sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
-            }
-        }
-
-        /// <summary>
-        /// Builds paths from strokes, breaking at color boundaries.
-        /// Strokes with the same color that are connected are grouped together.
-        /// When color changes, a new path starts.
-        /// </summary>
-        private static List<List<LineStroke>> BuildPathsWithColorBoundaries(List<LineStroke> input, double tol)
-        {
-            var result = new List<List<LineStroke>>();
-            List<LineStroke>? current = null;
-            Guid? currentColorId = null;
-
-            foreach (var stroke in input)
-            {
-                if (current == null)
-                {
-                    // Start first path
-                    current = new List<LineStroke> { stroke };
-                    currentColorId = stroke.PaintWellId;
-                    result.Add(current);
-                    continue;
-                }
-
-                // Check if color changed
-                if (stroke.PaintWellId != currentColorId)
-                {
-                    // Color changed - start new path
-                    current = new List<LineStroke> { stroke };
-                    currentColorId = stroke.PaintWellId;
-                    result.Add(current);
-                    continue;
-                }
-
-                // Same color - check if connected to previous stroke
-                var prev = current[^1];
-                if (Utility.Distance(prev.B, stroke.A) <= tol)
-                {
-                    // Connected - add to current path
-                    current.Add(stroke);
-                }
-                else
-                {
-                    // Not connected but same color - start new path (no wash/wipe needed)
-                    current = new List<LineStroke> { stroke };
-                    result.Add(current);
-                }
-            }
-
-            return result;
-        }
-
-        private void GeneratePaintDipSequence(StringBuilder sb, PaintWell well, FitSpec fit, double zUpCmd, double feedXY)
-        {
-            // Paint wells should NOT be clamped to safe margin - they're physical locations
-            // that may be outside the drawing area
-            var wellCenter = BedToWork(DocToBed(well.Center, fit, clamp: false));
-            // DipDepth is how deep to go into paint (positive value like 5mm)
-            // We negate it to get the Z command (negative Z = down into paint)
-            var dipDepthCmd = -well.DipDepth;
-
-            sb.AppendLine($"; Dip in paint well: {well.Name}");
-            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift before moving to paint well");
-            sb.AppendLine($"G0 X{Fmt(wellCenter.X)} Y{Fmt(wellCenter.Y)} ; Move to paint well");
-            sb.AppendLine($"G0 Z{Fmt(dipDepthCmd)} ; Dip into paint");
-            
-            if (well.DwellTimeMs > 0)
-            {
-                // GRBL 1.1 uses G4 P<seconds> (not milliseconds!)
-                // Convert ms to seconds for the dwell command
-                var dwellSeconds = well.DwellTimeMs / 1000.0;
-                sb.AppendLine($"G4 P{Fmt(dwellSeconds)} ; Dwell in paint ({well.DwellTimeMs}ms)");
-            }
-            
-            // Re-assert feed rate after dwell to avoid "Feed rate not yet set" errors
-            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} F{Fmt(feedXY)} ; Lift from paint well");
-        }
-
-        /// <summary>
-        /// Generates a swirl/spiral pattern for washing the brush in a rinse well.
-        /// The pattern stays within the well bounds and makes multiple quick circular motions.
-        /// </summary>
-        private void GenerateWashSwirlPattern(StringBuilder sb, PaintWell washWell, FitSpec fit, double zUpCmd, double feedXY)
-        {
-            var wellCenter = BedToWork(DocToBed(washWell.Center, fit, clamp: false));
-            var dipDepthCmd = -washWell.DipDepth;
-            
-            // Wash wells are rendered as circles using the smaller dimension as diameter
-            // We need to stay INSIDE that circle to avoid knocking over the cup
-            var circleDiameter = Math.Min(washWell.Bounds.Width, washWell.Bounds.Height);
-            var circleRadius = circleDiameter / 2.0;
-            
-            // Use 60% of the radius for safety margin (stay well inside the cup)
-            var maxRadius = circleRadius * 0.6;
-            
-            // Number of swirl loops and segments per loop
-            const int numLoops = 3;
-            const int segmentsPerLoop = 12;
-            const double swirlFeedRate = 5000; // Fast swirl motion
-            
-            sb.AppendLine($"; === Wash swirl pattern in: {washWell.Name} ===");
-            sb.AppendLine($"; Circle diameter: {circleDiameter:F1}mm, safe swirl radius: {maxRadius:F1}mm");
-            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift before moving to wash well");
-            sb.AppendLine($"G0 X{Fmt(wellCenter.X)} Y{Fmt(wellCenter.Y)} ; Move to wash well center");
-            sb.AppendLine($"G0 Z{Fmt(dipDepthCmd)} ; Lower into wash");
-            
-            // Generate swirl pattern - spiral outward then inward
-            for (int loop = 0; loop < numLoops; loop++)
-            {
-                // Spiral outward
-                for (int seg = 0; seg <= segmentsPerLoop; seg++)
-                {
-                    var t = (double)seg / segmentsPerLoop;
-                    var radius = maxRadius * t; // Grow radius
-                    var angle = t * 2 * Math.PI; // One full rotation per spiral
-                    
-                    var x = wellCenter.X + radius * Math.Cos(angle);
-                    var y = wellCenter.Y + radius * Math.Sin(angle);
-                    
-                    if (seg == 0)
-                        sb.AppendLine($"G1 X{Fmt(x)} Y{Fmt(y)} F{Fmt(swirlFeedRate)}");
-                    else
-                        sb.AppendLine($"G1 X{Fmt(x)} Y{Fmt(y)}");
-                }
-                
-                // Spiral inward
-                for (int seg = segmentsPerLoop; seg >= 0; seg--)
-                {
-                    var t = (double)seg / segmentsPerLoop;
-                    var radius = maxRadius * t;
-                    var angle = (1 - t) * 2 * Math.PI + Math.PI; // Reverse direction
-                    
-                    var x = wellCenter.X + radius * Math.Cos(angle);
-                    var y = wellCenter.Y + radius * Math.Sin(angle);
-                    
-                    sb.AppendLine($"G1 X{Fmt(x)} Y{Fmt(y)}");
-                }
-            }
-            
-            // Return to center and lift
-            sb.AppendLine($"G0 X{Fmt(wellCenter.X)} Y{Fmt(wellCenter.Y)} ; Return to center");
-            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} F{Fmt(feedXY)} ; Lift from wash well");
-        }
-
-        /// <summary>
-        /// Generates a zig-zag wiping pattern for drying the brush on a paper towel.
-        /// The pattern stays within the well bounds and makes multiple back-and-forth passes.
-        /// </summary>
-        private void GenerateWipeZigZagPattern(StringBuilder sb, PaintWell wipeWell, FitSpec fit, double zUpCmd, double zDownCmd, double feedXY)
-        {
-            // Get the well bounds in work coordinates
-            var topLeft = BedToWork(DocToBed(new PointMm(wipeWell.Bounds.Left, wipeWell.Bounds.Top), fit, clamp: false));
-            var bottomRight = BedToWork(DocToBed(new PointMm(wipeWell.Bounds.Right, wipeWell.Bounds.Bottom), fit, clamp: false));
-            
-            // Calculate the actual bounds (work coords may be inverted)
-            var minX = Math.Min(topLeft.X, bottomRight.X);
-            var maxX = Math.Max(topLeft.X, bottomRight.X);
-            var minY = Math.Min(topLeft.Y, bottomRight.Y);
-            var maxY = Math.Max(topLeft.Y, bottomRight.Y);
-            
-            // Add margin to stay inside the well
-            var margin = 10.0; // 10mm margin from edges
-            minX += margin;
-            maxX -= margin;
-            minY += margin;
-            maxY -= margin;
-            
-            // Ensure we have valid bounds
-            if (maxX <= minX || maxY <= minY)
-            {
-                // Well too small, fall back to simple dip
-                GeneratePaintDipSequence(sb, wipeWell, fit, zUpCmd, feedXY);
-                return;
-            }
-            
-            // Zig-zag parameters
-            const int numPasses = 4; // Number of back-and-forth passes
-            const double wipeFeedRate = 4000; // Moderate speed for wiping
-            var dipDepthCmd = -wipeWell.DipDepth;
-            var stepY = (maxY - minY) / (numPasses * 2 - 1); // Vertical step between zig-zag lines
-            
-            sb.AppendLine($"; === Wipe zig-zag pattern in: {wipeWell.Name} ===");
-            
-            // Move to starting position (top-left of wipe area)
-            var startX = minX;
-            var startY = maxY;
-            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift before moving to wipe area");
-            sb.AppendLine($"G0 X{Fmt(startX)} Y{Fmt(startY)} ; Move to wipe start");
-            sb.AppendLine($"G0 Z{Fmt(dipDepthCmd)} ; Lower onto wipe surface");
-            
-            // Generate zig-zag pattern
-            var currentY = startY;
-            var goingRight = true;
-            
-            for (int pass = 0; pass < numPasses * 2; pass++)
-            {
-                if (goingRight)
-                {
-                    // Move right
-                    sb.AppendLine(pass == 0 
-                        ? $"G1 X{Fmt(maxX)} Y{Fmt(currentY)} F{Fmt(wipeFeedRate)}"
-                        : $"G1 X{Fmt(maxX)} Y{Fmt(currentY)}");
-                }
-                else
-                {
-                    // Move left
-                    sb.AppendLine($"G1 X{Fmt(minX)} Y{Fmt(currentY)}");
-                }
-                
-                // Step down for next pass (except on last pass)
-                if (pass < numPasses * 2 - 1)
-                {
-                    currentY -= stepY;
-                    currentY = Math.Max(currentY, minY); // Don't go below minY
-                    sb.AppendLine($"G1 X{Fmt(goingRight ? maxX : minX)} Y{Fmt(currentY)}");
-                }
-                
-                goingRight = !goingRight;
-            }
-            
-            // Lift from wipe surface
-            sb.AppendLine($"G0 Z{Fmt(zUpCmd)} F{Fmt(feedXY)} ; Lift from wipe surface");
-        }
-
-        private static List<List<LineStroke>> BuildPaths(List<LineStroke> input, double tol)
-        {
-            var result = new List<List<LineStroke>>();
-            List<LineStroke>? current = null;
-
-            foreach (var stroke in input)
-            {
-                if (current == null)
-                {
-                    current = new List<LineStroke> { stroke };
-                    result.Add(current);
-                    continue;
-                }
-
-                var prev = current[^1];
-                if (Utility.Distance(prev.B, stroke.A) <= tol)
-                {
-                    current.Add(stroke);
-                }
-                else
-                {
-                    current = new List<LineStroke> { stroke };
-                    result.Add(current);
-                }
-            }
-
-            return result;
-        }
-
- 
-
-          private static string Fmt(double v) => v.ToString("0.###", CultureInfo.InvariantCulture); private enum FitMode { None, RotateCW }
-        private readonly record struct FitSpec(FitMode Mode, double Scale, double Margin, double DocW, double DocH);
-
-        private FitSpec ComputeFit(double docW, double docH, double bedX, double bedY, double margin)
-        {
-            var ux = Math.Max(1.0, bedX - margin * 2);
-            var uy = Math.Max(1.0, bedY - margin * 2);
-
-            // No-rotate scale
-            var s0 = Math.Min(ux / docW, uy / docH);
-            // Rotate CW scale
-            var s1 = Math.Min(ux / docH, uy / docW);
-
-            // Never scale up above 1.0
-            s0 = Math.Min(s0, 1.0);
-            s1 = Math.Min(s1, 1.0);
-
-            if (s1 > s0) return new FitSpec(FitMode.RotateCW, s1, margin, docW, docH);
-            return new FitSpec(FitMode.None, s0, margin, docW, docH);
+            //if (s1 > s0) return new FitSpec(FitMode.RotateCW, s1, margin, docW, docH);
+            //return new FitSpec(FitMode.None, s0, margin, docW, docH);
+            return _coordTransform.ComputeFit(docW, docH, bedX, bedY, margin);
         }
 
         // Map doc point into bed coordinates (origin = bed min/min corner), inside margins.
-        private PointMm DocToBed(PointMm p, FitSpec fit)
+        private PointMm DocToBed(PointMm p, CoordinateTransformService.FitSpec fit)
         {
-            return DocToBed(p, fit, clamp: true);
+            return _coordTransform.DocToBed(p, fit);
         }
 
-        private PointMm DocToBed(PointMm p, FitSpec fit, bool clamp)
+        private PointMm DocToBed(PointMm p, CoordinateTransformService.FitSpec fit, bool clamp)
         {
-            var m = fit.Margin;
-            var s = fit.Scale;
-
-            double x, y;
-
-            switch (fit.Mode)
-            {
-                case FitMode.RotateCW:
-                    // CW rotation about doc:
-                    // x' = y
-                    // y' = docW - x
-                    x = m + p.Y * s;
-                    y = m + (fit.DocW - p.X) * s;
-                    break;
-
-                default:
-                    x = m + p.X * s;
-                    y = m + p.Y * s;
-                    break;
-            }
-
-            if (clamp)
-            {
-                x = ClampBedX(x);
-                y = ClampBedY(y);
-            }
-            else
-            {
-                // Still clamp to physical bed limits (0 to bed size), just not the safe margin
-                x = Math.Clamp(x, 0, _bedX);
-                y = Math.Clamp(y, 0, _bedY);
-            }
-
-            return new PointMm(x, y);
+            return _coordTransform.DocToBed(p, fit, clamp);
         }
 
-        private double ClampBedX(double x) => Math.Clamp(x, SafeMarginMm, _bedX - SafeMarginMm);
-        private double ClampBedY(double y) => Math.Clamp(y, SafeMarginMm, _bedY - SafeMarginMm);
+        private double ClampBedX(double x)
+        {
+            return _coordTransform.ClampBedX(x);
+        }
+        private double ClampBedY(double y)
+        {
+            return _coordTransform.ClampBedY(y);
+        }   
 
         // Convert bed-local positive coords into WORK coords relative to home (0,0).
         // REQUIRED BY USER: X ALWAYS positive, Y ALWAYS negative.
@@ -5148,14 +4332,7 @@ namespace NVSPlotter
         private PointMm BedToWork(PointMm bed)
         {
             // Distance from HOME along each axis into the bed (always positive)
-            var distX = _homeAtMaxX ? (_bedX - bed.X) : bed.X;
-            var distY = _homeAtMaxY ? (_bedY - bed.Y) : bed.Y;
-
-            // Enforce requested sign convention
-            var wx = Math.Max(0, distX);      // ALWAYS >= 0
-            var wy = -Math.Max(0, distY);     // ALWAYS <= 0
-
-            return new PointMm(wx, wy);
+            return _coordTransform.BedToWork(bed);
         }
 
         private static double ParseDouble(string? s, double fallback)
@@ -5163,17 +4340,6 @@ namespace NVSPlotter
             if (double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out var v)) return v;
             if (double.TryParse(s, NumberStyles.Float, CultureInfo.CurrentCulture, out v)) return v;
             return fallback;
-        }
-
-        private bool EnsureConnected()
-        {
-            if (_grbl?.IsOpen == true)
-            {
-                return true;
-            }
-
-            AppendLog("Not connected to GRBL.");
-            return false;
         }
 
         // ===== PAINTING MODE / PAINT WELLS =====
@@ -5684,12 +4850,6 @@ namespace NVSPlotter
 
         // ===== PROJECT FILE OPERATIONS =====
 
-        private static readonly JsonSerializerOptions _jsonOptions = new()
-        {
-            WriteIndented = true,
-            PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-        };
-
         private void NewProjectBtn_Click(object sender, RoutedEventArgs e)
         {
             // Confirm if there are unsaved changes
@@ -5795,51 +4955,8 @@ namespace NVSPlotter
 
         private void SaveProjectToFile(string filePath)
         {
-            var projectFile = new ProjectFile
-            {
-                Version = 1,
-                WidthMm = _doc.WidthMm,
-                HeightMm = _doc.HeightMm
-            };
-
-            // Convert strokes to serializable format
-            foreach (var stroke in _doc.Strokes)
-            {
-                projectFile.Strokes.Add(new StrokeData
-                {
-                    Ax = stroke.A.X,
-                    Ay = stroke.A.Y,
-                    Bx = stroke.B.X,
-                    By = stroke.B.Y,
-                    PaintWellId = stroke.PaintWellId,
-                    GroupId = stroke.GroupId
-                });
-            }
-
-            // Convert paint wells to serializable format
-            foreach (var well in _doc.PaintWells)
-            {
-                projectFile.PaintWells.Add(new PaintWellData
-                {
-                    Id = well.Id,
-                    Name = well.Name,
-                    ColorA = well.Color.A,
-                    ColorR = well.Color.R,
-                    ColorG = well.Color.G,
-                    ColorB = well.Color.B,
-                    BoundsLeft = well.Bounds.Left,
-                    BoundsTop = well.Bounds.Top,
-                    BoundsWidth = well.Bounds.Width,
-                    BoundsHeight = well.Bounds.Height,
-                    DipDepth = well.DipDepth,
-                    DwellTimeMs = well.DwellTimeMs,
-                    RefreshDistanceMinMm = well.RefreshDistanceMinMm,
-                    RefreshDistanceMaxMm = well.RefreshDistanceMaxMm
-                });
-            }
-
-            // Save settings
-            projectFile.Settings = new ProjectSettings
+            // Collect current UI settings
+            var settings = new ProjectSettings
             {
                 // Document settings
                 PagePresetIndex = PagePresetCombo?.SelectedIndex ?? 0,
@@ -5873,67 +4990,20 @@ namespace NVSPlotter
                 EndGcode = (FindName("EndGcodeBox") as TextBox)?.Text ?? ""
             };
 
-            // Save working area if defined
-            if (_workingAreaManager.DefinedArea is Rect area)
-            {
-                projectFile.Settings.WorkingArea = new WorkingAreaData
-                {
-                    Left = area.Left,
-                    Top = area.Top,
-                    Width = area.Width,
-                    Height = area.Height
-                };
-            }
-
-            var json = JsonSerializer.Serialize(projectFile, _jsonOptions);
-            File.WriteAllText(filePath, json, Encoding.UTF8);
-
-            AppendLog($"Project saved: {filePath} ({_doc.Strokes.Count} strokes, {_doc.PaintWells.Count} paint wells)");
+            // Delegate to service
+            _projectFileService.SaveProject(filePath, _doc, settings, _workingAreaManager.DefinedArea);
         }
 
         private void LoadProjectFromFile(string filePath)
         {
-            var json = File.ReadAllText(filePath, Encoding.UTF8);
-            var projectFile = JsonSerializer.Deserialize<ProjectFile>(json, _jsonOptions);
+            // Load project using service
+            var result = _projectFileService.LoadProject(filePath);
 
-            if (projectFile == null)
-            {
-                throw new InvalidOperationException("Failed to parse project file.");
-            }
+            // Update document
+            _doc = result.Document;
 
-            // Create new document with loaded dimensions
-            _doc = new PlotDocument(projectFile.WidthMm, projectFile.HeightMm);
-
-            // Load paint wells first (strokes reference them by ID)
-            foreach (var wellData in projectFile.PaintWells)
-            {
-                var well = new PaintWell
-                {
-                    Id = wellData.Id,
-                    Name = wellData.Name,
-                    Color = Color.FromArgb(wellData.ColorA, wellData.ColorR, wellData.ColorG, wellData.ColorB),
-                    Bounds = new Rect(wellData.BoundsLeft, wellData.BoundsTop, wellData.BoundsWidth, wellData.BoundsHeight),
-                    DipDepth = wellData.DipDepth,
-                    DwellTimeMs = wellData.DwellTimeMs,
-                    RefreshDistanceMinMm = wellData.RefreshDistanceMinMm,
-                    RefreshDistanceMaxMm = wellData.RefreshDistanceMaxMm
-                };
-                _doc.PaintWells.Add(well);
-            }
-
-            // Load strokes
-            foreach (var strokeData in projectFile.Strokes)
-            {
-                var stroke = new LineStroke(
-                    new PointMm(strokeData.Ax, strokeData.Ay),
-                    new PointMm(strokeData.Bx, strokeData.By),
-                    strokeData.PaintWellId,
-                    strokeData.GroupId);
-                _doc.Strokes.Add(stroke);
-            }
-
-            // Load settings (with null checks for backward compatibility)
-            var settings = projectFile.Settings ?? new ProjectSettings();
+            // Apply settings to UI
+            var settings = result.Settings;
 
             // Document settings
             if (PagePresetCombo != null) PagePresetCombo.SelectedIndex = settings.PagePresetIndex;
@@ -5968,13 +5038,8 @@ namespace NVSPlotter
 
             // Working area
             _workingAreaManager.Clear();
-            if (settings.WorkingArea != null)
+            if (result.WorkingArea is Rect area)
             {
-                var area = new Rect(
-                    settings.WorkingArea.Left,
-                    settings.WorkingArea.Top,
-                    settings.WorkingArea.Width,
-                    settings.WorkingArea.Height);
                 _workingAreaManager.SetArea(area);
             }
 
@@ -5991,15 +5056,11 @@ namespace NVSPlotter
             UpdateWorkingAreaStatus();
             UpdateWindowTitle();
             RenderAll();
-
-            AppendLog($"Project loaded: {filePath} ({_doc.Strokes.Count} strokes, {_doc.PaintWells.Count} paint wells)");
         }
 
         private void UpdateWindowTitle()
         {
-            var projectName = string.IsNullOrEmpty(_currentProjectPath)
-                ? "Untitled"
-                : System.IO.Path.GetFileName(_currentProjectPath);
+            var projectName = ProjectFileService.GetProjectName(_currentProjectPath);
             Title = $"NVS Plotter - {projectName}";
         }
 
@@ -6035,6 +5096,44 @@ namespace NVSPlotter
                     }
                 });
             };
+        }
+        
+        /// <summary>
+        /// Applies dark/light mode theme to the window's title bar (Windows 10 build 18985+).
+        /// Uses DWM API to set immersive dark mode for the window chrome.
+        /// </summary>
+        private void ApplyWindowChromeTheme()
+        {
+            try
+            {
+                // Get window handle
+                var handle = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+                if (handle == IntPtr.Zero) return;
+
+                // Determine if we should use dark mode
+                var useDarkMode = ThemeManager.Instance.IsDarkMode ? 1 : 0;
+
+                // Try the newer attribute first (Windows 10 build 19041+)
+                var result = DwmSetWindowAttribute(
+                    handle,
+                    DWMWA_USE_IMMERSIVE_DARK_MODE,
+                    ref useDarkMode,
+                    sizeof(int));
+
+                // If that fails, try the older attribute (Windows 10 build 18985-19040)
+                if (result != 0)
+                {
+                    DwmSetWindowAttribute(
+                        handle,
+                        DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1,
+                        ref useDarkMode,
+                        sizeof(int));
+                }
+            }
+            catch
+            {
+                // Silently fail if DWM API is not available (Windows 7/8)
+            }
         }
 
     }

@@ -1,12 +1,13 @@
 ﻿<Window
-        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:gif="http://wpfanimatedgif.codeplex.com"
-        xmlns:Models="clr-namespace:NVSPlotter.Models" xmlns:local="clr-namespace:NVSPlotter" x:Name="MainContainerWindow" x:Class="NVSPlotter.MainWindow"
-        Title="NVSPlotter" Width="1280" Height="807"
-        WindowStartupLocation="CenterScreen"
-        WindowState="Maximized" UseLayoutRounding="True"
-        PreviewKeyDown="Window_PreviewKeyDown" Background="{x:Null}">
+xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+xmlns:gif="http://wpfanimatedgif.codeplex.com"
+xmlns:Models="clr-namespace:NVSPlotter.Models" xmlns:local="clr-namespace:NVSPlotter" x:Name="MainContainerWindow" x:Class="NVSPlotter.MainWindow"
+Title="NVSPlotter" Width="1280" Height="807"
+WindowStartupLocation="CenterScreen"
+WindowState="Maximized" UseLayoutRounding="True"
+PreviewKeyDown="Window_PreviewKeyDown" 
+Style="{DynamicResource ThemedWindow}">
     <Grid>
         <Grid.ColumnDefinitions>
             <ColumnDefinition Width="380"/>
