@@ -3,6 +3,7 @@ using NVSPlotter.Util;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Windows;
 
 namespace NVSPlotter.Services
 {
@@ -33,6 +34,9 @@ namespace NVSPlotter.Services
         private readonly Func<bool> _getIsSnapToGridEnabled;
         private readonly Func<double> _getGridSpacing;
         private readonly Func<double> _getSafeMargin;
+        private readonly Func<(double Left, double Top, double Right, double Bottom)>? _getIndividualMargins;
+        private readonly Func<bool>? _getLockMarginsToCanvas;
+        private readonly Func<Rect?>? _getPaintCanvasArea;
 
         private const double RULER_THICKNESS = 18.0;
 
@@ -45,13 +49,19 @@ namespace NVSPlotter.Services
         /// <param name="getIsSnapToGridEnabled">Function to check if grid snapping is enabled</param>
         /// <param name="getGridSpacing">Function to get the grid spacing (mm)</param>
         /// <param name="getSafeMargin">Function to get the safe margin (mm), or null to disable margin clamping</param>
+        /// <param name="getIndividualMargins">Function to get individual margins (left, top, right, bottom), or null to use uniform margin</param>
+        /// <param name="getLockMarginsToCanvas">Function to check if margins are locked to paint canvas</param>
+        /// <param name="getPaintCanvasArea">Function to get the paint canvas area bounds</param>
         public SnappingService(
             Func<PlotDocument> getDocument,
             Func<bool> getIsSnapEnabled,
             Func<double> getSnapRadius,
             Func<bool> getIsSnapToGridEnabled,
             Func<double> getGridSpacing,
-            Func<double>? getSafeMargin = null)
+            Func<double>? getSafeMargin = null,
+            Func<(double Left, double Top, double Right, double Bottom)>? getIndividualMargins = null,
+            Func<bool>? getLockMarginsToCanvas = null,
+            Func<Rect?>? getPaintCanvasArea = null)
         {
             _getDocument = getDocument ?? throw new ArgumentNullException(nameof(getDocument));
             _getIsSnapEnabled = getIsSnapEnabled ?? throw new ArgumentNullException(nameof(getIsSnapEnabled));
@@ -59,6 +69,52 @@ namespace NVSPlotter.Services
             _getIsSnapToGridEnabled = getIsSnapToGridEnabled ?? throw new ArgumentNullException(nameof(getIsSnapToGridEnabled));
             _getGridSpacing = getGridSpacing ?? throw new ArgumentNullException(nameof(getGridSpacing));
             _getSafeMargin = getSafeMargin ?? (() => 0.0);
+            _getIndividualMargins = getIndividualMargins;
+            _getLockMarginsToCanvas = getLockMarginsToCanvas;
+            _getPaintCanvasArea = getPaintCanvasArea;
+        }
+        
+        /// <summary>
+        /// Gets the effective margins (left, top, right, bottom).
+        /// Uses individual margins if available, otherwise uses uniform safe margin.
+        /// </summary>
+        private (double Left, double Top, double Right, double Bottom) GetEffectiveMargins()
+        {
+            if (_getIndividualMargins != null)
+            {
+                return _getIndividualMargins();
+            }
+            var margin = _getSafeMargin();
+            return (margin, margin, margin, margin);
+        }
+        
+        /// <summary>
+        /// Gets the safe drawing area bounds in canvas coordinates.
+        /// When lock margins to canvas is enabled and a paint canvas is defined,
+        /// the safe area IS the paint canvas area.
+        /// Otherwise, the safe area is the document bounds minus margins.
+        /// </summary>
+        private (double MinX, double MinY, double MaxX, double MaxY) GetSafeAreaBounds()
+        {
+            var doc = _getDocument();
+            
+            // Check if margins are locked to paint canvas
+            if (_getLockMarginsToCanvas != null && _getLockMarginsToCanvas() &&
+                _getPaintCanvasArea != null && _getPaintCanvasArea() is Rect canvasArea)
+            {
+                // When locked to canvas, the safe area IS the paint canvas area
+                // The canvas area is already in canvas coordinates (includes ruler offset)
+                return (canvasArea.Left, canvasArea.Top, canvasArea.Right, canvasArea.Bottom);
+            }
+            
+            // Standard mode: safe area is document bounds minus margins
+            var margins = GetEffectiveMargins();
+            var minX = RULER_THICKNESS + margins.Left;
+            var minY = RULER_THICKNESS + margins.Top;
+            var maxX = RULER_THICKNESS + Math.Max(margins.Left, doc.WidthMm - margins.Right);
+            var maxY = RULER_THICKNESS + Math.Max(margins.Top, doc.HeightMm - margins.Bottom);
+            
+            return (minX, minY, maxX, maxY);
         }
 
         #region Endpoint Snapping
@@ -135,6 +191,7 @@ namespace NVSPlotter.Services
         /// <summary>
         /// Snaps a point to the nearest grid intersection if snap-to-grid is enabled.
         /// Respects safe margins on all sides (left, top, right, bottom).
+        /// When lock margins to canvas is enabled, clamps to the paint canvas area.
         /// </summary>
         /// <param name="raw">The raw point to snap</param>
         /// <returns>The snapped point, or the original if grid snapping is disabled</returns>
@@ -144,9 +201,6 @@ namespace NVSPlotter.Services
 
             var spacing = _getGridSpacing();
             if (spacing <= 0) return raw;
-
-            var doc = _getDocument();
-            var safeMargin = _getSafeMargin();
 
             // Grid lines are drawn at rulerThickness + (n * spacing) positions
             // To snap to grid intersections, we need to account for this offset
@@ -158,18 +212,16 @@ namespace NVSPlotter.Services
             var snappedDocX = Math.Round(docX / spacing) * spacing;
             var snappedDocY = Math.Round(docY / spacing) * spacing;
 
-            // Clamp to safe area within document bounds
-            // Safe margin is applied on all sides: left, top, right, and bottom
-            var minX = safeMargin;
-            var minY = safeMargin;
-            var maxX = Math.Max(safeMargin, doc.WidthMm - safeMargin);
-            var maxY = Math.Max(safeMargin, doc.HeightMm - safeMargin);
-
-            snappedDocX = Math.Clamp(snappedDocX, minX, maxX);
-            snappedDocY = Math.Clamp(snappedDocY, minY, maxY);
-
             // Convert back to canvas coordinates
-            return new PointMm(snappedDocX + RULER_THICKNESS, snappedDocY + RULER_THICKNESS);
+            var snappedX = snappedDocX + RULER_THICKNESS;
+            var snappedY = snappedDocY + RULER_THICKNESS;
+
+            // Clamp to safe area bounds
+            var (minX, minY, maxX, maxY) = GetSafeAreaBounds();
+            snappedX = Math.Clamp(snappedX, minX, maxX);
+            snappedY = Math.Clamp(snappedY, minY, maxY);
+
+            return new PointMm(snappedX, snappedY);
         }
 
         #endregion

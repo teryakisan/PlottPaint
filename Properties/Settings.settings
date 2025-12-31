@@ -17,6 +17,21 @@
     <Setting Name="safeMarginMm" Type="System.Double" Scope="User">
       <Value Profile="(Default)">50</Value>
     </Setting>
+    <Setting Name="useIndividualMargins" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
+    </Setting>
+    <Setting Name="marginLeftMm" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">50</Value>
+    </Setting>
+    <Setting Name="marginTopMm" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">50</Value>
+    </Setting>
+    <Setting Name="marginRightMm" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">50</Value>
+    </Setting>
+    <Setting Name="marginBottomMm" Type="System.Double" Scope="User">
+      <Value Profile="(Default)">50</Value>
+    </Setting>
     <Setting Name="bedSizeMode" Type="System.String" Scope="User">
       <Value Profile="(Default)">Auto</Value>
     </Setting>
@@ -37,6 +52,9 @@
     </Setting>
     <Setting Name="UseSystemTheme" Type="System.Boolean" Scope="User">
       <Value Profile="(Default)">True</Value>
+    </Setting>
+    <Setting Name="LockMarginsToCanvas" Type="System.Boolean" Scope="User">
+      <Value Profile="(Default)">False</Value>
     </Setting>
   </Settings>
 </SettingsFile>

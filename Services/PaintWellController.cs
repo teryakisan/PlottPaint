@@ -650,6 +650,16 @@ public sealed class PaintWellController
                     rect.StrokeDashArray = [6, 3];
                 }
 
+                // Apply rotation transform if the paint well has been rotated
+                if (Math.Abs(well.Rotation) > 0.001)
+                {
+                    // Rotation is around the center of the rectangle
+                    rect.RenderTransform = new RotateTransform(
+                        well.Rotation * 180 / Math.PI,  // Convert radians to degrees
+                        well.Bounds.Width / 2,
+                        well.Bounds.Height / 2);
+                }
+
                 Canvas.SetLeft(rect, rulerThickness + well.Bounds.Left);
                 Canvas.SetTop(rect, rulerThickness + well.Bounds.Top);
                 Panel.SetZIndex(rect, 8);
@@ -731,7 +741,7 @@ public sealed class PaintWellController
             }
 
             // Label with name - positioned at top-left of well
-            // Labels rotate with the canvas, which keeps them associated with their wells
+            // Labels rotate with the paint well to stay associated
             var label = new TextBlock
             {
                 Text = well.Name,
@@ -746,6 +756,25 @@ public sealed class PaintWellController
             // Position label at the top-left of the well bounds
             double labelX = rulerThickness + well.Bounds.Left + 4;
             double labelY = rulerThickness + well.Bounds.Top + 4;
+            
+            // Apply rotation if the paint well is rotated
+            if (Math.Abs(well.Rotation) > 0.001)
+            {
+                // Calculate the label position relative to the well center
+                var wellCenterCanvasX = rulerThickness + centerX;
+                var wellCenterCanvasY = rulerThickness + centerY;
+                
+                // Rotate the label's position around the well center
+                var cos = Math.Cos(well.Rotation);
+                var sin = Math.Sin(well.Rotation);
+                var dx = labelX - wellCenterCanvasX;
+                var dy = labelY - wellCenterCanvasY;
+                labelX = wellCenterCanvasX + dx * cos - dy * sin;
+                labelY = wellCenterCanvasY + dx * sin + dy * cos;
+                
+                // Also rotate the label text itself
+                label.RenderTransform = new RotateTransform(well.Rotation * 180 / Math.PI);
+            }
             
             Canvas.SetLeft(label, labelX);
             Canvas.SetTop(label, labelY);

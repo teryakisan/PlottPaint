@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Shapes;
 using FontAwesome.WPF;
 using NVSPlotter.Models;
+using NVSPlotter.Services.Selection;
 
 // Avoid ambiguity with System.Drawing and System.Windows.Forms types
 using Brushes = System.Windows.Media.Brushes;
@@ -16,6 +17,8 @@ using Rectangle = System.Windows.Shapes.Rectangle;
 using Point = System.Windows.Point;
 using Panel = System.Windows.Controls.Panel;
 using Cursors = System.Windows.Input.Cursors;
+using SelectionMode = NVSPlotter.Services.Selection.SelectionMode;
+using SelectionHandle = NVSPlotter.Services.Selection.SelectionHandle;
 
 namespace NVSPlotter.Services;
 
@@ -24,95 +27,31 @@ namespace NVSPlotter.Services;
 /// </summary>
 public sealed class SelectionController
 {
-    public enum SelectionHandle
-    {
-        None,
-        TopLeft, TopCenter, TopRight,
-        MiddleLeft, MiddleRight,
-        BottomLeft, BottomCenter, BottomRight,
-        Rotate,
-        Body // For moving the entire selection
-    }
-
-    public enum SelectionMode
-    {
-        Idle,
-        MarqueeSelecting,
-        Moving,
-        Resizing,
-        Rotating
-    }
-
-    private const double HIT_TOLERANCE = 8.0; // mm - distance to click on a stroke
-    private const double HANDLE_SIZE = 12.0;  // Visual size of handles
-    private const double ROTATE_HANDLE_SIZE = 18.0; // Visual size of rotation handle (larger for visibility)
-    private const double HANDLE_HIT_RADIUS = 20.0; // Hit test radius for handles (generous for easier clicking)
-    private const double ROTATE_HANDLE_HIT_RADIUS = 25.0; // Hit test radius for rotation handle (even more generous)
-    private const double ROTATE_HANDLE_OFFSET = 45.0; // Distance from top of selection to rotation handle (outside the box)
     private const double RULER_THICKNESS = 18.0;  // Must match the ruler offset used in rendering
-    private const double SELECTION_PADDING = 20.0; // Padding between selection handles and content
-    private const double PAINT_WELL_HIT_MARGIN = 10.0; // Extra margin around paint well bounds for easier clicking
-    private const double MAX_ICON_SIZE = 60.0; // Maximum size for hover icons
-    private const double MIN_ICON_SIZE = 20.0; // Minimum size for hover icons
-    private const double ICON_SIZE_RATIO = 0.5; // Icon size as a ratio of the smaller selection dimension
 
     private readonly Canvas _canvas;
     private readonly Func<PlotDocument> _getDocument;
     private readonly Action _requestRender;
+    
+    // Encapsulated selection state
+    private readonly SelectionState _state = new();
+    
+    // Visual element management
+    private readonly SelectionVisuals _visuals;
+    private readonly SelectionHitTester _hitTester = new();
 
-    // Selection state - strokes
-    private readonly HashSet<int> _selectedIndices = new();
-    
-    // Selection state - paint wells
-    private readonly HashSet<Guid> _selectedPaintWellIds = new();
-    
-    private Rect _selectionBounds;
-    private SelectionMode _mode = SelectionMode.Idle;
-    private SelectionHandle _activeHandle = SelectionHandle.None;
-
-    // Drag state
-    private PointMm _dragStart;
-    private Rect _originalBounds;
-    private List<LineStroke>? _originalStrokes;
-    private List<(Guid Id, Rect Bounds)>? _originalPaintWellBounds;
-    private double _originalAngle;
-    
-    // Cumulative rotation tracking for selection box display
-    private double _selectionRotationAngle;
-    private double _baseRotationAngle; // Rotation angle at the start of the current rotation operation
-    private Point _selectionRotationCenter;
-    
-    // Logical bounds tracking - the unrotated bounding box that we scale relative to
-    // This is separate from _selectionBounds which is the axis-aligned bounds of the actual (rotated) strokes
-    private Rect _logicalBounds;
-
-    // Preview visuals
-    private Rectangle? _marqueeRect;
-    private Path? _boundsPath;  // Changed from Rectangle to Path for proper rotation
-    private readonly List<Rectangle> _handles = new();
-    private Ellipse? _rotateHandle;
-    private Ellipse? _rotateHandleHoverRing; // Dashed green ring shown when hovering over rotation handle
-    private ImageAwesome? _rotateIcon; // FontAwesome rotation icon shown on hover at center
-    private Line? _rotateConnector;
-    private Point _rotateHandlePosition; // Store position for hover detection
-    private Point _selectionCenterPosition; // Store center for icon placement
-    
-    // Resize handle hover visuals
-    private Border? _resizeHandleHoverRing; // Highlight ring for resize handles
-    private ImageAwesome? _resizeIcon; // FontAwesome arrows-alt icon shown on hover
-    private readonly List<Point> _resizeHandlePositions = new(); // Store positions of all resize handles
-
-    public bool HasSelection => _selectedIndices.Count > 0 || _selectedPaintWellIds.Count > 0;
-    public bool IsActive => _mode != SelectionMode.Idle;
-    public IReadOnlySet<int> SelectedIndices => _selectedIndices;
-    public IReadOnlySet<Guid> SelectedPaintWellIds => _selectedPaintWellIds;
-    public Rect SelectionBounds => _selectionBounds;
+    public bool HasSelection => _state.HasSelection;
+    public bool IsActive => _state.IsActive;
+    public IReadOnlySet<int> SelectedIndices => _state.SelectedIndices;
+    public IReadOnlySet<Guid> SelectedPaintWellIds => _state.SelectedPaintWellIds;
+    public Rect SelectionBounds => _state.SelectionBounds;
 
     public SelectionController(Canvas canvas, Func<PlotDocument> getDocument, Action requestRender)
     {
         _canvas = canvas ?? throw new ArgumentNullException(nameof(canvas));
         _getDocument = getDocument ?? throw new ArgumentNullException(nameof(getDocument));
         _requestRender = requestRender ?? throw new ArgumentNullException(nameof(requestRender));
+        _visuals = new SelectionVisuals(canvas);
     }
 
     /// <summary>
@@ -126,7 +65,7 @@ public sealed class SelectionController
         // Check if clicking on a handle (handles are in canvas space for paint wells)
         if (HasSelection)
         {
-            var handle = HitTestHandle(point);
+            var handle = _hitTester.HitTestHandle(point, GetBoundsForHitTest(), _state.RotationAngle, _state.Mode);
             if (handle != SelectionHandle.None)
             {
                 BeginHandleOperation(handle, point);
@@ -134,7 +73,7 @@ public sealed class SelectionController
             }
 
             // Check if clicking inside selection bounds (move)
-            if (IsPointInBounds(point, _selectionBounds))
+            if (_hitTester.IsPointInBounds(point, GetBoundsForHitTest(), _state.RotationAngle))
             {
                 BeginMove(point);
                 return true;
@@ -145,46 +84,46 @@ public sealed class SelectionController
         var docPoint = CanvasToDocument(point);
 
         // Check if clicking on a paint well first (they're visually larger/easier to click)
-        var hitWell = HitTestPaintWell(docPoint, doc.PaintWells);
+        var hitWell = _hitTester.HitTestPaintWell(docPoint, doc.PaintWells);
         if (hitWell != null)
         {
             if (shiftHeld)
             {
                 // Toggle selection
-                if (_selectedPaintWellIds.Contains(hitWell.Id))
-                    _selectedPaintWellIds.Remove(hitWell.Id);
+                if (_state.SelectedPaintWellIds.Contains(hitWell.Id))
+                    _state.SelectedPaintWellIds.Remove(hitWell.Id);
                 else
-                    _selectedPaintWellIds.Add(hitWell.Id);
+                    _state.SelectedPaintWellIds.Add(hitWell.Id);
                     
                 // Reset rotation when selection changes - pivot point needs to be recalculated
-                _selectionRotationAngle = 0;
+                _state.RotationAngle = 0;
             }
             else
             {
                 // Single select - clear all selections first
-                _selectedIndices.Clear();
-                _selectedPaintWellIds.Clear();
-                _selectedPaintWellIds.Add(hitWell.Id);
+                _state.SelectedIndices.Clear();
+                _state.SelectedPaintWellIds.Clear();
+                _state.SelectedPaintWellIds.Add(hitWell.Id);
                 // Reset rotation for new selection
-                _selectionRotationAngle = 0;
+                _state.RotationAngle = 0;
             }
             UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
-            _logicalBounds = _selectionBounds; // Initialize logical bounds for new selection
+            _state.LogicalBounds = _state.SelectionBounds; // Initialize logical bounds for new selection
             _requestRender();
             return true;
         }
 
         // Check if clicking on a stroke (single select) - strokes use canvas coordinates directly
         // When clicking on a stroke, select all strokes in the same group (object)
-        var hitIndex = HitTestStroke(point, doc.Strokes);
+        var hitIndex = _hitTester.HitTestStroke(point, doc.Strokes);
         if (hitIndex >= 0)
         {
             // Find all strokes in the same group as the clicked stroke
-            var groupedIndices = FindGroupedStrokes(hitIndex, doc.Strokes);
+            var groupedIndices = _hitTester.FindGroupedStrokes(hitIndex, doc.Strokes);
             
             // Check if clicking on an already-selected grouped object
             // If so, do nothing (prevents indicator jumping on repeated clicks)
-            var allGroupedAlreadySelected = groupedIndices.All(idx => _selectedIndices.Contains(idx));
+            var allGroupedAlreadySelected = groupedIndices.All(idx => _state.SelectedIndices.Contains(idx));
             if (allGroupedAlreadySelected && !shiftHeld)
             {
                 // Already selected - do nothing, just return
@@ -195,14 +134,14 @@ public sealed class SelectionController
             {
                 // Toggle selection of entire grouped object
                 // Check if any of the grouped strokes are already selected
-                var anySelected = groupedIndices.Any(idx => _selectedIndices.Contains(idx));
+                var anySelected = groupedIndices.Any(idx => _state.SelectedIndices.Contains(idx));
                 
                 if (anySelected)
                 {
                     // Remove all grouped strokes from selection
                     foreach (var idx in groupedIndices)
                     {
-                        _selectedIndices.Remove(idx);
+                        _state.SelectedIndices.Remove(idx);
                     }
                 }
                 else
@@ -210,30 +149,30 @@ public sealed class SelectionController
                     // Add all grouped strokes to selection
                     foreach (var idx in groupedIndices)
                     {
-                        _selectedIndices.Add(idx);
+                        _state.SelectedIndices.Add(idx);
                     }
                 }
                 
                 // Reset rotation when selection changes - pivot point needs to be recalculated
-                _selectionRotationAngle = 0;
+                _state.RotationAngle = 0;
             }
             else
             {
                 // Single select entire grouped object - clear all selections first
-                _selectedIndices.Clear();
-                _selectedPaintWellIds.Clear();
+                _state.SelectedIndices.Clear();
+                _state.SelectedPaintWellIds.Clear();
                 
                 // Reset rotation for new selection
-                _selectionRotationAngle = 0;
+                _state.RotationAngle = 0;
                 
                 // Find and select all strokes in the same group
                 foreach (var idx in groupedIndices)
                 {
-                    _selectedIndices.Add(idx);
+                    _state.SelectedIndices.Add(idx);
                 }
             }
             UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
-            _logicalBounds = _selectionBounds; // Initialize logical bounds for new selection
+            _state.LogicalBounds = _state.SelectionBounds; // Initialize logical bounds for new selection
             _requestRender();
             return true;
         }
@@ -241,10 +180,10 @@ public sealed class SelectionController
         // Start marquee selection
         if (!shiftHeld)
         {
-            _selectedIndices.Clear();
-            _selectedPaintWellIds.Clear();
+            _state.SelectedIndices.Clear();
+            _state.SelectedPaintWellIds.Clear();
             // Reset rotation for new selection
-            _selectionRotationAngle = 0;
+            _state.RotationAngle = 0;
         }
         BeginMarquee(point);
         return true;
@@ -264,7 +203,7 @@ public sealed class SelectionController
     /// </summary>
     public bool HandleMouseMove(PointMm point)
     {
-        switch (_mode)
+        switch (_state.Mode)
         {
             case SelectionMode.MarqueeSelecting:
                 UpdateMarquee(point);
@@ -297,215 +236,56 @@ public sealed class SelectionController
     /// </summary>
     private void UpdateRotateHandleHover(PointMm point)
     {
-        if (_rotateHandle == null) return;
+        if (!_visuals.HasRotateHandle) return;
 
         // Check rotation handle hover
-        var rotateDistance = Distance(point, new PointMm(_rotateHandlePosition.X, _rotateHandlePosition.Y));
-        var isHoveringRotate = rotateDistance <= ROTATE_HANDLE_HIT_RADIUS;
+        var isHoveringRotate = _hitTester.IsHoveringRotateHandle(point, _visuals.RotateHandlePosition);
         
         // Check resize handle hover
-        var (isHoveringResize, hoveredResizeHandleIndex) = CheckResizeHandleHover(point);
+        var (isHoveringResize, hoveredResizeHandleIndex) = _hitTester.CheckResizeHandleHover(point, _visuals.ResizeHandlePositions);
 
         // Handle rotation hover
-        if (isHoveringRotate && _rotateHandleHoverRing == null)
+        if (isHoveringRotate)
         {
             // Clear any resize hover first
-            ClearResizeHoverVisuals();
+            _visuals.ClearResizeHoverVisuals();
             
-            // Create a large radiating glow effect - using LimeGreen (50,205,50) for consistency with line start indicators
-            const double GLOW_SIZE = 70; // Large glow size for high visibility
-            
-            // Create radial gradient that fades from bright LimeGreen center to fully transparent edge
-            var glowBrush = new RadialGradientBrush
-            {
-                GradientOrigin = new Point(0.5, 0.5),
-                Center = new Point(0.5, 0.5),
-                RadiusX = 0.5,
-                RadiusY = 0.5
-            };
-            // Use LimeGreen (50,205,50) - same as line start indicators for visual consistency
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(255, 50, 205, 50), 0.0));   // Solid LimeGreen core
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(220, 50, 205, 50), 0.15)); // Still very solid
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(160, 50, 205, 50), 0.3));  // Starting to fade
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(90, 50, 205, 50), 0.5));   // Mid fade
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(40, 50, 205, 50), 0.7));   // Mostly faded
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(10, 50, 205, 50), 0.85));  // Nearly transparent
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 50, 205, 50), 1.0));    // Fully transparent at edge
-            
-            _rotateHandleHoverRing = new Ellipse
-            {
-                Width = GLOW_SIZE,
-                Height = GLOW_SIZE,
-                Fill = glowBrush,
-                Stroke = Brushes.Transparent,
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-            Canvas.SetLeft(_rotateHandleHoverRing, _rotateHandlePosition.X - GLOW_SIZE / 2);
-            Canvas.SetTop(_rotateHandleHoverRing, _rotateHandlePosition.Y - GLOW_SIZE / 2);
-            Panel.SetZIndex(_rotateHandleHoverRing, 18);
-            _canvas.Children.Add(_rotateHandleHoverRing);
-            
-            // Show the FontAwesome refresh icon at the selection center, scaled to selection size
-            var iconSize = CalculateIconSize();
-            _rotateIcon = new ImageAwesome
-            {
-                Icon = FontAwesomeIcon.Refresh,
-                Width = iconSize,
-                Height = iconSize,
-                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(140, 30, 144, 255)), // Semi-transparent DodgerBlue (never solid)
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-            Canvas.SetLeft(_rotateIcon, _selectionCenterPosition.X - iconSize / 2);
-            Canvas.SetTop(_rotateIcon, _selectionCenterPosition.Y - iconSize / 2);
-            Panel.SetZIndex(_rotateIcon, 3); // Above grid (2) but below strokes (4)
-            _canvas.Children.Add(_rotateIcon);
+            // Show rotation hover visuals
+            _visuals.ShowRotateHoverGlow();
+            _visuals.ShowRotateIcon(_state.SelectionBounds, isActive: false);
         }
-        else if (!isHoveringRotate && _mode != SelectionMode.Rotating)
+        else if (_state.Mode != SelectionMode.Rotating)
         {
             // Hide the rotation hover visuals when not hovering and not rotating
-            ClearRotateHoverVisuals();
+            _visuals.ClearRotateHoverVisuals();
         }
         
         // Handle resize hover (only if not hovering rotate)
-        if (!isHoveringRotate && isHoveringResize && _resizeHandleHoverRing == null)
+        if (!isHoveringRotate && isHoveringResize)
         {
-            // Create a large radiating glow effect - using LimeGreen (50,205,50) for consistency
-            var handlePos = _resizeHandlePositions[hoveredResizeHandleIndex];
-            const double GLOW_SIZE = 55; // Large glow size for high visibility
-            
-            // Create radial gradient that fades from bright LimeGreen center to fully transparent edge
-            var glowBrush = new RadialGradientBrush
-            {
-                GradientOrigin = new Point(0.5, 0.5),
-                Center = new Point(0.5, 0.5),
-                RadiusX = 0.5,
-                RadiusY = 0.5
-            };
-            // Use LimeGreen (50,205,50) - same as line start indicators for visual consistency
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(255, 50, 205, 50), 0.0));   // Solid LimeGreen core
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(220, 50, 205, 50), 0.15)); // Still very solid
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(160, 50, 205, 50), 0.3));  // Starting to fade
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(90, 50, 205, 50), 0.5));   // Mid fade
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(40, 50, 205, 50), 0.7));   // Mostly faded
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(10, 50, 205, 50), 0.85));  // Nearly transparent
-            glowBrush.GradientStops.Add(new GradientStop(Color.FromArgb(0, 50, 205, 50), 1.0));    // Fully transparent at edge
-            
-            // Use an Ellipse for proper radial gradient rendering
-            var glowEllipse = new Ellipse
-            {
-                Width = GLOW_SIZE,
-                Height = GLOW_SIZE,
-                Fill = glowBrush,
-                Stroke = Brushes.Transparent,
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-            
-            // Wrap in a border so we can reuse the existing field type
-            _resizeHandleHoverRing = new Border
-            {
-                Width = GLOW_SIZE,
-                Height = GLOW_SIZE,
-                Background = Brushes.Transparent,
-                BorderBrush = Brushes.Transparent,
-                IsHitTestVisible = false,
-                Child = glowEllipse
-            };
-            Canvas.SetLeft(_resizeHandleHoverRing, handlePos.X - GLOW_SIZE / 2);
-            Canvas.SetTop(_resizeHandleHoverRing, handlePos.Y - GLOW_SIZE / 2);
-            Panel.SetZIndex(_resizeHandleHoverRing, 18);
-            _canvas.Children.Add(_resizeHandleHoverRing);
-            
-            // Show the FontAwesome arrows-alt icon at the selection center, scaled to selection size
-            var iconSize = CalculateIconSize();
-            _resizeIcon = new ImageAwesome
-            {
-                Icon = FontAwesomeIcon.ArrowsAlt,
-                Width = iconSize,
-                Height = iconSize,
-                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(140, 30, 144, 255)), // Semi-transparent DodgerBlue (never solid)
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-            Canvas.SetLeft(_resizeIcon, _selectionCenterPosition.X - iconSize / 2);
-            Canvas.SetTop(_resizeIcon, _selectionCenterPosition.Y - iconSize / 2);
-            Panel.SetZIndex(_resizeIcon, 3); // Above grid (2) but below strokes (4)
-            _canvas.Children.Add(_resizeIcon);
+            // Show resize hover visuals
+            _visuals.ShowResizeHoverGlow(hoveredResizeHandleIndex);
+            _visuals.ShowResizeIcon(_state.SelectionBounds, isActive: false);
         }
-        else if (!isHoveringResize && _mode != SelectionMode.Resizing)
+        else if (!isHoveringResize && _state.Mode != SelectionMode.Resizing)
         {
             // Hide the resize hover visuals when not hovering and not resizing
-            ClearResizeHoverVisuals();
+            _visuals.ClearResizeHoverVisuals();
         }
         
         // During rotation, make the icon more transparent to indicate active rotation
-        if (_mode == SelectionMode.Rotating && _rotateIcon != null)
+        if (_state.Mode == SelectionMode.Rotating)
         {
-            _rotateIcon.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(80, 30, 144, 255)); // More transparent during rotation (never solid)
+            _visuals.SetRotateIconActive(true);
         }
         
         // During resizing, make the icon more transparent to indicate active resizing
-        if (_mode == SelectionMode.Resizing && _resizeIcon != null)
+        if (_state.Mode == SelectionMode.Resizing)
         {
-            _resizeIcon.Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(80, 30, 144, 255)); // More transparent during resizing (never solid)
+            _visuals.SetResizeIconActive(true);
         }
     }
     
-    /// <summary>
-    /// Checks if the mouse is hovering over any resize handle.
-    /// </summary>
-    private (bool IsHovering, int HandleIndex) CheckResizeHandleHover(PointMm point)
-    {
-        for (int i = 0; i < _resizeHandlePositions.Count; i++)
-        {
-            var handlePos = _resizeHandlePositions[i];
-            var distance = Distance(point, new PointMm(handlePos.X, handlePos.Y));
-            if (distance <= HANDLE_HIT_RADIUS)
-            {
-                return (true, i);
-            }
-        }
-        return (false, -1);
-    }
-    
-    /// <summary>
-    /// Clears the rotation hover visuals.
-    /// </summary>
-    private void ClearRotateHoverVisuals()
-    {
-        if (_rotateHandleHoverRing != null)
-        {
-            _canvas.Children.Remove(_rotateHandleHoverRing);
-            _rotateHandleHoverRing = null;
-        }
-        
-        if (_rotateIcon != null)
-        {
-            _canvas.Children.Remove(_rotateIcon);
-            _rotateIcon = null;
-        }
-    }
-    
-    /// <summary>
-    /// Clears the resize hover visuals.
-    /// </summary>
-    private void ClearResizeHoverVisuals()
-    {
-        if (_resizeHandleHoverRing != null)
-        {
-            _canvas.Children.Remove(_resizeHandleHoverRing);
-            _resizeHandleHoverRing = null;
-        }
-        
-        if (_resizeIcon != null)
-        {
-            _canvas.Children.Remove(_resizeIcon);
-            _resizeIcon = null;
-        }
-    }
-
     /// <summary>
     /// Handles mouse up for selection tool.
     /// Returns the list of modified strokes if any changes were committed.
@@ -514,7 +294,7 @@ public sealed class SelectionController
     {
         List<LineStroke>? result = null;
 
-        switch (_mode)
+        switch (_state.Mode)
         {
             case SelectionMode.MarqueeSelecting:
                 CompleteMarquee(point);
@@ -527,9 +307,9 @@ public sealed class SelectionController
                 break;
         }
 
-        _mode = SelectionMode.Idle;
-        _activeHandle = SelectionHandle.None;
-        RemoveMarqueeVisual();
+        _state.Mode = SelectionMode.Idle;
+        _state.ActiveHandle = SelectionHandle.None;
+        _visuals.RemoveMarquee();
 
         if (_canvas.IsMouseCaptured)
             _canvas.ReleaseMouseCapture();
@@ -542,42 +322,47 @@ public sealed class SelectionController
     /// </summary>
     public void Cancel()
     {
-        if (_mode == SelectionMode.Moving || _mode == SelectionMode.Resizing || _mode == SelectionMode.Rotating)
+        if (_state.Mode == SelectionMode.Moving || _state.Mode == SelectionMode.Resizing || _state.Mode == SelectionMode.Rotating)
         {
             var doc = _getDocument();
 
             // Restore original strokes
-            if (_originalStrokes != null)
+            if (_state.OriginalStrokes != null)
             {
-                foreach (var idx in _selectedIndices.OrderBy(i => i))
+                foreach (var idx in _state.SelectedIndices.OrderBy(i => i))
                 {
-                    var originalIdx = _selectedIndices.ToList().IndexOf(idx);
-                    if (originalIdx >= 0 && originalIdx < _originalStrokes.Count)
+                    var originalIdx = _state.SelectedIndices.ToList().IndexOf(idx);
+                    if (originalIdx >= 0 && originalIdx < _state.OriginalStrokes.Count)
                     {
-                        doc.Strokes[idx] = _originalStrokes[originalIdx];
+                        doc.Strokes[idx] = _state.OriginalStrokes[originalIdx];
                     }
                 }
             }
 
-            // Restore original paint well bounds
-            if (_originalPaintWellBounds != null)
+            // Restore original paint well bounds (stored in canvas coordinates, convert back to document coords)
+            if (_state.OriginalPaintWellBounds != null)
             {
-                foreach (var (id, originalBounds) in _originalPaintWellBounds)
+                foreach (var (id, originalBounds, originalRotation) in _state.OriginalPaintWellBounds)
                 {
                     var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
                     if (well != null)
                     {
-                        well.Bounds = originalBounds;
+                        well.Bounds = new Rect(
+                            originalBounds.Left - RULER_THICKNESS,
+                            originalBounds.Top - RULER_THICKNESS,
+                            originalBounds.Width,
+                            originalBounds.Height);
+                        well.Rotation = originalRotation;
                     }
                 }
             }
         }
 
-        _mode = SelectionMode.Idle;
-        _activeHandle = SelectionHandle.None;
-        _originalStrokes = null;
-        _originalPaintWellBounds = null;
-        RemoveMarqueeVisual();
+        _state.Mode = SelectionMode.Idle;
+        _state.ActiveHandle = SelectionHandle.None;
+        _state.OriginalStrokes = null;
+        _state.OriginalPaintWellBounds = null;
+        _visuals.RemoveMarquee();
 
         if (_canvas.IsMouseCaptured)
             _canvas.ReleaseMouseCapture();
@@ -590,12 +375,12 @@ public sealed class SelectionController
     /// </summary>
     public void ClearSelection()
     {
-        _selectedIndices.Clear();
-        _selectedPaintWellIds.Clear();
-        _selectionBounds = Rect.Empty;
-        _logicalBounds = Rect.Empty;
-        _selectionRotationAngle = 0;
-        RemoveSelectionVisuals();
+        _state.SelectedIndices.Clear();
+        _state.SelectedPaintWellIds.Clear();
+        _state.SelectionBounds = Rect.Empty;
+        _state.LogicalBounds = Rect.Empty;
+        _state.RotationAngle = 0;
+        _visuals.Clear();
         _requestRender();
     }
 
@@ -612,10 +397,10 @@ public sealed class SelectionController
         List<PaintWell>? deletedPaintWells = null;
 
         // Delete strokes in reverse order to preserve indices
-        if (_selectedIndices.Count > 0)
+        if (_state.SelectedIndices.Count > 0)
         {
             deletedStrokes = new List<(int Index, LineStroke Stroke)>();
-            foreach (var idx in _selectedIndices.OrderByDescending(i => i))
+            foreach (var idx in _state.SelectedIndices.OrderByDescending(i => i))
             {
                 if (idx >= 0 && idx < doc.Strokes.Count)
                 {
@@ -626,10 +411,10 @@ public sealed class SelectionController
         }
 
         // Delete paint wells
-        if (_selectedPaintWellIds.Count > 0)
+        if (_state.SelectedPaintWellIds.Count > 0)
         {
             deletedPaintWells = new List<PaintWell>();
-            foreach (var wellId in _selectedPaintWellIds)
+            foreach (var wellId in _state.SelectedPaintWellIds)
             {
                 var well = doc.PaintWells.FirstOrDefault(w => w.Id == wellId);
                 if (well != null)
@@ -646,9 +431,9 @@ public sealed class SelectionController
             }
         }
 
-        _selectedIndices.Clear();
-        _selectedPaintWellIds.Clear();
-        _selectionBounds = Rect.Empty;
+        _state.SelectedIndices.Clear();
+        _state.SelectedPaintWellIds.Clear();
+        _state.SelectionBounds = Rect.Empty;
         _requestRender();
 
         return (deletedStrokes?.Count > 0 ? deletedStrokes : null, 
@@ -661,7 +446,7 @@ public sealed class SelectionController
     public List<LineStroke> GetSelectedStrokes()
     {
         var doc = _getDocument();
-        return _selectedIndices
+        return _state.SelectedIndices
             .OrderBy(i => i)
             .Where(i => i >= 0 && i < doc.Strokes.Count)
             .Select(i => doc.Strokes[i])
@@ -674,7 +459,7 @@ public sealed class SelectionController
     public List<PaintWell> GetSelectedPaintWells()
     {
         var doc = _getDocument();
-        return _selectedPaintWellIds
+        return _state.SelectedPaintWellIds
             .Select(id => doc.PaintWells.FirstOrDefault(w => w.Id == id))
             .Where(w => w != null)
             .Select(w => w!)
@@ -691,7 +476,7 @@ public sealed class SelectionController
         {
             if (idx >= 0 && idx < doc.Strokes.Count)
             {
-                _selectedIndices.Add(idx);
+                _state.SelectedIndices.Add(idx);
             }
         }
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
@@ -708,7 +493,7 @@ public sealed class SelectionController
         {
             if (doc.PaintWells.Any(w => w.Id == id))
             {
-                _selectedPaintWellIds.Add(id);
+                _state.SelectedPaintWellIds.Add(id);
             }
         }
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
@@ -721,7 +506,7 @@ public sealed class SelectionController
     /// </summary>
     public void RenderSelectionVisuals()
     {
-        RemoveSelectionVisuals();
+        _visuals.Clear();
 
         if (!HasSelection) return;
 
@@ -732,189 +517,28 @@ public sealed class SelectionController
         // - When we have a rotation angle, use the logical bounds (unrotated reference frame)
         // - Otherwise, recalculate from current stroke positions
         Rect boundsToUse;
-        if (_mode == SelectionMode.Rotating && !_originalBounds.IsEmpty)
+        if (_state.Mode == SelectionMode.Rotating && !_state.OriginalBounds.IsEmpty)
         {
-            boundsToUse = _originalBounds;
+            boundsToUse = _state.OriginalBounds;
         }
-        else if (Math.Abs(_selectionRotationAngle) > 0.001 && !_logicalBounds.IsEmpty)
+        else if (Math.Abs(_state.RotationAngle) > 0.001 && !_state.LogicalBounds.IsEmpty)
         {
             // Use logical bounds when we have a rotation - this is the unrotated reference frame
-            boundsToUse = _logicalBounds;
+            boundsToUse = _state.LogicalBounds;
         }
         else
         {
             UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
-            boundsToUse = _selectionBounds;
+            boundsToUse = _state.SelectionBounds;
         }
 
         if (boundsToUse.IsEmpty) return;
 
-        // Paint wells are rendered with ruler offset, strokes are not.
-        // For paint well selection, we need to add the ruler offset.
-        // For stroke selection, we don't (strokes render at their raw coordinates).
-        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
-
-        // Calculate visual bounds with padding
-        var visualLeft = offset + boundsToUse.Left - SELECTION_PADDING;
-        var visualTop = offset + boundsToUse.Top - SELECTION_PADDING;
-        var visualWidth = boundsToUse.Width + (SELECTION_PADDING * 2);
-        var visualHeight = boundsToUse.Height + (SELECTION_PADDING * 2);
-        var visualRight = visualLeft + visualWidth;
-        var visualBottom = visualTop + visualHeight;
-        
-        // Calculate center for rotation
-        var centerX = visualLeft + visualWidth / 2;
-        var centerY = visualTop + visualHeight / 2;
-        
-        // Create rotation transform if we have a rotation angle
-        RotateTransform? rotateTransform = null;
-        if (Math.Abs(_selectionRotationAngle) > 0.001)
-        {
-            rotateTransform = new RotateTransform(_selectionRotationAngle * 180 / Math.PI, centerX, centerY);
-        }
-
-        // Calculate rotated corner positions
-        var topLeft = TransformPoint(visualLeft, visualTop, rotateTransform);
-        var topRight = TransformPoint(visualRight, visualTop, rotateTransform);
-        var bottomRight = TransformPoint(visualRight, visualBottom, rotateTransform);
-        var bottomLeft = TransformPoint(visualLeft, visualBottom, rotateTransform);
-
-        // Bounding box as a Path connecting the rotated corners
-        var geometry = new PathGeometry();
-        var figure = new PathFigure
-        {
-            StartPoint = topLeft,
-            IsClosed = true
-        };
-        figure.Segments.Add(new LineSegment(topRight, true));
-        figure.Segments.Add(new LineSegment(bottomRight, true));
-        figure.Segments.Add(new LineSegment(bottomLeft, true));
-        geometry.Figures.Add(figure);
-
-        _boundsPath = new Path
-        {
-            Data = geometry,
-            Stroke = Brushes.DodgerBlue,
-            StrokeThickness = 1,
-            StrokeDashArray = [4, 2],
-            Fill = Brushes.Transparent,
-            IsHitTestVisible = false,
-            SnapsToDevicePixels = true
-        };
-        Panel.SetZIndex(_boundsPath, 18);
-        _canvas.Children.Add(_boundsPath);
-
-        // Resize handles at padded corners (with rotation applied)
-        AddHandle(topLeft.X, topLeft.Y, SelectionHandle.TopLeft);
-        AddHandle((topLeft.X + topRight.X) / 2, (topLeft.Y + topRight.Y) / 2, SelectionHandle.TopCenter);
-        AddHandle(topRight.X, topRight.Y, SelectionHandle.TopRight);
-        AddHandle((topLeft.X + bottomLeft.X) / 2, (topLeft.Y + bottomLeft.Y) / 2, SelectionHandle.MiddleLeft);
-        AddHandle((topRight.X + bottomRight.X) / 2, (topRight.Y + bottomRight.Y) / 2, SelectionHandle.MiddleRight);
-        AddHandle(bottomLeft.X, bottomLeft.Y, SelectionHandle.BottomLeft);
-        AddHandle((bottomLeft.X + bottomRight.X) / 2, (bottomLeft.Y + bottomRight.Y) / 2, SelectionHandle.BottomCenter);
-        AddHandle(bottomRight.X, bottomRight.Y, SelectionHandle.BottomRight);
-
-        // Rotation handle - position relative to the rotated top edge
-        var topCenter = new Point((topLeft.X + topRight.X) / 2, (topLeft.Y + topRight.Y) / 2);
-        
-        // Calculate the outward direction from the rotated top edge (perpendicular to top edge, pointing up/out)
-        var topEdgeDx = topRight.X - topLeft.X;
-        var topEdgeDy = topRight.Y - topLeft.Y;
-        var topEdgeLength = Math.Sqrt(topEdgeDx * topEdgeDx + topEdgeDy * topEdgeDy);
-        
-        // Perpendicular direction pointing OUTWARD from the box (away from center)
-        // In screen coordinates (Y down), we need to rotate 90° clockwise to point "up" relative to the edge
-        double perpX = topEdgeDy / topEdgeLength;   // Flipped sign to point outward
-        double perpY = -topEdgeDx / topEdgeLength;  // Flipped sign to point outward
-        
-        // Rotation handle position - OUTSIDE the box
-        var rotateHandleX = topCenter.X + perpX * ROTATE_HANDLE_OFFSET;
-        var rotateHandleY = topCenter.Y + perpY * ROTATE_HANDLE_OFFSET;
-
-        _rotateConnector = new Line
-        {
-            X1 = topCenter.X,
-            Y1 = topCenter.Y,
-            X2 = rotateHandleX,
-            Y2 = rotateHandleY,
-            Stroke = Brushes.DodgerBlue,
-            StrokeThickness = 1,
-            StrokeDashArray = [2, 2],
-            IsHitTestVisible = false,
-            SnapsToDevicePixels = true
-        };
-        Panel.SetZIndex(_rotateConnector, 18);
-        _canvas.Children.Add(_rotateConnector);
-
-        _rotateHandle = new Ellipse
-        {
-            Width = ROTATE_HANDLE_SIZE,
-            Height = ROTATE_HANDLE_SIZE,
-            Fill = Brushes.White,
-            Stroke = Brushes.DodgerBlue,
-            StrokeThickness = 2,
-            Cursor = Cursors.Hand,
-            IsHitTestVisible = false,
-            SnapsToDevicePixels = true
-        };
-        Canvas.SetLeft(_rotateHandle, rotateHandleX - ROTATE_HANDLE_SIZE / 2);
-        Canvas.SetTop(_rotateHandle, rotateHandleY - ROTATE_HANDLE_SIZE / 2);
-        Panel.SetZIndex(_rotateHandle, 19);
-        _canvas.Children.Add(_rotateHandle);
-        
-        // Store positions for hover detection and icon placement
-        _rotateHandlePosition = new Point(rotateHandleX, rotateHandleY);
-        _selectionCenterPosition = new Point(centerX, centerY);
+        // Delegate rendering to SelectionVisuals
+        _visuals.RenderSelectionBox(boundsToUse, _state.RotationAngle, _state.Mode);
         
         // Store the rotation center for hit testing
-        _selectionRotationCenter = new Point(centerX, centerY);
-        
-        // If we're actively rotating, show the icon at the center (more transparent), scaled to selection size
-        if (_mode == SelectionMode.Rotating && _rotateIcon == null)
-        {
-            var iconSize = CalculateIconSize();
-            _rotateIcon = new ImageAwesome
-            {
-                Icon = FontAwesomeIcon.Refresh,
-                Width = iconSize,
-                Height = iconSize,
-                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(80, 30, 144, 255)), // More transparent during rotation (never solid)
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-            Canvas.SetLeft(_rotateIcon, centerX - iconSize / 2);
-            Canvas.SetTop(_rotateIcon, centerY - iconSize / 2);
-            Panel.SetZIndex(_rotateIcon, 3); // Above grid (2) but below strokes (4)
-            _canvas.Children.Add(_rotateIcon);
-        }
-        
-        // If we're actively resizing, show the resize icon at the center (more transparent), scaled to selection size
-        if (_mode == SelectionMode.Resizing && _resizeIcon == null)
-        {
-            var iconSize = CalculateIconSize();
-            _resizeIcon = new ImageAwesome
-            {
-                Icon = FontAwesomeIcon.ArrowsAlt,
-                Width = iconSize,
-                Height = iconSize,
-                Foreground = new SolidColorBrush(System.Windows.Media.Color.FromArgb(80, 30, 144, 255)), // More transparent during resizing (never solid)
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-            Canvas.SetLeft(_resizeIcon, centerX - iconSize / 2);
-            Canvas.SetTop(_resizeIcon, centerY - iconSize / 2);
-            Panel.SetZIndex(_resizeIcon, 3); // Above grid (2) but below strokes (4)
-            _canvas.Children.Add(_resizeIcon);
-        }
-    }
-    
-    /// <summary>
-    /// Transforms a point using the given rotation transform, or returns it unchanged if no transform.
-    /// </summary>
-    private static Point TransformPoint(double x, double y, RotateTransform? transform)
-    {
-        var point = new Point(x, y);
-        return transform?.Transform(point) ?? point;
+        _state.RotationCenter = _visuals.SelectionCenterPosition;
     }
 
     /// <summary>
@@ -932,14 +556,14 @@ public sealed class SelectionController
     /// </summary>
     public bool SeparateFromGroup()
     {
-        if (_selectedIndices.Count == 0) return false;
+        if (_state.SelectedIndices.Count == 0) return false;
 
         var doc = _getDocument();
 
         // Group selected indices by their original GroupId
         var selectedByGroup = new Dictionary<Guid, List<int>>();
 
-        foreach (var idx in _selectedIndices)
+        foreach (var idx in _state.SelectedIndices)
         {
             if (idx < 0 || idx >= doc.Strokes.Count) continue;
             var stroke = doc.Strokes[idx];
@@ -1060,8 +684,8 @@ public sealed class SelectionController
 
         // Update the bounds after modification
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
-        _logicalBounds = _selectionBounds;
-        _selectionRotationAngle = 0; // Reset rotation for new selection
+        _state.LogicalBounds = _state.SelectionBounds;
+        _state.RotationAngle = 0; // Reset rotation for new selection
 
         _requestRender();
         return true;
@@ -1070,316 +694,41 @@ public sealed class SelectionController
     /// <summary>
     /// Checks if a stroke index is selected.
     /// </summary>
-    public bool IsSelected(int index) => _selectedIndices.Contains(index);
+    public bool IsSelected(int index) => _state.SelectedIndices.Contains(index);
 
     /// <summary>
     /// Checks if a paint well is selected by its ID.
     /// </summary>
-    public bool IsPaintWellSelected(Guid id) => _selectedPaintWellIds.Contains(id);
+    public bool IsPaintWellSelected(Guid id) => _state.SelectedPaintWellIds.Contains(id);
+
+    /// <summary>
+    /// Gets the appropriate bounds to use for hit testing, accounting for rotation state.
+    /// </summary>
+    private Rect GetBoundsForHitTest()
+    {
+        if (_state.Mode == SelectionMode.Rotating && !_state.OriginalBounds.IsEmpty)
+            return _state.OriginalBounds;
+        if (Math.Abs(_state.RotationAngle) > 0.001 && !_state.LogicalBounds.IsEmpty)
+            return _state.LogicalBounds;
+        return _state.SelectionBounds;
+    }
+
 
     // ===== PRIVATE METHODS =====
 
-    private void AddHandle(double x, double y, SelectionHandle handleType)
-    {
-        var handle = new Rectangle
-        {
-            Width = HANDLE_SIZE,
-            Height = HANDLE_SIZE,
-            Fill = Brushes.White,
-            Stroke = Brushes.DodgerBlue,
-            StrokeThickness = 1,
-            IsHitTestVisible = false,
-            SnapsToDevicePixels = true,
-            Tag = handleType
-        };
-        Canvas.SetLeft(handle, x - HANDLE_SIZE / 2);
-        Canvas.SetTop(handle, y - HANDLE_SIZE / 2);
-        Panel.SetZIndex(handle, 19);
-        _canvas.Children.Add(handle);
-        _handles.Add(handle);
-        
-        // Store position for hover detection
-        _resizeHandlePositions.Add(new Point(x, y));
-    }
-
-    private void RemoveSelectionVisuals()
-    {
-        if (_boundsPath != null)
-        {
-            _canvas.Children.Remove(_boundsPath);
-            _boundsPath = null;
-        }
-
-        foreach (var h in _handles)
-        {
-            _canvas.Children.Remove(h);
-        }
-        _handles.Clear();
-        _resizeHandlePositions.Clear();
-
-        if (_rotateHandle != null)
-        {
-            _canvas.Children.Remove(_rotateHandle);
-            _rotateHandle = null;
-        }
-
-        if (_rotateIcon != null)
-        {
-            _canvas.Children.Remove(_rotateIcon);
-            _rotateIcon = null;
-        }
-
-        if (_rotateHandleHoverRing != null)
-        {
-            _canvas.Children.Remove(_rotateHandleHoverRing);
-            _rotateHandleHoverRing = null;
-        }
-
-        if (_rotateConnector != null)
-        {
-            _canvas.Children.Remove(_rotateConnector);
-            _rotateConnector = null;
-        }
-        
-        // Clear resize hover visuals
-        if (_resizeHandleHoverRing != null)
-        {
-            _canvas.Children.Remove(_resizeHandleHoverRing);
-            _resizeHandleHoverRing = null;
-        }
-        
-        if (_resizeIcon != null)
-        {
-            _canvas.Children.Remove(_resizeIcon);
-            _resizeIcon = null;
-        }
-    }
-
-    private void RemoveMarqueeVisual()
-    {
-        if (_marqueeRect != null)
-        {
-            _canvas.Children.Remove(_marqueeRect);
-            _marqueeRect = null;
-        }
-    }
-
-    private int HitTestStroke(PointMm point, List<LineStroke> strokes)
-    {
-        for (int i = strokes.Count - 1; i >= 0; i--) // Top-most first
-        {
-            var stroke = strokes[i];
-            if (DistanceToSegment(point, stroke.A, stroke.B) <= HIT_TOLERANCE)
-            {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    /// <summary>
-    /// Finds all strokes that belong to the same group as the stroke at the given index.
-    /// If the stroke has no GroupId, only that stroke is returned (individual line).
-    /// </summary>
-    private HashSet<int> FindGroupedStrokes(int startIndex, List<LineStroke> strokes)
-    {
-        var result = new HashSet<int> { startIndex };
-        
-        var hitStroke = strokes[startIndex];
-        
-        // If this stroke has no group, it's an individual object - select only this stroke
-        if (!hitStroke.GroupId.HasValue)
-        {
-            return result;
-        }
-        
-        // Find all strokes with the same GroupId
-        var groupId = hitStroke.GroupId.Value;
-        for (int i = 0; i < strokes.Count; i++)
-        {
-            if (strokes[i].GroupId == groupId)
-            {
-                result.Add(i);
-            }
-        }
-        
-        return result;
-    }
-
-    private PaintWell? HitTestPaintWell(PointMm point, List<PaintWell> paintWells)
-    {
-        // Check paint wells in reverse order (top-most first)
-        for (int i = paintWells.Count - 1; i >= 0; i--)
-        {
-            var well = paintWells[i];
-            // Check if point is inside the well bounds with extra margin for easier clicking
-            var expandedBounds = new Rect(
-                well.Bounds.Left - PAINT_WELL_HIT_MARGIN,
-                well.Bounds.Top - PAINT_WELL_HIT_MARGIN,
-                well.Bounds.Width + (PAINT_WELL_HIT_MARGIN * 2),
-                well.Bounds.Height + (PAINT_WELL_HIT_MARGIN * 2));
-            
-            if (expandedBounds.Contains(new Point(point.X, point.Y)))
-            {
-                return well;
-            }
-        }
-        return null;
-    }
-
-    private SelectionHandle HitTestHandle(PointMm point)
-    {
-        // Use logical bounds when we have a rotation, otherwise use selection bounds
-        Rect boundsToUse;
-        if (_mode == SelectionMode.Rotating && !_originalBounds.IsEmpty)
-        {
-            boundsToUse = _originalBounds;
-        }
-        else if (Math.Abs(_selectionRotationAngle) > 0.001 && !_logicalBounds.IsEmpty)
-        {
-            boundsToUse = _logicalBounds;
-        }
-        else
-        {
-            boundsToUse = _selectionBounds;
-        }
-            
-        if (boundsToUse.IsEmpty) return SelectionHandle.None;
-        
-        // Don't allow clicking the rotation handle while already rotating
-        // This prevents the second click from disrupting the selection box orientation
-        if (_mode == SelectionMode.Rotating)
-            return SelectionHandle.None;
-
-        // Paint wells are rendered with ruler offset, strokes are not.
-        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
-
-        // Calculate padded bounds matching the visual display
-        var paddedLeft = offset + boundsToUse.Left - SELECTION_PADDING;
-        var paddedTop = offset + boundsToUse.Top - SELECTION_PADDING;
-        var paddedRight = offset + boundsToUse.Right + SELECTION_PADDING;
-        var paddedBottom = offset + boundsToUse.Bottom + SELECTION_PADDING;
-        var paddedCenterX = (paddedLeft + paddedRight) / 2;
-        var paddedCenterY = (paddedTop + paddedBottom) / 2;
-
-        // Create rotation transform if we have a rotation angle
-        RotateTransform? rotateTransform = null;
-        if (Math.Abs(_selectionRotationAngle) > 0.001)
-        {
-            rotateTransform = new RotateTransform(_selectionRotationAngle * 180 / Math.PI, paddedCenterX, paddedCenterY);
-        }
-
-        // Calculate rotated corner positions (same as in RenderSelectionVisuals)
-        var topLeft = TransformPoint(paddedLeft, paddedTop, rotateTransform);
-        var topRight = TransformPoint(paddedRight, paddedTop, rotateTransform);
-        var bottomRight = TransformPoint(paddedRight, paddedBottom, rotateTransform);
-        var bottomLeft = TransformPoint(paddedLeft, paddedBottom, rotateTransform);
-        
-        // Calculate rotation handle position
-        var topCenter = new Point((topLeft.X + topRight.X) / 2, (topLeft.Y + topRight.Y) / 2);
-        var topEdgeDx = topRight.X - topLeft.X;
-        var topEdgeDy = topRight.Y - topLeft.Y;
-        var topEdgeLength = Math.Sqrt(topEdgeDx * topEdgeDx + topEdgeDy * topEdgeDy);
-        // Perpendicular pointing OUTWARD (same direction as in RenderSelectionVisuals)
-        double perpX = topEdgeLength > 0 ? topEdgeDy / topEdgeLength : 0;
-        double perpY = topEdgeLength > 0 ? -topEdgeDx / topEdgeLength : -1;
-        var rotateHandlePos = new Point(topCenter.X + perpX * ROTATE_HANDLE_OFFSET, topCenter.Y + perpY * ROTATE_HANDLE_OFFSET);
-
-        // Check rotate handle first - use larger hit radius for easier clicking
-        if (Distance(point, new PointMm(rotateHandlePos.X, rotateHandlePos.Y)) <= ROTATE_HANDLE_HIT_RADIUS)
-            return SelectionHandle.Rotate;
-
-        // Check corner handles
-        if (Distance(point, new PointMm(topLeft.X, topLeft.Y)) <= HANDLE_HIT_RADIUS)
-            return SelectionHandle.TopLeft;
-        if (Distance(point, new PointMm(topRight.X, topRight.Y)) <= HANDLE_HIT_RADIUS)
-            return SelectionHandle.TopRight;
-        if (Distance(point, new PointMm(bottomLeft.X, bottomLeft.Y)) <= HANDLE_HIT_RADIUS)
-            return SelectionHandle.BottomLeft;
-        if (Distance(point, new PointMm(bottomRight.X, bottomRight.Y)) <= HANDLE_HIT_RADIUS)
-            return SelectionHandle.BottomRight;
-
-        // Check edge handles (midpoints of edges)
-        var topCenterHandle = new Point((topLeft.X + topRight.X) / 2, (topLeft.Y + topRight.Y) / 2);
-        var bottomCenterHandle = new Point((bottomLeft.X + bottomRight.X) / 2, (bottomLeft.Y + bottomRight.Y) / 2);
-        var middleLeftHandle = new Point((topLeft.X + bottomLeft.X) / 2, (topLeft.Y + bottomLeft.Y) / 2);
-        var middleRightHandle = new Point((topRight.X + bottomRight.X) / 2, (topRight.Y + bottomRight.Y) / 2);
-
-        if (Distance(point, new PointMm(topCenterHandle.X, topCenterHandle.Y)) <= HANDLE_HIT_RADIUS)
-            return SelectionHandle.TopCenter;
-        if (Distance(point, new PointMm(bottomCenterHandle.X, bottomCenterHandle.Y)) <= HANDLE_HIT_RADIUS)
-            return SelectionHandle.BottomCenter;
-        if (Distance(point, new PointMm(middleLeftHandle.X, middleLeftHandle.Y)) <= HANDLE_HIT_RADIUS)
-            return SelectionHandle.MiddleLeft;
-        if (Distance(point, new PointMm(middleRightHandle.X, middleRightHandle.Y)) <= HANDLE_HIT_RADIUS)
-            return SelectionHandle.MiddleRight;
-
-        return SelectionHandle.None;
-    }
-
-    private bool IsPointInBounds(PointMm point, Rect bounds)
-    {
-        // Use logical bounds when we have a rotation
-        Rect boundsToUse;
-        if (_mode == SelectionMode.Rotating && !_originalBounds.IsEmpty)
-        {
-            boundsToUse = _originalBounds;
-        }
-        else if (Math.Abs(_selectionRotationAngle) > 0.001 && !_logicalBounds.IsEmpty)
-        {
-            boundsToUse = _logicalBounds;
-        }
-        else
-        {
-            boundsToUse = bounds;
-        }
-            
-        // Paint wells are rendered with ruler offset, strokes are not.
-        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
-
-        // Include the padding area as part of the movable selection region
-        var paddedLeft = offset + boundsToUse.Left - SELECTION_PADDING;
-        var paddedTop = offset + boundsToUse.Top - SELECTION_PADDING;
-        var paddedWidth = boundsToUse.Width + (SELECTION_PADDING * 2);
-        var paddedHeight = boundsToUse.Height + (SELECTION_PADDING * 2);
-        
-        // If we have a rotation, we need to transform the point back to the unrotated space
-        // to check if it's inside the original (unrotated) rectangle
-        double testX = point.X;
-        double testY = point.Y;
-        
-        if (Math.Abs(_selectionRotationAngle) > 0.001)
-        {
-            // Calculate center of the padded bounds
-            var centerX = paddedLeft + paddedWidth / 2;
-            var centerY = paddedTop + paddedHeight / 2;
-            
-            // Rotate the test point in the opposite direction around the same center
-            var cos = Math.Cos(-_selectionRotationAngle);
-            var sin = Math.Sin(-_selectionRotationAngle);
-            var dx = point.X - centerX;
-            var dy = point.Y - centerY;
-            testX = centerX + dx * cos - dy * sin;
-            testY = centerY + dx * sin + dy * cos;
-        }
-        
-        return testX >= paddedLeft && testX <= paddedLeft + paddedWidth &&
-               testY >= paddedTop && testY <= paddedTop + paddedHeight;
-    }
-
     private void UpdateSelectionBounds(List<LineStroke> strokes, List<PaintWell> paintWells)
     {
-        if (_selectedIndices.Count == 0 && _selectedPaintWellIds.Count == 0)
+        if (_state.SelectedIndices.Count == 0 && _state.SelectedPaintWellIds.Count == 0)
         {
-            _selectionBounds = Rect.Empty;
+            _state.SelectionBounds = Rect.Empty;
             return;
         }
 
         double minX = double.MaxValue, minY = double.MaxValue;
         double maxX = double.MinValue, maxY = double.MinValue;
 
-        // Include stroke bounds
-        foreach (var idx in _selectedIndices)
+        // Include stroke bounds (strokes are stored in canvas coordinates)
+        foreach (var idx in _state.SelectedIndices)
         {
             if (idx < 0 || idx >= strokes.Count) continue;
 
@@ -1390,25 +739,27 @@ public sealed class SelectionController
             maxY = Math.Max(maxY, Math.Max(stroke.A.Y, stroke.B.Y));
         }
 
-        // Include paint well bounds
-        foreach (var wellId in _selectedPaintWellIds)
+        // Include paint well bounds (paint wells are stored in document coordinates,
+        // so we need to add ruler offset to convert to canvas coordinates for consistency)
+        foreach (var wellId in _state.SelectedPaintWellIds)
         {
             var well = paintWells.FirstOrDefault(w => w.Id == wellId);
             if (well == null) continue;
 
-            minX = Math.Min(minX, well.Bounds.Left);
-            minY = Math.Min(minY, well.Bounds.Top);
-            maxX = Math.Max(maxX, well.Bounds.Right);
-            maxY = Math.Max(maxY, well.Bounds.Bottom);
+            // Convert paint well bounds from document coords to canvas coords
+            minX = Math.Min(minX, RULER_THICKNESS + well.Bounds.Left);
+            minY = Math.Min(minY, RULER_THICKNESS + well.Bounds.Top);
+            maxX = Math.Max(maxX, RULER_THICKNESS + well.Bounds.Right);
+            maxY = Math.Max(maxY, RULER_THICKNESS + well.Bounds.Bottom);
         }
 
         if (minX <= maxX && minY <= maxY)
         {
-            _selectionBounds = new Rect(minX, minY, maxX - minX, maxY - minY);
+            _state.SelectionBounds = new Rect(minX, minY, maxX - minX, maxY - minY);
         }
         else
         {
-            _selectionBounds = Rect.Empty;
+            _state.SelectionBounds = Rect.Empty;
         }
     }
 
@@ -1422,117 +773,66 @@ public sealed class SelectionController
 
     private void BeginMarquee(PointMm start)
     {
-        _mode = SelectionMode.MarqueeSelecting;
-        _dragStart = start;
+        _state.Mode = SelectionMode.MarqueeSelecting;
+        _state.DragStart = start;
 
-        _marqueeRect = new Rectangle
-        {
-            Stroke = Brushes.DodgerBlue,
-            StrokeThickness = 1,
-            StrokeDashArray = [4, 2],
-            Fill = new SolidColorBrush(Color.FromArgb(32, 30, 144, 255)),
-            IsHitTestVisible = false,
-            SnapsToDevicePixels = true
-        };
-        Canvas.SetLeft(_marqueeRect, start.X);
-        Canvas.SetTop(_marqueeRect, start.Y);
-        _marqueeRect.Width = 0;
-        _marqueeRect.Height = 0;
-        Panel.SetZIndex(_marqueeRect, 20);
-        _canvas.Children.Add(_marqueeRect);
+        _visuals.ShowMarquee(start);
         _canvas.CaptureMouse();
     }
 
     private void UpdateMarquee(PointMm current)
     {
-        if (_marqueeRect == null) return;
-
-        var left = Math.Min(_dragStart.X, current.X);
-        var top = Math.Min(_dragStart.Y, current.Y);
-        var width = Math.Abs(current.X - _dragStart.X);
-        var height = Math.Abs(current.Y - _dragStart.Y);
-
-        Canvas.SetLeft(_marqueeRect, left);
-        Canvas.SetTop(_marqueeRect, top);
-        _marqueeRect.Width = width;
-        _marqueeRect.Height = height;
+        _visuals.UpdateMarquee(_state.DragStart, current);
     }
 
     private void CompleteMarquee(PointMm end)
     {
         var doc = _getDocument();
         var marqueeRect = new Rect(
-            Math.Min(_dragStart.X, end.X),
-            Math.Min(_dragStart.Y, end.Y),
-            Math.Abs(end.X - _dragStart.X),
-            Math.Abs(end.Y - _dragStart.Y)
+            Math.Min(_state.DragStart.X, end.X),
+            Math.Min(_state.DragStart.Y, end.Y),
+            Math.Abs(end.X - _state.DragStart.X),
+            Math.Abs(end.Y - _state.DragStart.Y)
         );
 
         // Select strokes that intersect the marquee
         for (int i = 0; i < doc.Strokes.Count; i++)
         {
             var stroke = doc.Strokes[i];
-            if (StrokeIntersectsRect(stroke, marqueeRect))
+            if (SelectionHitTester.StrokeIntersectsRect(stroke, marqueeRect))
             {
-                _selectedIndices.Add(i);
+                _state.SelectedIndices.Add(i);
             }
         }
 
         // Select paint wells that intersect the marquee
         foreach (var well in doc.PaintWells)
         {
-            if (PaintWellIntersectsRect(well, marqueeRect))
+            if (SelectionHitTester.PaintWellIntersectsRect(well, marqueeRect))
             {
-                _selectedPaintWellIds.Add(well.Id);
+                _state.SelectedPaintWellIds.Add(well.Id);
             }
         }
 
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
-        _logicalBounds = _selectionBounds; // Initialize logical bounds for new selection
-        _selectionRotationAngle = 0; // Reset rotation - pivot point is recalculated for new selection
+        _state.LogicalBounds = _state.SelectionBounds; // Initialize logical bounds for new selection
+        _state.RotationAngle = 0; // Reset rotation - pivot point is recalculated for new selection
         _requestRender();
-    }
-
-    private static bool PaintWellIntersectsRect(PaintWell well, Rect marquee)
-    {
-        // Check if the paint well bounds intersect with the marquee rectangle
-        return well.Bounds.IntersectsWith(marquee);
-    }
-
-    private static bool StrokeIntersectsRect(LineStroke stroke, Rect rect)
-    {
-        // Check if either endpoint is inside
-        if (rect.Contains(new Point(stroke.A.X, stroke.A.Y)) ||
-            rect.Contains(new Point(stroke.B.X, stroke.B.Y)))
-        {
-            return true;
-        }
-
-        // Check if line intersects any edge of the rectangle
-        var tl = new PointMm(rect.Left, rect.Top);
-        var tr = new PointMm(rect.Right, rect.Top);
-        var br = new PointMm(rect.Right, rect.Bottom);
-        var bl = new PointMm(rect.Left, rect.Bottom);
-
-        return SegmentsIntersect(stroke.A, stroke.B, tl, tr) ||
-               SegmentsIntersect(stroke.A, stroke.B, tr, br) ||
-               SegmentsIntersect(stroke.A, stroke.B, br, bl) ||
-               SegmentsIntersect(stroke.A, stroke.B, bl, tl);
     }
 
     // ===== MOVE =====
 
     private void BeginMove(PointMm start)
     {
-        _mode = SelectionMode.Moving;
-        _activeHandle = SelectionHandle.Body;
-        _dragStart = start;
+        _state.Mode = SelectionMode.Moving;
+        _state.ActiveHandle = SelectionHandle.Body;
+        _state.DragStart = start;
         
-        // When we have a rotation, use _logicalBounds as the reference for move operations
+        // When we have a rotation, use _state.LogicalBounds as the reference for move operations
         // This ensures the rotated selection box stays aligned with the object
-        _originalBounds = Math.Abs(_selectionRotationAngle) > 0.001 && !_logicalBounds.IsEmpty 
-            ? _logicalBounds 
-            : _selectionBounds;
+        _state.OriginalBounds = Math.Abs(_state.RotationAngle) > 0.001 && !_state.LogicalBounds.IsEmpty 
+            ? _state.LogicalBounds 
+            : _state.SelectionBounds;
         
         SaveOriginalStrokes();
         _canvas.CaptureMouse();
@@ -1540,19 +840,19 @@ public sealed class SelectionController
 
     private void UpdateMove(PointMm current)
     {
-        var dx = current.X - _dragStart.X;
-        var dy = current.Y - _dragStart.Y;
+        var dx = current.X - _state.DragStart.X;
+        var dy = current.Y - _state.DragStart.Y;
 
         var doc = _getDocument();
         
         // Move strokes
-        var indices = _selectedIndices.ToList();
+        var indices = _state.SelectedIndices.ToList();
         for (int i = 0; i < indices.Count; i++)
         {
             var idx = indices[i];
-            if (_originalStrokes == null || i >= _originalStrokes.Count) continue;
+            if (_state.OriginalStrokes == null || i >= _state.OriginalStrokes.Count) continue;
 
-            var original = _originalStrokes[i];
+            var original = _state.OriginalStrokes[i];
             doc.Strokes[idx] = new LineStroke(
                 new PointMm(original.A.X + dx, original.A.Y + dy),
                 new PointMm(original.B.X + dx, original.B.Y + dy)
@@ -1565,34 +865,40 @@ public sealed class SelectionController
             };
         }
 
-        // Move paint wells
-        if (_originalPaintWellBounds != null)
+        // Move paint wells (rotation is preserved during move)
+        if (_state.OriginalPaintWellBounds != null)
         {
-            foreach (var (id, originalBounds) in _originalPaintWellBounds)
+            foreach (var (id, originalBounds, originalRotation) in _state.OriginalPaintWellBounds)
             {
                 var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
                 if (well != null)
                 {
+                    // Original bounds are in canvas coordinates, convert back to document coords
                     well.Bounds = new Rect(
-                        originalBounds.Left + dx,
-                        originalBounds.Top + dy,
+                        originalBounds.Left + dx - RULER_THICKNESS,
+                        originalBounds.Top + dy - RULER_THICKNESS,
                         originalBounds.Width,
                         originalBounds.Height);
+                    // Rotation is preserved during move (no change)
                 }
             }
         }
 
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
         
-        // When we have a rotation, also update the logical bounds by the same delta
-        // This ensures the rotated selection box follows the object during move
-        if (Math.Abs(_selectionRotationAngle) > 0.001 && !_originalBounds.IsEmpty)
+        // Always update logical bounds to match selection bounds during move
+        // This ensures consistency whether we have rotation or not
+        if (!_state.OriginalBounds.IsEmpty)
         {
-            _logicalBounds = new Rect(
-                _originalBounds.Left + dx,
-                _originalBounds.Top + dy,
-                _originalBounds.Width,
-                _originalBounds.Height);
+            _state.LogicalBounds = new Rect(
+                _state.OriginalBounds.Left + dx,
+                _state.OriginalBounds.Top + dy,
+                _state.OriginalBounds.Width,
+                _state.OriginalBounds.Height);
+        }
+        else
+        {
+            _state.LogicalBounds = _state.SelectionBounds;
         }
         
         _requestRender();
@@ -1602,88 +908,83 @@ public sealed class SelectionController
 
     private void BeginHandleOperation(SelectionHandle handle, PointMm start)
     {
-        _activeHandle = handle;
-        _dragStart = start;
+        _state.ActiveHandle = handle;
+        _state.DragStart = start;
         _canvas.CaptureMouse();
 
         if (handle == SelectionHandle.Rotate)
         {
-            _mode = SelectionMode.Rotating;
+            _state.Mode = SelectionMode.Rotating;
             
             // Use logical bounds as the reference for rotation
-            _originalBounds = _logicalBounds.IsEmpty ? _selectionBounds : _logicalBounds;
+            // These are now in canvas coordinates (same as _state.SelectionBounds)
+            _state.OriginalBounds = _state.LogicalBounds.IsEmpty ? _state.SelectionBounds : _state.LogicalBounds;
             SaveOriginalStrokes();
             
             // Save the current rotation angle as the base for this rotation operation
             // This allows cumulative rotation across multiple drag operations
-            _baseRotationAngle = _selectionRotationAngle;
+            _state.BaseRotationAngle = _state.RotationAngle;
             
-            // The rotation handle visual is in canvas coordinates.
-            // For paint wells, handles are rendered at (offset + bounds), so mouse coords match.
-            // Calculate the visual center where handles are displayed.
-            var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
-            var visualCenterX = offset + _originalBounds.Left + _originalBounds.Width / 2;
-            var visualCenterY = offset + _originalBounds.Top + _originalBounds.Height / 2;
+            // Selection bounds are now in canvas coordinates, so no offset needed
+            var visualCenterX = _state.OriginalBounds.Left + _state.OriginalBounds.Width / 2;
+            var visualCenterY = _state.OriginalBounds.Top + _state.OriginalBounds.Height / 2;
             
             // Calculate initial angle from center to mouse position (both in canvas coords)
-            _originalAngle = Math.Atan2(start.Y - visualCenterY, start.X - visualCenterX);
+            _state.OriginalAngle = Math.Atan2(start.Y - visualCenterY, start.X - visualCenterX);
         }
         else
         {
-            _mode = SelectionMode.Resizing;
+            _state.Mode = SelectionMode.Resizing;
             
             // For resize after rotation, we need to work in the logical (unrotated) coordinate space
-            // Use the logical bounds as our reference frame
-            _originalBounds = _logicalBounds.IsEmpty ? _selectionBounds : _logicalBounds;
+            // Use the logical bounds as our reference frame (now in canvas coordinates)
+            _state.OriginalBounds = _state.LogicalBounds.IsEmpty ? _state.SelectionBounds : _state.LogicalBounds;
             SaveOriginalStrokes();
         }
     }
 
     private void UpdateResize(PointMm current)
     {
-        if (_originalBounds.IsEmpty) return;
+        if (_state.OriginalBounds.IsEmpty) return;
 
         var doc = _getDocument();
 
-        // Calculate the center of the logical bounds (used for rotation)
-        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
-        var originalLogicalCenterX = _originalBounds.Left + _originalBounds.Width / 2;
-        var originalLogicalCenterY = _originalBounds.Top + _originalBounds.Height / 2;
-        var visualCenterX = offset + originalLogicalCenterX;
-        var visualCenterY = offset + originalLogicalCenterY;
+        // Calculate the center of the logical bounds (now in canvas coordinates)
+        var centerX = _state.OriginalBounds.Left + _state.OriginalBounds.Width / 2;
+        var centerY = _state.OriginalBounds.Top + _state.OriginalBounds.Height / 2;
 
         // Transform the mouse position into the unrotated coordinate space
         // This allows resizing to work along the rotated selection box axes
         PointMm transformedCurrent = current;
-        if (Math.Abs(_selectionRotationAngle) > 0.001)
+        if (Math.Abs(_state.RotationAngle) > 0.001)
         {
             // Rotate the mouse position backwards (negative angle) around the center
             // to get coordinates in the unrotated space
-            var cos = Math.Cos(-_selectionRotationAngle);
-            var sin = Math.Sin(-_selectionRotationAngle);
-            var dx = current.X - visualCenterX;
-            var dy = current.Y - visualCenterY;
+            var cos = Math.Cos(-_state.RotationAngle);
+            var sin = Math.Sin(-_state.RotationAngle);
+            var dx = current.X - centerX;
+            var dy = current.Y - centerY;
             transformedCurrent = new PointMm(
-                visualCenterX + dx * cos - dy * sin,
-                visualCenterY + dx * sin + dy * cos
+                centerX + dx * cos - dy * sin,
+                centerY + dx * sin + dy * cos
             );
         }
 
         // Get raw edge positions without normalization (in logical/unrotated space)
-        double left = _originalBounds.Left;
-        double top = _originalBounds.Top;
-        double right = _originalBounds.Right;
-        double bottom = _originalBounds.Bottom;
+        double left = _state.OriginalBounds.Left;
+        double top = _state.OriginalBounds.Top;
+        double right = _state.OriginalBounds.Right;
+        double bottom = _state.OriginalBounds.Bottom;
 
-        // Adjust for paint well offset when comparing to mouse position
-        var adjustedCurrent = new PointMm(transformedCurrent.X - offset, transformedCurrent.Y - offset);
+        // Selection bounds are now in canvas coordinates, so use transformed mouse position directly
+        var adjustedCurrent = transformedCurrent;
 
         // Determine the anchor point (opposite corner/edge from the handle being dragged)
         // This anchor point should remain stationary in world space
-        double anchorX = originalLogicalCenterX;
-        double anchorY = originalLogicalCenterY;
+        double anchorX = centerX;
+        double anchorY = centerY;
 
-        switch (_activeHandle)
+        switch (_state.ActiveHandle)
         {
             case SelectionHandle.TopLeft:
                 left = adjustedCurrent.X;
@@ -1740,8 +1041,8 @@ public sealed class SelectionController
 
         // Calculate the anchor point position in the NEW logical bounds
         // The anchor's relative position should remain the same
-        double anchorRelX = _originalBounds.Width > 0 ? (anchorX - _originalBounds.Left) / _originalBounds.Width : 0.5;
-        double anchorRelY = _originalBounds.Height > 0 ? (anchorY - _originalBounds.Top) / _originalBounds.Height : 0.5;
+        double anchorRelX = _state.OriginalBounds.Width > 0 ? (anchorX - _state.OriginalBounds.Left) / _state.OriginalBounds.Width : 0.5;
+        double anchorRelY = _state.OriginalBounds.Height > 0 ? (anchorY - _state.OriginalBounds.Top) / _state.OriginalBounds.Height : 0.5;
         
         // Apply flip to anchor relative position
         if (flipH) anchorRelX = 1.0 - anchorRelX;
@@ -1751,15 +1052,15 @@ public sealed class SelectionController
         double newAnchorY = newLogicalBounds.Top + anchorRelY * newLogicalBounds.Height;
 
         // Calculate where the anchor point ends up in world space after rotation
-        var originalAnchorWorld = Math.Abs(_selectionRotationAngle) > 0.001
-            ? RotatePoint(new PointMm(anchorX, anchorY), new PointMm(originalLogicalCenterX, originalLogicalCenterY), _selectionRotationAngle)
+        var originalAnchorWorld = Math.Abs(_state.RotationAngle) > 0.001
+            ? GeometryHelpers.RotatePoint(new PointMm(anchorX, anchorY), new PointMm(centerX, centerY), _state.RotationAngle)
             : new PointMm(anchorX, anchorY);
 
         var newLogicalCenterX = newLogicalBounds.Left + newLogicalBounds.Width / 2;
         var newLogicalCenterY = newLogicalBounds.Top + newLogicalBounds.Height / 2;
         
-        var newAnchorWorld = Math.Abs(_selectionRotationAngle) > 0.001
-            ? RotatePoint(new PointMm(newAnchorX, newAnchorY), new PointMm(newLogicalCenterX, newLogicalCenterY), _selectionRotationAngle)
+        var newAnchorWorld = Math.Abs(_state.RotationAngle) > 0.001
+            ? GeometryHelpers.RotatePoint(new PointMm(newAnchorX, newAnchorY), new PointMm(newLogicalCenterX, newLogicalCenterY), _state.RotationAngle)
             : new PointMm(newAnchorX, newAnchorY);
 
         // Calculate the offset needed to keep the anchor point in the same world position
@@ -1776,26 +1077,26 @@ public sealed class SelectionController
 
         var adjustedNewLogicalCenterX = adjustedNewLogicalBounds.Left + adjustedNewLogicalBounds.Width / 2;
         var adjustedNewLogicalCenterY = adjustedNewLogicalBounds.Top + adjustedNewLogicalBounds.Height / 2;
-        var originalCenter = new PointMm(originalLogicalCenterX, originalLogicalCenterY);
+        var originalCenter = new PointMm(centerX, centerY);
         var newCenter = new PointMm(adjustedNewLogicalCenterX, adjustedNewLogicalCenterY);
 
         // Transform strokes: unrotate original -> scale -> re-rotate around NEW center
-        if (_originalStrokes != null)
+        if (_state.OriginalStrokes != null)
         {
-            var indices = _selectedIndices.ToList();
+            var indices = _state.SelectedIndices.ToList();
             
             for (int i = 0; i < indices.Count; i++)
             {
                 var idx = indices[i];
-                if (i >= _originalStrokes.Count) continue;
+                if (i >= _state.OriginalStrokes.Count) continue;
 
-                var original = _originalStrokes[i];
+                var original = _state.OriginalStrokes[i];
                 
                 // Step 1: Unrotate the original stroke back to logical space around the ORIGINAL center
                 LineStroke unrotated;
-                if (Math.Abs(_selectionRotationAngle) > 0.001)
+                if (Math.Abs(_state.RotationAngle) > 0.001)
                 {
-                    unrotated = RotateStroke(original, originalCenter, -_selectionRotationAngle);
+                    unrotated = GeometryHelpers.RotateStroke(original, originalCenter, -_state.RotationAngle);
                 }
                 else
                 {
@@ -1803,15 +1104,15 @@ public sealed class SelectionController
                 }
                 
                 // Step 2: Scale in logical space (using unadjusted bounds for scaling ratios)
-                var scaled = ScaleAndFlipStroke(unrotated, _originalBounds, newLogicalBounds, flipH, flipV);
+                var scaled = GeometryHelpers.ScaleAndFlipStroke(unrotated, _state.OriginalBounds, newLogicalBounds, flipH, flipV);
                 
                 // Step 3: Translate by the offset to keep anchor stationary
-                scaled = TranslateStroke(scaled, offsetX, offsetY);
+                scaled = GeometryHelpers.TranslateStroke(scaled, offsetX, offsetY);
                 
                 // Step 4: Re-rotate around the adjusted NEW center
-                if (Math.Abs(_selectionRotationAngle) > 0.001)
+                if (Math.Abs(_state.RotationAngle) > 0.001)
                 {
-                    scaled = RotateStroke(scaled, newCenter, _selectionRotationAngle);
+                    scaled = GeometryHelpers.RotateStroke(scaled, newCenter, _state.RotationAngle);
                 }
                 
                 doc.Strokes[idx] = scaled;
@@ -1819,18 +1120,18 @@ public sealed class SelectionController
         }
 
         // Transform paint wells: unrotate -> scale -> translate -> re-rotate
-        if (_originalPaintWellBounds != null)
+        if (_state.OriginalPaintWellBounds != null)
         {
-            foreach (var (id, originalWellBounds) in _originalPaintWellBounds)
+            foreach (var (id, originalWellBounds, originalRotation) in _state.OriginalPaintWellBounds)
             {
                 var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
                 if (well != null)
                 {
                     // Step 1: Unrotate around ORIGINAL center
                     Rect unrotated;
-                    if (Math.Abs(_selectionRotationAngle) > 0.001)
+                    if (Math.Abs(_state.RotationAngle) > 0.001)
                     {
-                        unrotated = RotateRect(originalWellBounds, originalCenter, -_selectionRotationAngle);
+                        unrotated = GeometryHelpers.RotateRect(originalWellBounds, originalCenter, -_state.RotationAngle);
                     }
                     else
                     {
@@ -1838,120 +1139,43 @@ public sealed class SelectionController
                     }
                     
                     // Step 2: Scale
-                    var scaled = ScaleAndFlipRect(unrotated, _originalBounds, newLogicalBounds, flipH, flipV);
+                    var scaled = GeometryHelpers.ScaleAndFlipRect(unrotated, _state.OriginalBounds, newLogicalBounds, flipH, flipV);
+                    
                     
                     // Step 3: Translate
                     scaled = new Rect(scaled.Left + offsetX, scaled.Top + offsetY, scaled.Width, scaled.Height);
                     
                     // Step 4: Re-rotate around adjusted NEW center
-                    if (Math.Abs(_selectionRotationAngle) > 0.001)
+                    if (Math.Abs(_state.RotationAngle) > 0.001)
                     {
-                        scaled = RotateRect(scaled, newCenter, _selectionRotationAngle);
+                        scaled = GeometryHelpers.RotateRect(scaled, newCenter, _state.RotationAngle);
                     }
                     
-                    well.Bounds = scaled;
+                    // Convert back to document coordinates for storage
+                    well.Bounds = new Rect(
+                        scaled.Left - RULER_THICKNESS,
+                        scaled.Top - RULER_THICKNESS,
+                        scaled.Width,
+                        scaled.Height);
+                    // Rotation is preserved during resize (same as original)
+                    well.Rotation = originalRotation;
                 }
             }
         }
 
         // Update the logical bounds for rendering (use the adjusted bounds)
-        _logicalBounds = adjustedNewLogicalBounds;
+        _state.LogicalBounds = adjustedNewLogicalBounds;
         _requestRender();
-    }
-    
-    private static LineStroke TranslateStroke(LineStroke stroke, double dx, double dy)
-    {
-        return new LineStroke(
-            new PointMm(stroke.A.X + dx, stroke.A.Y + dy),
-            new PointMm(stroke.B.X + dx, stroke.B.Y + dy)
-        )
-        {
-            PaintWellId = stroke.PaintWellId,
-            GroupId = stroke.GroupId,
-            IsGroupStart = stroke.IsGroupStart,
-            IsGroupEnd = stroke.IsGroupEnd
-        };
-    }
-
-    private static LineStroke ScaleAndFlipStroke(LineStroke original, Rect oldBounds, Rect newBounds, bool flipH, bool flipV)
-    {
-        // Calculate relative position (0 to 1) within original bounds
-        double relAx = oldBounds.Width > 0 ? (original.A.X - oldBounds.Left) / oldBounds.Width : 0.5;
-        double relAy = oldBounds.Height > 0 ? (original.A.Y - oldBounds.Top) / oldBounds.Height : 0.5;
-        double relBx = oldBounds.Width > 0 ? (original.B.X - oldBounds.Left) / oldBounds.Width : 0.5;
-        double relBy = oldBounds.Height > 0 ? (original.B.Y - oldBounds.Top) / oldBounds.Height : 0.5;
-
-        // Apply flip by mirroring the relative position
-        if (flipH)
-        {
-            relAx = 1.0 - relAx;
-            relBx = 1.0 - relBx;
-        }
-        if (flipV)
-        {
-            relAy = 1.0 - relAy;
-            relBy = 1.0 - relBy;
-        }
-
-        // Map back to new bounds
-        var newA = new PointMm(
-            newBounds.Left + relAx * newBounds.Width,
-            newBounds.Top + relAy * newBounds.Height
-        );
-        var newB = new PointMm(
-            newBounds.Left + relBx * newBounds.Width,
-            newBounds.Top + relBy * newBounds.Height
-        );
-
-        return new LineStroke(newA, newB)
-        {
-            PaintWellId = original.PaintWellId,
-            GroupId = original.GroupId,
-            IsGroupStart = original.IsGroupStart,
-            IsGroupEnd = original.IsGroupEnd
-        };
-    }
-
-    private static Rect ScaleAndFlipRect(Rect original, Rect oldBounds, Rect newBounds, bool flipH, bool flipV)
-    {
-        // Calculate relative positions (0 to 1) within original bounds
-        double relLeft = oldBounds.Width > 0 ? (original.Left - oldBounds.Left) / oldBounds.Width : 0;
-        double relTop = oldBounds.Height > 0 ? (original.Top - oldBounds.Top) / oldBounds.Height : 0;
-        double relRight = oldBounds.Width > 0 ? (original.Right - oldBounds.Left) / oldBounds.Width : 1;
-        double relBottom = oldBounds.Height > 0 ? (original.Bottom - oldBounds.Top) / oldBounds.Height : 1;
-
-        // Apply flip by mirroring relative positions
-        if (flipH)
-        {
-            (relLeft, relRight) = (1.0 - relRight, 1.0 - relLeft);
-        }
-        if (flipV)
-        {
-            (relTop, relBottom) = (1.0 - relBottom, 1.0 - relTop);
-        }
-
-        // Map back to new bounds
-        double newLeft = newBounds.Left + relLeft * newBounds.Width;
-        double newTop = newBounds.Top + relTop * newBounds.Height;
-        double newRight = newBounds.Left + relRight * newBounds.Width;
-        double newBottom = newBounds.Top + relBottom * newBounds.Height;
-
-        return new Rect(newLeft, newTop, Math.Max(10, newRight - newLeft), Math.Max(10, newBottom - newTop));
-    }
-
-    private static Rect ScaleRect(Rect original, Rect oldBounds, Rect newBounds)
-    {
-        return ScaleAndFlipRect(original, oldBounds, newBounds, false, false);
     }
 
     private Rect CalculateNewBounds(PointMm current)
     {
-        var left = _originalBounds.Left;
-        var top = _originalBounds.Top;
-        var right = _originalBounds.Right;
-        var bottom = _originalBounds.Bottom;
+        var left = _state.OriginalBounds.Left;
+        var top = _state.OriginalBounds.Top;
+        var right = _state.OriginalBounds.Right;
+        var bottom = _state.OriginalBounds.Bottom;
 
-        switch (_activeHandle)
+        switch (_state.ActiveHandle)
         {
             case SelectionHandle.TopLeft:
                 left = current.X;
@@ -1990,121 +1214,85 @@ public sealed class SelectionController
         return new Rect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
     }
 
-    private static LineStroke ScaleStroke(LineStroke original, Rect oldBounds, Rect newBounds)
-    {
-        return ScaleAndFlipStroke(original, oldBounds, newBounds, false, false);
-    }
-
     // ===== ROTATE =====
 
     private void UpdateRotate(PointMm current)
     {
-        if (_originalBounds.IsEmpty) return;
+        if (_state.OriginalBounds.IsEmpty) return;
 
         var doc = _getDocument();
 
-        // Calculate visual center in canvas coordinates (same as BeginHandleOperation)
-        var offset = _selectedPaintWellIds.Count > 0 ? RULER_THICKNESS : 0;
-        var visualCenterX = offset + _originalBounds.Left + _originalBounds.Width / 2;
-        var visualCenterY = offset + _originalBounds.Top + _originalBounds.Height / 2;
+        // Selection bounds are now in canvas coordinates, so no offset needed
+        var centerX = _state.OriginalBounds.Left + _state.OriginalBounds.Width / 2;
+        var centerY = _state.OriginalBounds.Top + _state.OriginalBounds.Height / 2;
 
-        // Calculate current angle from visual center to mouse position
-        var currentAngle = Math.Atan2(current.Y - visualCenterY, current.X - visualCenterX);
-        var deltaAngle = currentAngle - _originalAngle;
+        // Calculate current angle from center to mouse position (both in canvas coords)
+        var currentAngle = Math.Atan2(current.Y - centerY, current.X - centerX);
+        var deltaAngle = currentAngle - _state.OriginalAngle;
 
         // Update the selection rotation angle for visual display
         // Add base angle to support cumulative rotation across multiple operations
-        _selectionRotationAngle = _baseRotationAngle + deltaAngle;
+        _state.RotationAngle = _state.BaseRotationAngle + deltaAngle;
 
-        // The actual rotation center for transforming objects is in document coordinates
-        var transformCenter = new PointMm(
-            _originalBounds.Left + _originalBounds.Width / 2,
-            _originalBounds.Top + _originalBounds.Height / 2);
+        // The transform center is now in canvas coordinates
+        var transformCenter = new PointMm(centerX, centerY);
 
         // Calculate the total rotation from the original strokes (base + delta)
-        var totalRotation = _selectionRotationAngle;
+        var totalRotation = _state.RotationAngle;
 
         // Rotate strokes from their original positions
-        if (_originalStrokes != null)
+        if (_state.OriginalStrokes != null)
         {
-            var indices = _selectedIndices.ToList();
+            var indices = _state.SelectedIndices.ToList();
             for (int i = 0; i < indices.Count; i++)
             {
                 var idx = indices[i];
-                if (i >= _originalStrokes.Count) continue;
+                if (i >= _state.OriginalStrokes.Count) continue;
 
-                var original = _originalStrokes[i];
+                var original = _state.OriginalStrokes[i];
                 
                 // First unrotate from base angle, then rotate to new total angle
                 // This is equivalent to rotating by deltaAngle from current position
-                var unrotated = Math.Abs(_baseRotationAngle) > 0.001 
-                    ? RotateStroke(original, transformCenter, -_baseRotationAngle) 
+                var unrotated = Math.Abs(_state.BaseRotationAngle) > 0.001 
+                    ? GeometryHelpers.RotateStroke(original, transformCenter, -_state.BaseRotationAngle) 
                     : original;
-                doc.Strokes[idx] = RotateStroke(unrotated, transformCenter, totalRotation);
+                doc.Strokes[idx] = GeometryHelpers.RotateStroke(unrotated, transformCenter, totalRotation);
             }
         }
 
-        // Rotate paint wells (rotate their bounds around the selection center)
-        if (_originalPaintWellBounds != null)
+        // Rotate paint wells (rotate their bounds around the selection center and set rotation angle)
+        if (_state.OriginalPaintWellBounds != null)
         {
-            foreach (var (id, originalWellBounds) in _originalPaintWellBounds)
+            foreach (var (id, originalWellBounds, originalRotation) in _state.OriginalPaintWellBounds)
             {
                 var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
                 if (well != null)
                 {
+                    // Original well bounds are saved in canvas coordinates
                     // First unrotate from base angle, then rotate to new total angle
-                    var unrotated = Math.Abs(_baseRotationAngle) > 0.001 
-                        ? RotateRect(originalWellBounds, transformCenter, -_baseRotationAngle) 
+                    var unrotated = Math.Abs(_state.BaseRotationAngle) > 0.001 
+                        ? GeometryHelpers.RotateRect(originalWellBounds, transformCenter, -_state.BaseRotationAngle) 
                         : originalWellBounds;
-                    well.Bounds = RotateRect(unrotated, transformCenter, totalRotation);
+                    var rotated = GeometryHelpers.RotateRect(unrotated, transformCenter, totalRotation);
+                    
+                    // Convert back to document coordinates for storage
+                    well.Bounds = new Rect(
+                        rotated.Left - RULER_THICKNESS,
+                        rotated.Top - RULER_THICKNESS,
+                        rotated.Width,
+                        rotated.Height);
+                    
+                    // Update the paint well's rotation angle
+                    // The delta from base angle is the amount we've rotated in this operation
+                    well.Rotation = originalRotation + deltaAngle;
                 }
             }
         }
 
         // The logical bounds stay the same during rotation - only the angle changes
-        // Don't update _logicalBounds here
+        // Don't update _state.LogicalBounds here
 
         _requestRender();
-    }
-
-    private static Rect RotateRect(Rect original, PointMm center, double angle)
-    {
-        // Rotate the center of the rectangle around the selection center
-        var rectCenterX = original.Left + original.Width / 2;
-        var rectCenterY = original.Top + original.Height / 2;
-        var rotatedCenter = RotatePoint(new PointMm(rectCenterX, rectCenterY), center, angle);
-
-        // Keep the same width/height, just move the position
-        return new Rect(
-            rotatedCenter.X - original.Width / 2,
-            rotatedCenter.Y - original.Height / 2,
-            original.Width,
-            original.Height);
-    }
-
-    private static LineStroke RotateStroke(LineStroke original, PointMm center, double angle)
-    {
-        var newA = RotatePoint(original.A, center, angle);
-        var newB = RotatePoint(original.B, center, angle);
-        return new LineStroke(newA, newB) 
-        { 
-            PaintWellId = original.PaintWellId, 
-            GroupId = original.GroupId,
-            IsGroupStart = original.IsGroupStart,
-            IsGroupEnd = original.IsGroupEnd
-        };
-    }
-
-    private static PointMm RotatePoint(PointMm point, PointMm center, double angle)
-    {
-        var cos = Math.Cos(angle);
-        var sin = Math.Sin(angle);
-        var dx = point.X - center.X;
-        var dy = point.Y - center.Y;
-        return new PointMm(
-            center.X + dx * cos - dy * sin,
-            center.Y + dx * sin + dy * cos
-        );
     }
 
     // ===== HELPERS =====
@@ -2112,96 +1300,41 @@ public sealed class SelectionController
     private void SaveOriginalStrokes()
     {
         var doc = _getDocument();
-        _originalStrokes = _selectedIndices
+        _state.OriginalStrokes = _state.SelectedIndices
             .OrderBy(i => i)
             .Where(i => i >= 0 && i < doc.Strokes.Count)
             .Select(i => doc.Strokes[i])
             .ToList();
 
-        // Also save paint well bounds
-        _originalPaintWellBounds = _selectedPaintWellIds
+        // Save paint well bounds converted to canvas coordinates for consistency
+        // (paint wells are stored in document coords, we add ruler offset to match canvas space)
+        // Also save the rotation angle
+        _state.OriginalPaintWellBounds = _state.SelectedPaintWellIds
             .Select(id => doc.PaintWells.FirstOrDefault(w => w.Id == id))
             .Where(w => w != null)
-            .Select(w => (w!.Id, w.Bounds))
+            .Select(w => (w!.Id, new Rect(
+                RULER_THICKNESS + w.Bounds.Left,
+                RULER_THICKNESS + w.Bounds.Top,
+                w.Bounds.Width,
+                w.Bounds.Height), w.Rotation))
             .ToList();
     }
 
     private List<LineStroke>? CommitTransform()
     {
         // Return the new strokes for undo purposes
-        if (_originalStrokes == null || _selectedIndices.Count == 0)
+        if (_state.OriginalStrokes == null || _state.SelectedIndices.Count == 0)
             return null;
 
         var doc = _getDocument();
-        return _selectedIndices
+        return _state.SelectedIndices
             .OrderBy(i => i)
             .Where(i => i >= 0 && i < doc.Strokes.Count)
             .Select(i => doc.Strokes[i])
             .ToList();
     }
-
-    private static double Distance(PointMm a, PointMm b)
-    {
-        var dx = a.X - b.X;
-        var dy = a.Y - b.Y;
-        return Math.Sqrt(dx * dx + dy * dy);
-    }
-
-    private static double DistanceToSegment(PointMm point, PointMm a, PointMm b)
-    {
-        var dx = b.X - a.X;
-        var dy = b.Y - a.Y;
-        var lengthSq = dx * dx + dy * dy;
-
-        if (lengthSq < 0.0001)
-            return Distance(point, a);
-
-        var t = Math.Clamp(((point.X - a.X) * dx + (point.Y - a.Y) * dy) / lengthSq, 0, 1);
-        var projX = a.X + t * dx;
-        var projY = a.Y + t * dy;
-
-        return Distance(point, new PointMm(projX, projY));
-    }
-
-    private static bool SegmentsIntersect(PointMm a1, PointMm a2, PointMm b1, PointMm b2)
-    {
-        double d1 = CrossProduct(b2.X - b1.X, b2.Y - b1.Y, a1.X - b1.X, a1.Y - b1.Y);
-        double d2 = CrossProduct(b2.X - b1.X, b2.Y - b1.Y, a2.X - b1.X, a2.Y - b1.Y);
-        double d3 = CrossProduct(a2.X - a1.X, a2.Y - a1.Y, b1.X - a1.X, b1.Y - a1.Y);
-        double d4 = CrossProduct(a2.X - a1.X, a2.Y - a1.Y, b2.X - a1.X, b2.Y - a1.Y);
-
-        if (((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
-            ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)))
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    private static double CrossProduct(double ax, double ay, double bx, double by)
-    {
-        return ax * by - ay * bx;
-    }
     
-    /// <summary>
-    /// Calculates the appropriate icon size based on the selection bounds.
-    /// The icon scales with the selection but is capped at MAX_ICON_SIZE and has a minimum of MIN_ICON_SIZE.
-    /// </summary>
-    private double CalculateIconSize()
-    {
-        if (_selectionBounds.IsEmpty) return MAX_ICON_SIZE;
-        
-        // Use the smaller dimension to determine icon size
-        var smallerDimension = Math.Min(_selectionBounds.Width, _selectionBounds.Height);
-        
-        // Add padding to get the visual bounds size
-        var visualSize = smallerDimension + (SELECTION_PADDING * 2);
-        
-        // Calculate icon size as a ratio of the visual bounds
-        var iconSize = visualSize * ICON_SIZE_RATIO;
-        
-        // Clamp to min/max bounds while maintaining aspect ratio (it's square so aspect ratio is always 1:1)
-        return Math.Clamp(iconSize, MIN_ICON_SIZE, MAX_ICON_SIZE);
-    }
+
 }
+
+

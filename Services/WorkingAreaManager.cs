@@ -82,7 +82,7 @@ public sealed class WorkingAreaManager
 
         if (DefinedArea is Rect rect)
         {
-            return $"Defined: {rect.Width:0.#} × {rect.Height:0.#} mm";
+            return $"{rect.Width:0.#} x {rect.Height:0.#} mm at ({rect.X:0.#}, {rect.Y:0.#})";
         }
 
         return "Not defined";

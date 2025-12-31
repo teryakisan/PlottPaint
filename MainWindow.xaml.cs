@@ -172,6 +172,27 @@ namespace NVSPlotter
 
         private const double SAFE_MARGIN_MM = 50.0; // Default fallback, actual value from Settings
         private double SafeMarginMm => Settings.Default.safeMarginMm;
+        
+        // Individual margin properties
+        private bool UseIndividualMargins => Settings.Default.useIndividualMargins;
+        private double MarginLeftMm => Settings.Default.marginLeftMm;
+        private double MarginTopMm => Settings.Default.marginTopMm;
+        private double MarginRightMm => Settings.Default.marginRightMm;
+        private double MarginBottomMm => Settings.Default.marginBottomMm;
+        
+        /// <summary>
+        /// Gets the effective margins (left, top, right, bottom).
+        /// Uses individual margins if enabled, otherwise uses uniform safe margin.
+        /// </summary>
+        private (double Left, double Top, double Right, double Bottom) GetEffectiveMargins()
+        {
+            if (UseIndividualMargins)
+            {
+                return (MarginLeftMm, MarginTopMm, MarginRightMm, MarginBottomMm);
+            }
+            var margin = SafeMarginMm;
+            return (margin, margin, margin, margin);
+        }
 
         // Snap indicator visual
         private Ellipse? _snapIndicator;
@@ -265,7 +286,10 @@ namespace NVSPlotter
                 () => GetSnapRadius(),
                 () => IsSnapToGridEnabled,
                 () => GetGridSpacing(),
-                () => SafeMarginMm);
+                () => SafeMarginMm,
+                () => GetEffectiveMargins(),
+                () => Settings.Default.LockMarginsToCanvas,
+                () => _workingAreaManager.DefinedArea);
 
             // Initialize G-code generator service
             _gcodeGenerator = new GcodeGeneratorService(
@@ -2507,6 +2531,43 @@ namespace NVSPlotter
             {
                 tb.Text = Settings.Default.safeMarginMm.ToString("0.##", CultureInfo.InvariantCulture);
             }
+            
+            // Initialize individual margin controls
+            if (FindName("UseIndividualMarginsCheck") is CheckBox useIndividualCheck)
+            {
+                useIndividualCheck.IsChecked = Settings.Default.useIndividualMargins;
+            }
+            
+            if (FindName("IndividualMarginsPanel") is StackPanel panel)
+            {
+                panel.Visibility = Settings.Default.useIndividualMargins ? Visibility.Visible : Visibility.Collapsed;
+            }
+            
+            if (FindName("MarginLeftBox") is TextBox leftBox)
+            {
+                leftBox.Text = Settings.Default.marginLeftMm.ToString("0.##", CultureInfo.InvariantCulture);
+            }
+            
+            if (FindName("MarginTopBox") is TextBox topBox)
+            {
+                topBox.Text = Settings.Default.marginTopMm.ToString("0.##", CultureInfo.InvariantCulture);
+            }
+            
+            if (FindName("MarginRightBox") is TextBox rightBox)
+            {
+                rightBox.Text = Settings.Default.marginRightMm.ToString("0.##", CultureInfo.InvariantCulture);
+            }
+            
+            if (FindName("MarginBottomBox") is TextBox bottomBox)
+            {
+                bottomBox.Text = Settings.Default.marginBottomMm.ToString("0.##", CultureInfo.InvariantCulture);
+            }
+            
+            // Initialize lock margins to canvas checkbox
+            if (FindName("LockMarginsToCanvasCheck") is CheckBox lockMarginsCheck)
+            {
+                lockMarginsCheck.IsChecked = Settings.Default.LockMarginsToCanvas;
+            }
         }
 
         private void InitializeConsoleWindow()
@@ -2684,6 +2745,91 @@ namespace NVSPlotter
         private void ShowMarginOverlayCheck_Click(object sender, RoutedEventArgs e)
         {
             RenderAll();
+        }
+
+        private void UseIndividualMarginsCheck_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox cb) return;
+            
+            Settings.Default.useIndividualMargins = cb.IsChecked == true;
+            Settings.Default.Save();
+            
+            // Show/hide individual margin controls
+            if (FindName("IndividualMarginsPanel") is StackPanel panel)
+            {
+                panel.Visibility = cb.IsChecked == true ? Visibility.Visible : Visibility.Collapsed;
+            }
+            
+            _lastGcode = ""; // Invalidate G-code cache
+            RenderAll();
+        }
+
+        private void MarginLeftBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded) return;
+            if (sender is not TextBox tb) return;
+
+            var value = ParseDouble(tb.Text, Settings.Default.marginLeftMm);
+            value = Math.Clamp(value, 0, 500);
+
+            if (Math.Abs(value - Settings.Default.marginLeftMm) > 0.001)
+            {
+                Settings.Default.marginLeftMm = value;
+                Settings.Default.Save();
+                _lastGcode = "";
+                RenderAll();
+            }
+        }
+
+        private void MarginTopBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded) return;
+            if (sender is not TextBox tb) return;
+
+            var value = ParseDouble(tb.Text, Settings.Default.marginTopMm);
+            value = Math.Clamp(value, 0, 500);
+
+            if (Math.Abs(value - Settings.Default.marginTopMm) > 0.001)
+            {
+                Settings.Default.marginTopMm = value;
+                Settings.Default.Save();
+                _lastGcode = "";
+                RenderAll();
+            }
+        }
+
+        private void MarginRightBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded) return;
+            if (sender is not TextBox tb) return;
+
+            var value = ParseDouble(tb.Text, Settings.Default.marginRightMm);
+            value = Math.Clamp(value, 0, 500);
+
+            if (Math.Abs(value - Settings.Default.marginRightMm) > 0.001)
+            {
+                Settings.Default.marginRightMm = value;
+                Settings.Default.Save();
+                _lastGcode = "";
+                RenderAll();
+            }
+        }
+
+        private void MarginBottomBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded) return;
+            if (sender is not TextBox tb) return;
+
+            var value = ParseDouble(tb.Text, Settings.Default.marginBottomMm);
+            value = Math.Clamp(value, 0, 500);
+
+            if (Math.Abs(value - Settings.Default.marginBottomMm) > 0.001)
+            {
+                Settings.Default.marginBottomMm = value;
+                Settings.Default.Save();
+                _lastGcode = "";
+                RenderAll();
+            }
         }
 
         private bool IsMarginOverlayVisible => FindName("ShowMarginOverlayCheck") is CheckBox cb && cb.IsChecked == true;
@@ -3220,8 +3366,153 @@ namespace NVSPlotter
 
         private void UpdateWorkingAreaStatus()
         {
-            if (WorkingAreaStatus == null) return;
-            WorkingAreaStatus.Text = _workingAreaManager.GetStatusText();
+            if (PaintCanvasStatus == null) return;
+            PaintCanvasStatus.Text = _workingAreaManager.GetStatusText();
+            
+            // Also update the width/height text boxes
+            UpdatePaintCanvasDimensionBoxes();
+        }
+        
+        /// <summary>
+        /// Updates the paint canvas width/height text boxes from the current working area.
+        /// </summary>
+        private void UpdatePaintCanvasDimensionBoxes()
+        {
+            if (FindName("PaintCanvasWidthBox") is TextBox widthBox &&
+                FindName("PaintCanvasHeightBox") is TextBox heightBox)
+            {
+                if (_workingAreaManager.DefinedArea is Rect area)
+                {
+                    widthBox.Text = area.Width.ToString("0", CultureInfo.InvariantCulture);
+                    heightBox.Text = area.Height.ToString("0", CultureInfo.InvariantCulture);
+                }
+                else
+                {
+                    widthBox.Text = "0";
+                    heightBox.Text = "0";
+                }
+            }
+        }
+        
+        private void PaintCanvasWidthBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded) return;
+            if (sender is not TextBox tb) return;
+            
+            var width = ParseDouble(tb.Text, 0);
+            if (width <= 0) return;
+            
+            // Update the working area width while preserving position
+            if (_workingAreaManager.DefinedArea is Rect area)
+            {
+                var newArea = new Rect(area.X, area.Y, width, area.Height);
+                _workingAreaManager.SetArea(newArea);
+                RenderAll();
+            }
+            else if (width > 0)
+            {
+                // Create a new area starting from the home corner, inside the safe margins
+                var height = ParseDouble((FindName("PaintCanvasHeightBox") as TextBox)?.Text, 100);
+                if (height <= 0) height = 100;
+                
+                // Ruler thickness offset (working area is stored in canvas coordinates)
+                const double rulerThickness = 18.0;
+                
+                // Get the effective margins
+                var margins = GetEffectiveMargins();
+                
+                // Calculate the safe area bounds in document coordinates
+                var safeLeft = margins.Left;
+                var safeTop = margins.Top;
+                var safeRight = _doc.WidthMm - margins.Right;
+                var safeBottom = _doc.HeightMm - margins.Bottom;
+                
+                // Position based on home corner, but inside the safe margins
+                // Home at MaxX means home is on the right, so canvas starts from left margin
+                // Home at MaxY means home is at the bottom, so canvas starts from top margin
+                var docX = _grblManager.HomeAtMaxX ? safeLeft : (safeRight - width);
+                var docY = _grblManager.HomeAtMaxY ? safeTop : (safeBottom - height);
+                
+                // Clamp to stay within safe area (in document coordinates)
+                docX = Math.Max(safeLeft, Math.Min(docX, safeRight - width));
+                docY = Math.Max(safeTop, Math.Min(docY, safeBottom - height));
+                
+                // Convert to canvas coordinates by adding ruler thickness
+                var canvasX = rulerThickness + docX;
+                var canvasY = rulerThickness + docY;
+                
+                var newArea = new Rect(canvasX, canvasY, width, height);
+                _workingAreaManager.SetArea(newArea);
+                RenderAll();
+            }
+        }
+        
+        private void PaintCanvasHeightBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (!IsLoaded) return;
+            if (sender is not TextBox tb) return;
+            
+            var height = ParseDouble(tb.Text, 0);
+            if (height <= 0) return;
+            
+            // Update the working area height while preserving position
+            if (_workingAreaManager.DefinedArea is Rect area)
+            {
+                var newArea = new Rect(area.X, area.Y, area.Width, height);
+                _workingAreaManager.SetArea(newArea);
+                RenderAll();
+            }
+            else if (height > 0)
+            {
+                // Create a new area starting from the home corner, inside the safe margins
+                var width = ParseDouble((FindName("PaintCanvasWidthBox") as TextBox)?.Text, 100);
+                if (width <= 0) width = 100;
+                
+                // Ruler thickness offset (working area is stored in canvas coordinates)
+                const double rulerThickness = 18.0;
+                
+                // Get the effective margins
+                var margins = GetEffectiveMargins();
+                
+                // Calculate the safe area bounds in document coordinates
+                var safeLeft = margins.Left;
+                var safeTop = margins.Top;
+                var safeRight = _doc.WidthMm - margins.Right;
+                var safeBottom = _doc.HeightMm - margins.Bottom;
+                
+                // Position based on home corner, but inside the safe margins
+                // Home at MaxX means home is on the right, so canvas starts from left margin
+                // Home at MaxY means home is at the bottom, so canvas starts from top margin
+                var docX = _grblManager.HomeAtMaxX ? safeLeft : (safeRight - width);
+                var docY = _grblManager.HomeAtMaxY ? safeTop : (safeBottom - height);
+                
+                // Clamp to stay within safe area (in document coordinates)
+                docX = Math.Max(safeLeft, Math.Min(docX, safeRight - width));
+                docY = Math.Max(safeTop, Math.Min(docY, safeBottom - height));
+                
+                // Convert to canvas coordinates by adding ruler thickness
+                var canvasX = rulerThickness + docX;
+                var canvasY = rulerThickness + docY;
+                
+                var newArea = new Rect(canvasX, canvasY, width, height);
+                _workingAreaManager.SetArea(newArea);
+                RenderAll();
+            }
+        }
+        
+        private void LockMarginsToCanvasCheck_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not CheckBox cb) return;
+            
+            Settings.Default.LockMarginsToCanvas = cb.IsChecked == true;
+            Settings.Default.Save();
+            
+            _lastGcode = ""; // Invalidate G-code cache
+            RenderAll();
+            
+            AppendLog(cb.IsChecked == true 
+                ? "Safe margins now relative to paint canvas area." 
+                : "Safe margins now relative to plotter bed.");
         }
 
        
@@ -3240,6 +3531,13 @@ namespace NVSPlotter
                 IsPaintModeEnabled = IsPaintModeEnabled,
                 GridSpacing = GetGridSpacing(),
                 SafeMarginMm = SafeMarginMm,
+                UseIndividualMargins = UseIndividualMargins,
+                MarginLeftMm = MarginLeftMm,
+                MarginTopMm = MarginTopMm,
+                MarginRightMm = MarginRightMm,
+                MarginBottomMm = MarginBottomMm,
+                LockMarginsToCanvas = Settings.Default.LockMarginsToCanvas,
+                PaintCanvasArea = _workingAreaManager.DefinedArea,
                 ZoomScale = _zoom.ScaleX,
                 CanvasRotationAngle = _canvasRotation.Angle,
                 BedX = _grblManager.BedX,

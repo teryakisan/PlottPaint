@@ -31,6 +31,47 @@ namespace NVSPlotter.Services
         public bool IsPaintModeEnabled { get; set; }
         public double GridSpacing { get; set; } = 10.0;
         public double SafeMarginMm { get; set; } = 50.0;
+        
+        /// <summary>
+        /// When true, use individual margin values for each side.
+        /// When false, use SafeMarginMm for all sides.
+        /// </summary>
+        public bool UseIndividualMargins { get; set; }
+        
+        /// <summary>Left margin in mm (used when UseIndividualMargins is true)</summary>
+        public double MarginLeftMm { get; set; } = 50.0;
+        
+        /// <summary>Top margin in mm (used when UseIndividualMargins is true)</summary>
+        public double MarginTopMm { get; set; } = 50.0;
+        
+        /// <summary>Right margin in mm (used when UseIndividualMargins is true)</summary>
+        public double MarginRightMm { get; set; } = 50.0;
+        
+        /// <summary>Bottom margin in mm (used when UseIndividualMargins is true)</summary>
+        public double MarginBottomMm { get; set; } = 50.0;
+        
+        /// <summary>
+        /// When true, margins are calculated relative to the paint canvas area instead of the full document/plotter bed.
+        /// </summary>
+        public bool LockMarginsToCanvas { get; set; }
+        
+        /// <summary>
+        /// The paint canvas area bounds (if defined). Used when LockMarginsToCanvas is true.
+        /// </summary>
+        public Rect? PaintCanvasArea { get; set; }
+        
+        /// <summary>Gets the effective left margin</summary>
+        public double EffectiveMarginLeft => UseIndividualMargins ? MarginLeftMm : SafeMarginMm;
+        
+        /// <summary>Gets the effective top margin</summary>
+        public double EffectiveMarginTop => UseIndividualMargins ? MarginTopMm : SafeMarginMm;
+        
+        /// <summary>Gets the effective right margin</summary>
+        public double EffectiveMarginRight => UseIndividualMargins ? MarginRightMm : SafeMarginMm;
+        
+        /// <summary>Gets the effective bottom margin</summary>
+        public double EffectiveMarginBottom => UseIndividualMargins ? MarginBottomMm : SafeMarginMm;
+        
         public double ZoomScale { get; set; } = 1.0;
         public double CanvasRotationAngle { get; set; }
         public double BedX { get; set; }
@@ -55,8 +96,6 @@ namespace NVSPlotter.Services
 
         private const double RULER_THICKNESS = 18.0;
         private const double HANDLE_MARGIN = 100.0;
-        private const double ROTATE_HANDLE_OFFSET = 40.0;
-        private const double ROTATE_HANDLE_SIZE = 16.0;
 
         /// <summary>
         /// Initializes the canvas renderer service.
@@ -386,9 +425,6 @@ namespace NVSPlotter.Services
             if (!settings.IsMarginOverlayVisible) return;
 
             var doc = _getDocument();
-            var margin = settings.SafeMarginMm;
-            if (margin <= 0) return;
-
             var marginBrush = new SolidColorBrush(Color.FromArgb(40, 255, 100, 100));
             var marginStroke = new SolidColorBrush(Color.FromArgb(80, 200, 50, 50));
 
@@ -397,10 +433,93 @@ namespace NVSPlotter.Services
             var docWidth = doc.WidthMm;
             var docHeight = doc.HeightMm;
 
-            // Top margin zone
-            if (margin < docHeight)
+            // When LockMarginsToCanvas is enabled and a paint canvas is defined,
+            // the "margin" is the entire area OUTSIDE the paint canvas (between canvas and bed edges)
+            if (settings.LockMarginsToCanvas && settings.PaintCanvasArea is Rect canvasArea)
             {
-                var topRect = CreateMarginRect(docWidth, Math.Min(margin, docHeight), marginBrush, marginStroke);
+                // Draw margin zones around the paint canvas area (filling space between canvas and document edges)
+                
+                // Top zone: from document top to canvas top (full width)
+                var topHeight = canvasArea.Top - docTop;
+                if (topHeight > 0)
+                {
+                    var topRect = CreateMarginRect(docWidth, topHeight, marginBrush, marginStroke);
+                    Canvas.SetLeft(topRect, docLeft);
+                    Canvas.SetTop(topRect, docTop);
+                    Panel.SetZIndex(topRect, 1);
+                    _drawCanvas.Children.Add(topRect);
+                }
+
+                // Bottom zone: from canvas bottom to document bottom (full width)
+                var bottomTop = canvasArea.Bottom;
+                var bottomHeight = (docTop + docHeight) - bottomTop;
+                if (bottomHeight > 0)
+                {
+                    var bottomRect = CreateMarginRect(docWidth, bottomHeight, marginBrush, marginStroke);
+                    Canvas.SetLeft(bottomRect, docLeft);
+                    Canvas.SetTop(bottomRect, bottomTop);
+                    Panel.SetZIndex(bottomRect, 1);
+                    _drawCanvas.Children.Add(bottomRect);
+                }
+
+                // Left zone: from canvas left edge to document left (between top and bottom zones)
+                var leftWidth = canvasArea.Left - docLeft;
+                var middleTop = canvasArea.Top;
+                var middleHeight = canvasArea.Height;
+                if (leftWidth > 0 && middleHeight > 0)
+                {
+                    var leftRect = CreateMarginRect(leftWidth, middleHeight, marginBrush, marginStroke);
+                    Canvas.SetLeft(leftRect, docLeft);
+                    Canvas.SetTop(leftRect, middleTop);
+                    Panel.SetZIndex(leftRect, 1);
+                    _drawCanvas.Children.Add(leftRect);
+                }
+
+                // Right zone: from canvas right edge to document right (between top and bottom zones)
+                var rightLeft = canvasArea.Right;
+                var rightWidth = (docLeft + docWidth) - rightLeft;
+                if (rightWidth > 0 && middleHeight > 0)
+                {
+                    var rightRect = CreateMarginRect(rightWidth, middleHeight, marginBrush, marginStroke);
+                    Canvas.SetLeft(rightRect, rightLeft);
+                    Canvas.SetTop(rightRect, middleTop);
+                    Panel.SetZIndex(rightRect, 1);
+                    _drawCanvas.Children.Add(rightRect);
+                }
+
+                // Dashed border around the paint canvas (the safe drawing area)
+                var safeAreaBorder = new Rectangle
+                {
+                    Width = canvasArea.Width,
+                    Height = canvasArea.Height,
+                    Stroke = new SolidColorBrush(Color.FromRgb(200, 100, 100)),
+                    StrokeThickness = 1,
+                    StrokeDashArray = [4, 2],
+                    Fill = Brushes.Transparent,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(safeAreaBorder, canvasArea.Left);
+                Canvas.SetTop(safeAreaBorder, canvasArea.Top);
+                Panel.SetZIndex(safeAreaBorder, 1);
+                _drawCanvas.Children.Add(safeAreaBorder);
+                
+                return;
+            }
+            
+            // Standard margin mode: margins are inset from document edges
+            var marginLeft = settings.EffectiveMarginLeft;
+            var marginTop = settings.EffectiveMarginTop;
+            var marginRight = settings.EffectiveMarginRight;
+            var marginBottom = settings.EffectiveMarginBottom;
+            
+            // Skip if all margins are zero
+            if (marginLeft <= 0 && marginTop <= 0 && marginRight <= 0 && marginBottom <= 0) return;
+
+            // Top margin zone
+            if (marginTop > 0 && marginTop < docHeight)
+            {
+                var topRect = CreateMarginRect(docWidth, Math.Min(marginTop, docHeight), marginBrush, marginStroke);
                 Canvas.SetLeft(topRect, docLeft);
                 Canvas.SetTop(topRect, docTop);
                 Panel.SetZIndex(topRect, 1);
@@ -408,52 +527,58 @@ namespace NVSPlotter.Services
             }
 
             // Bottom margin zone
-            if (margin < docHeight)
+            if (marginBottom > 0 && marginBottom < docHeight)
             {
-                var bottomRect = CreateMarginRect(docWidth, Math.Min(margin, docHeight), marginBrush, marginStroke);
+                var bottomRect = CreateMarginRect(docWidth, Math.Min(marginBottom, docHeight), marginBrush, marginStroke);
                 Canvas.SetLeft(bottomRect, docLeft);
-                Canvas.SetTop(bottomRect, docTop + docHeight - margin);
+                Canvas.SetTop(bottomRect, docTop + docHeight - marginBottom);
                 Panel.SetZIndex(bottomRect, 1);
                 _drawCanvas.Children.Add(bottomRect);
             }
 
-            // Left margin zone
-            var verticalHeight = Math.Max(0, docHeight - 2 * margin);
-            if (margin < docWidth && verticalHeight > 0)
+            // Left margin zone (between top and bottom margins)
+            var verticalHeight = Math.Max(0, docHeight - marginTop - marginBottom);
+            if (marginLeft > 0 && marginLeft < docWidth && verticalHeight > 0)
             {
-                var leftRect = CreateMarginRect(Math.Min(margin, docWidth), verticalHeight, marginBrush, marginStroke);
+                var leftRect = CreateMarginRect(Math.Min(marginLeft, docWidth), verticalHeight, marginBrush, marginStroke);
                 Canvas.SetLeft(leftRect, docLeft);
-                Canvas.SetTop(leftRect, docTop + margin);
+                Canvas.SetTop(leftRect, docTop + marginTop);
                 Panel.SetZIndex(leftRect, 1);
                 _drawCanvas.Children.Add(leftRect);
             }
 
-            // Right margin zone
-            if (margin < docWidth && verticalHeight > 0)
+            // Right margin zone (between top and bottom margins)
+            if (marginRight > 0 && marginRight < docWidth && verticalHeight > 0)
             {
-                var rightRect = CreateMarginRect(Math.Min(margin, docWidth), verticalHeight, marginBrush, marginStroke);
-                Canvas.SetLeft(rightRect, docLeft + docWidth - margin);
-                Canvas.SetTop(rightRect, docTop + margin);
+                var rightRect = CreateMarginRect(Math.Min(marginRight, docWidth), verticalHeight, marginBrush, marginStroke);
+                Canvas.SetLeft(rightRect, docLeft + docWidth - marginRight);
+                Canvas.SetTop(rightRect, docTop + marginTop);
                 Panel.SetZIndex(rightRect, 1);
                 _drawCanvas.Children.Add(rightRect);
             }
 
-            // Dashed inner border
-            var safeAreaBorder = new Rectangle
+            // Dashed inner border (safe area)
+            var safeWidth = Math.Max(0, docWidth - marginLeft - marginRight);
+            var safeHeight = Math.Max(0, docHeight - marginTop - marginBottom);
+            
+            if (safeWidth > 0 && safeHeight > 0)
             {
-                Width = Math.Max(0, docWidth - 2 * margin),
-                Height = Math.Max(0, docHeight - 2 * margin),
-                Stroke = new SolidColorBrush(Color.FromRgb(200, 100, 100)),
-                StrokeThickness = 1,
-                StrokeDashArray = [4, 2],
-                Fill = Brushes.Transparent,
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-            Canvas.SetLeft(safeAreaBorder, docLeft + margin);
-            Canvas.SetTop(safeAreaBorder, docTop + margin);
-            Panel.SetZIndex(safeAreaBorder, 1);
-            _drawCanvas.Children.Add(safeAreaBorder);
+                var safeAreaBorder = new Rectangle
+                {
+                    Width = safeWidth,
+                    Height = safeHeight,
+                    Stroke = new SolidColorBrush(Color.FromRgb(200, 100, 100)),
+                    StrokeThickness = 1,
+                    StrokeDashArray = [4, 2],
+                    Fill = Brushes.Transparent,
+                    IsHitTestVisible = false,
+                    SnapsToDevicePixels = true
+                };
+                Canvas.SetLeft(safeAreaBorder, docLeft + marginLeft);
+                Canvas.SetTop(safeAreaBorder, docTop + marginTop);
+                Panel.SetZIndex(safeAreaBorder, 1);
+                _drawCanvas.Children.Add(safeAreaBorder);
+            }
         }
 
         private static Rectangle CreateMarginRect(double width, double height, Brush fill, Brush stroke)

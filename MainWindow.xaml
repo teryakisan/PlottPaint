@@ -2,7 +2,10 @@
 xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
 xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
 xmlns:gif="http://wpfanimatedgif.codeplex.com"
-xmlns:Models="clr-namespace:NVSPlotter.Models" xmlns:local="clr-namespace:NVSPlotter" x:Name="MainContainerWindow" x:Class="NVSPlotter.MainWindow"
+xmlns:Models="clr-namespace:NVSPlotter.Models" 
+xmlns:local="clr-namespace:NVSPlotter"
+xmlns:behaviors="clr-namespace:NVSPlotter.Behaviors"
+x:Name="MainContainerWindow" x:Class="NVSPlotter.MainWindow"
 Title="NVSPlotter" Width="1280" Height="807"
 WindowStartupLocation="CenterScreen"
 WindowState="Maximized" UseLayoutRounding="True"
@@ -27,6 +30,88 @@ Style="{DynamicResource ThemedWindow}">
                                 <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
                                     <Button x:Name="MachineSettingsBtn" Content="⚙ Machine Settings" Width="293" 
                                             Click="MachineSettingsBtn_Click" ToolTip="Configure plotter bed size, page dimensions, and home position"/>
+                                </StackPanel>
+
+                                <StackPanel x:Name="SafeMarginSetting" Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="Safe Margin:" Width="90" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="SafeMarginBox" Width="60" TextChanged="SafeMarginBox_TextChanged"
+                                             behaviors:DragValueBehavior.IsEnabled="True"
+                                             behaviors:DragValueBehavior.Minimum="0"
+                                             behaviors:DragValueBehavior.Maximum="500"
+                                             behaviors:DragValueBehavior.Sensitivity="3"
+                                             behaviors:DragValueBehavior.Step="1"
+                                             ToolTip="Drag up/down to adjust value"/>
+                                    <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                                    <CheckBox x:Name="ShowMarginOverlayCheck" Content="Show" IsChecked="True" 
+                                              Margin="10,0,0,0" VerticalAlignment="Center" Click="ShowMarginOverlayCheck_Click"/>
+                                </StackPanel>
+
+                                <!-- Individual margin sides toggle -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                    <TextBlock Text="" Width="90"/>
+                                    <CheckBox x:Name="UseIndividualMarginsCheck" Content="Individual sides" 
+                                              VerticalAlignment="Center" Click="UseIndividualMarginsCheck_Click"
+                                              ToolTip="Enable different margins for each side"/>
+                                </StackPanel>
+
+                                <!-- Individual margin controls (collapsed by default) -->
+                                <StackPanel x:Name="IndividualMarginsPanel" Visibility="Collapsed" Margin="0,0,0,8">
+                                    <Grid Margin="90,0,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                            <ColumnDefinition Width="Auto"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        
+                                        <!-- Left margin -->
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="L:" VerticalAlignment="Center" Margin="0,0,2,4"/>
+                                        <TextBox x:Name="MarginLeftBox" Grid.Row="0" Grid.Column="1" Width="35" Text="50" 
+                                                 TextChanged="MarginLeftBox_TextChanged" Margin="0,0,8,4"
+                                                 behaviors:DragValueBehavior.IsEnabled="True"
+                                                 behaviors:DragValueBehavior.Minimum="0"
+                                                 behaviors:DragValueBehavior.Maximum="500"
+                                                 behaviors:DragValueBehavior.Sensitivity="3"
+                                                 behaviors:DragValueBehavior.Step="1"
+                                                 ToolTip="Drag up/down to adjust"/>
+                                        
+                                        <!-- Top margin -->
+                                        <TextBlock Grid.Row="0" Grid.Column="2" Text="T:" VerticalAlignment="Center" Margin="0,0,2,4"/>
+                                        <TextBox x:Name="MarginTopBox" Grid.Row="0" Grid.Column="3" Width="35" Text="50" 
+                                                 TextChanged="MarginTopBox_TextChanged" Margin="0,0,0,4"
+                                                 behaviors:DragValueBehavior.IsEnabled="True"
+                                                 behaviors:DragValueBehavior.Minimum="0"
+                                                 behaviors:DragValueBehavior.Maximum="500"
+                                                 behaviors:DragValueBehavior.Sensitivity="3"
+                                                 behaviors:DragValueBehavior.Step="1"
+                                                 ToolTip="Drag up/down to adjust"/>
+                                        
+                                        <!-- Right margin -->
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="R:" VerticalAlignment="Center" Margin="0,0,2,0"/>
+                                        <TextBox x:Name="MarginRightBox" Grid.Row="1" Grid.Column="1" Width="35" Text="50" 
+                                                 TextChanged="MarginRightBox_TextChanged" Margin="0,0,8,0"
+                                                 behaviors:DragValueBehavior.IsEnabled="True"
+                                                 behaviors:DragValueBehavior.Minimum="0"
+                                                 behaviors:DragValueBehavior.Maximum="500"
+                                                 behaviors:DragValueBehavior.Sensitivity="3"
+                                                 behaviors:DragValueBehavior.Step="1"
+                                                 ToolTip="Drag up/down to adjust"/>
+                                        
+                                        <!-- Bottom margin -->
+                                        <TextBlock Grid.Row="1" Grid.Column="2" Text="B:" VerticalAlignment="Center" Margin="0,0,2,0"/>
+                                        <TextBox x:Name="MarginBottomBox" Grid.Row="1" Grid.Column="3" Width="35" Text="50" 
+                                                 TextChanged="MarginBottomBox_TextChanged"
+                                                 behaviors:DragValueBehavior.IsEnabled="True"
+                                                 behaviors:DragValueBehavior.Minimum="0"
+                                                 behaviors:DragValueBehavior.Maximum="500"
+                                                 behaviors:DragValueBehavior.Sensitivity="3"
+                                                 behaviors:DragValueBehavior.Step="1"
+                                                 ToolTip="Drag up/down to adjust"/>
+                                    </Grid>
                                 </StackPanel>
 
                                 <StackPanel x:Name="Tools" Orientation="Horizontal" Margin="0,0,0,8" Visibility="Collapsed">
@@ -56,7 +141,12 @@ Style="{DynamicResource ThemedWindow}">
                                     <TextBlock Text="Snap:" Width="68" VerticalAlignment="Center"/>
                                     <CheckBox x:Name="SnapEnabledCheck" Content="Endpoints" IsChecked="True" VerticalAlignment="Center"/>
                                     <TextBlock Text="Radius:" Margin="15,0,5,0" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="SnapRadiusBox" Width="40" Text="5" VerticalAlignment="Center"/>
+                                    <TextBox x:Name="SnapRadiusBox" Width="40" Text="5" VerticalAlignment="Center" TextChanged="MarginTopBox_TextChanged" Margin="0,0,0,4"
+behaviors:DragValueBehavior.IsEnabled="True"
+behaviors:DragValueBehavior.Minimum="0"
+behaviors:DragValueBehavior.Maximum="500"
+behaviors:DragValueBehavior.Sensitivity="3"
+behaviors:DragValueBehavior.Step="1"/>
                                     <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
                                 </StackPanel>
 
@@ -65,7 +155,12 @@ Style="{DynamicResource ThemedWindow}">
                                     <CheckBox x:Name="ShowGridCheck" Content="Show" IsChecked="True" VerticalAlignment="Center" Click="ShowGridCheck_Click"/>
                                     <CheckBox x:Name="SnapToGridCheck" Content="Snap" IsChecked="True" VerticalAlignment="Center" Margin="10,0,0,0"/>
                                     <TextBlock Text="Size:" Margin="10,0,5,0" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="GridSpacingBox" Width="35" Text="5" VerticalAlignment="Center" TextChanged="GridSpacingBox_TextChanged"/>
+                                    <TextBox x:Name="GridSpacingBox" Width="35" Text="5" VerticalAlignment="Center" TextChanged="GridSpacingBox_TextChanged" Margin="0,0,0,4"
+behaviors:DragValueBehavior.IsEnabled="True"
+behaviors:DragValueBehavior.Minimum="0"
+behaviors:DragValueBehavior.Maximum="500"
+behaviors:DragValueBehavior.Sensitivity="3"
+behaviors:DragValueBehavior.Step="1"/>
                                     <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
                                 </StackPanel>
 
@@ -74,15 +169,50 @@ Style="{DynamicResource ThemedWindow}">
                                     <TextBlock x:Name="MeasurementStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555" Text="—"/>
                                 </StackPanel>
 
-                                <StackPanel x:Name="WorkingArea" Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="Working area:" Width="90" VerticalAlignment="Center"/>
-                                    <Button x:Name="DefineWorkingAreaBtn" Content="Define" Width="103" Click="DefineWorkingAreaBtn_Click"/>
-                                    <Button x:Name="ClearWorkingAreaBtn" Content="Clear" Width="90" Margin="8,0,0,0" Click="ClearWorkingAreaBtn_Click"/>
-
+                                <!-- Paint Canvas Area -->
+                                <StackPanel x:Name="PaintCanvasArea" Orientation="Vertical" Margin="0,0,0,8">
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                        <TextBlock Text="Paint Canvas:" Width="90" VerticalAlignment="Center"/>
+                                        <Button x:Name="DefinePaintCanvasBtn" Content="Define" Width="60" Click="DefineWorkingAreaBtn_Click" 
+                                                ToolTip="Click and drag on canvas to define paint canvas area"/>
+                                        <Button x:Name="ClearPaintCanvasBtn" Content="Clear" Width="60" Margin="4,0,0,0" Click="ClearWorkingAreaBtn_Click"/>
+                                    </StackPanel>
+                                    
+                                    <!-- Manual Width/Height inputs -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                        <TextBlock Text="" Width="90"/>
+                                        <TextBlock Text="W:" VerticalAlignment="Center" Margin="0,0,2,0"/>
+                                        <TextBox x:Name="PaintCanvasWidthBox" Width="50" Text="0"
+                                                 TextChanged="PaintCanvasWidthBox_TextChanged"
+                                                 behaviors:DragValueBehavior.IsEnabled="True"
+                                                 behaviors:DragValueBehavior.Minimum="0"
+                                                 behaviors:DragValueBehavior.Maximum="2000"
+                                                 behaviors:DragValueBehavior.Sensitivity="2"
+                                                 behaviors:DragValueBehavior.Step="1"
+                                                 ToolTip="Paint canvas width (drag or click to edit)"/>
+                                        <TextBlock Text="H:" VerticalAlignment="Center" Margin="8,0,2,0"/>
+                                        <TextBox x:Name="PaintCanvasHeightBox" Width="50" Text="0"
+                                                 TextChanged="PaintCanvasHeightBox_TextChanged"
+                                                 behaviors:DragValueBehavior.IsEnabled="True"
+                                                 behaviors:DragValueBehavior.Minimum="0"
+                                                 behaviors:DragValueBehavior.Maximum="2000"
+                                                 behaviors:DragValueBehavior.Sensitivity="2"
+                                                 behaviors:DragValueBehavior.Step="1"
+                                                 ToolTip="Paint canvas height (drag or click to edit)"/>
+                                        <TextBlock Text="mm" VerticalAlignment="Center" Margin="4,0,0,0"/>
+                                    </StackPanel>
+                                    
+                                    <!-- Lock margins to canvas checkbox -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
+                                        <TextBlock Text="" Width="90"/>
+                                        <CheckBox x:Name="LockMarginsToCanvasCheck" Content="Lock margins to canvas" 
+                                                  VerticalAlignment="Center" Click="LockMarginsToCanvasCheck_Click"
+                                                  ToolTip="When enabled, safe margins are calculated from paint canvas edges instead of plotter bed"/>
+                                    </StackPanel>
                                 </StackPanel>
 
                                 <StackPanel x:Name="status" Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock x:Name="WorkingAreaStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555"/>
+                                    <TextBlock x:Name="PaintCanvasStatus" Margin="10,0,0,0" VerticalAlignment="Center" Foreground="#555"/>
                                 </StackPanel>
                                 <StackPanel x:Name="RefZoom" Orientation="Horizontal" Margin="0,0,0,5">
                                     <TextBlock Text="Zoom:" Width="90" VerticalAlignment="Center"/>
@@ -277,28 +407,36 @@ Style="{DynamicResource ThemedWindow}">
                             <StackPanel Margin="10">
                                 <StackPanel x:Name="XYFeed" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="XY Feed:" Width="90" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="FeedXYBox" Width="148" Text="3000"/>
+                                    <TextBox x:Name="FeedXYBox" Width="148" Text="500&#xD;&#xA;" Height="22"
+                                             TextChanged="MarginTopBox_TextChanged" Margin="0,0,0,4"
+                                            behaviors:DragValueBehavior.IsEnabled="True"
+                                            behaviors:DragValueBehavior.Minimum="0"
+                                            behaviors:DragValueBehavior.Maximum="500"
+                                            behaviors:DragValueBehavior.Sensitivity="3"
+                                            behaviors:DragValueBehavior.Step="1"    />
                                     <TextBlock Text="mm/min" Margin="8,0,0,0" VerticalAlignment="Center"/>
                                 </StackPanel>
 
                                 <StackPanel x:Name="ZUp" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Z Up:" Width="90" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="ZUpBox" Width="173" Text="10"/>
+                                    <TextBox x:Name="ZUpBox" Width="173" Text="10" TextChanged="MarginTopBox_TextChanged" Margin="0,0,0,4"
+behaviors:DragValueBehavior.IsEnabled="True"
+behaviors:DragValueBehavior.Minimum="0"
+behaviors:DragValueBehavior.Maximum="500"
+behaviors:DragValueBehavior.Sensitivity="3"
+behaviors:DragValueBehavior.Step="1"/>
                                     <TextBlock Text="mm" Margin="8,0,0,0" VerticalAlignment="Center"/>
                                 </StackPanel>
 
                                 <StackPanel x:Name="ZDown" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="Z Down:" Width="90" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="ZDownBox" Width="173" Text="2"/>
+                                    <TextBox x:Name="ZDownBox" Width="173" Text="2" TextChanged="MarginTopBox_TextChanged" Margin="0,0,0,4"
+behaviors:DragValueBehavior.IsEnabled="True"
+behaviors:DragValueBehavior.Minimum="0"
+behaviors:DragValueBehavior.Maximum="500"
+behaviors:DragValueBehavior.Sensitivity="3"
+behaviors:DragValueBehavior.Step="1"/>
                                     <TextBlock Text="mm" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                                </StackPanel>
-
-                                <StackPanel x:Name="SafeMarginSetting" Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="Safe Margin:" Width="90" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="SafeMarginBox" Width="60" Text="50" TextChanged="SafeMarginBox_TextChanged"/>
-                                    <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                                    <CheckBox x:Name="ShowMarginOverlayCheck" Content="Show" IsChecked="True" 
-                                              Margin="10,0,0,0" VerticalAlignment="Center" Click="ShowMarginOverlayCheck_Click"/>
                                 </StackPanel>
 
                                 <CheckBox x:Name="OptimizeCheck" Content="Optimize stroke order"

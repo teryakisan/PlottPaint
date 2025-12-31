@@ -85,6 +85,66 @@ namespace NVSPlotter.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool useIndividualMargins {
+            get {
+                return ((bool)(this["useIndividualMargins"]));
+            }
+            set {
+                this["useIndividualMargins"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("50")]
+        public double marginLeftMm {
+            get {
+                return ((double)(this["marginLeftMm"]));
+            }
+            set {
+                this["marginLeftMm"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("50")]
+        public double marginTopMm {
+            get {
+                return ((double)(this["marginTopMm"]));
+            }
+            set {
+                this["marginTopMm"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("50")]
+        public double marginRightMm {
+            get {
+                return ((double)(this["marginRightMm"]));
+            }
+            set {
+                this["marginRightMm"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("50")]
+        public double marginBottomMm {
+            get {
+                return ((double)(this["marginBottomMm"]));
+            }
+            set {
+                this["marginBottomMm"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("Auto")]
         public string bedSizeMode {
             get {
@@ -164,6 +224,18 @@ namespace NVSPlotter.Properties {
             }
             set {
                 this["UseSystemTheme"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("False")]
+        public bool LockMarginsToCanvas {
+            get {
+                return ((bool)(this["LockMarginsToCanvas"]));
+            }
+            set {
+                this["LockMarginsToCanvas"] = value;
             }
         }
     }

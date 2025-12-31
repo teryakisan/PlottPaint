@@ -25,6 +25,9 @@ public sealed class PaintWell
     /// <summary>Position and size on the canvas (in mm)</summary>
     public Rect Bounds { get; set; }
 
+    /// <summary>Rotation angle in radians around the center of bounds</summary>
+    public double Rotation { get; set; }
+
     /// <summary>Z depth to dip into the paint (mm, positive value that will be negated in G-code)</summary>
     public double DipDepth { get; set; } = 5.0;
 
