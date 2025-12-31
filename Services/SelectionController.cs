@@ -1527,7 +1527,13 @@ public sealed class SelectionController
         _mode = SelectionMode.Moving;
         _activeHandle = SelectionHandle.Body;
         _dragStart = start;
-        _originalBounds = _selectionBounds;
+        
+        // When we have a rotation, use _logicalBounds as the reference for move operations
+        // This ensures the rotated selection box stays aligned with the object
+        _originalBounds = Math.Abs(_selectionRotationAngle) > 0.001 && !_logicalBounds.IsEmpty 
+            ? _logicalBounds 
+            : _selectionBounds;
+        
         SaveOriginalStrokes();
         _canvas.CaptureMouse();
     }
@@ -1577,6 +1583,18 @@ public sealed class SelectionController
         }
 
         UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+        
+        // When we have a rotation, also update the logical bounds by the same delta
+        // This ensures the rotated selection box follows the object during move
+        if (Math.Abs(_selectionRotationAngle) > 0.001 && !_originalBounds.IsEmpty)
+        {
+            _logicalBounds = new Rect(
+                _originalBounds.Left + dx,
+                _originalBounds.Top + dy,
+                _originalBounds.Width,
+                _originalBounds.Height);
+        }
+        
         _requestRender();
     }
 

@@ -29,7 +29,7 @@ namespace NVSPlotter
             ConsoleBox?.Clear();
         }
 
-        private void Window_Closing(object sender, CancelEventArgs e)
+        private void Window_Closing(object? sender, CancelEventArgs e)
         {
             // Hide instead of close so we can show it again
             e.Cancel = true;

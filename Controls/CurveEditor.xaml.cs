@@ -7,7 +7,6 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
 using FontAwesome.WPF;
-using System.Windows.Media;
 using System.Windows.Media.Effects;
 using Brush = System.Windows.Media.Brush;
 using Brushes = System.Windows.Media.Brushes;
@@ -24,12 +23,12 @@ namespace NVSPlotter.Controls
         // Tangent vectors for inner control points (stored as normalized offsets)
         private readonly Dictionary<int, (Point leftTangent, Point rightTangent)> tangentVectors = new();
 
-        // Visual elements
-        private System.Windows.Shapes.Rectangle backgroundRect;
-        private System.Windows.Shapes.Path curvePath;
-        private System.Windows.Shapes.Line verticalLine;
-        private System.Windows.Shapes.Ellipse handleP0, handleP1, handleP2, handleP3, handleP4;
-        private System.Windows.Shapes.Line baseline;
+        // Visual elements (initialized in SetupVisuals after Loaded event)
+        private System.Windows.Shapes.Rectangle? backgroundRect;
+        private System.Windows.Shapes.Path? curvePath;
+        private System.Windows.Shapes.Line? verticalLine;
+        private System.Windows.Shapes.Ellipse? handleP0, handleP1, handleP2, handleP3, handleP4;
+        private System.Windows.Shapes.Line? baseline;
         private List<System.Windows.Shapes.Line> _gridVerticalLines = new();
         private List<System.Windows.Shapes.Line> _gridHorizontalLines = new();
         
@@ -609,8 +608,10 @@ namespace NVSPlotter.Controls
             var ny = Clamp01(p.Y / Math.Max(1, h));
 
             // map dragging handle to index
-            var handleList = new List<System.Windows.Shapes.Ellipse> { handleP0, handleP1, handleP2, handleP3, handleP4 };
-            var idx = handleList.IndexOf(draggingHandle as System.Windows.Shapes.Ellipse);
+            var handleList = new List<System.Windows.Shapes.Ellipse?> { handleP0, handleP1, handleP2, handleP3, handleP4 };
+            var ellipse = draggingHandle as System.Windows.Shapes.Ellipse;
+            if (ellipse == null) return;
+            var idx = handleList.IndexOf(ellipse);
             if (idx < 0) return;
 
             // endpoints (0 and last) constrained to X=0/1, move only vertically
@@ -673,7 +674,10 @@ namespace NVSPlotter.Controls
             backgroundRect.Width = w; backgroundRect.Height = h;
 
             // draw quadrant grid by setting baseline (horizontal center) and verticalLine (vertical center)
-            baseline.X1 = 0; baseline.X2 = w; baseline.Y1 = h / 2; baseline.Y2 = h / 2;
+            if (baseline != null)
+            {
+                baseline.X1 = 0; baseline.X2 = w; baseline.Y1 = h / 2; baseline.Y2 = h / 2;
+            }
             // draw subdivision lines
             for (int i = 0; i < _gridVerticalLines.Count; i++)
             {
@@ -797,18 +801,23 @@ namespace NVSPlotter.Controls
             var handles = new[] { handleP0, handleP1, handleP2, handleP3, handleP4 };
             for (int i = 0; i < handles.Length; i++)
             {
+                var handle = handles[i];
+                if (handle == null) continue;
                 if (i < pixelPts.Length)
                 {
-                    PlaceHandle(handles[i], pixelPts[i].X, pixelPts[i].Y);
+                    PlaceHandle(handle, pixelPts[i].X, pixelPts[i].Y);
                 }
                 else
                 {
-                    handles[i].Visibility = Visibility.Collapsed;
+                    handle.Visibility = Visibility.Collapsed;
                 }
             }
 
             // update quadrant lines
-            verticalLine.X1 = w / 2; verticalLine.X2 = w / 2; verticalLine.Y1 = 0; verticalLine.Y2 = h;
+            if (verticalLine != null)
+            {
+                verticalLine.X1 = w / 2; verticalLine.X2 = w / 2; verticalLine.Y1 = 0; verticalLine.Y2 = h;
+            }
 
             // ensure mouse events wired
             PART_Canvas.MouseMove -= PART_Canvas_MouseMove;
