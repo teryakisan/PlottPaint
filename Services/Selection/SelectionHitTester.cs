@@ -201,6 +201,18 @@ public sealed class SelectionHitTester
     }
 
     /// <summary>
+    /// Determines if a handle is an edge handle (used for skew operations).
+    /// Edge handles are: TopCenter, BottomCenter, MiddleLeft, MiddleRight
+    /// </summary>
+    public static bool IsEdgeHandle(SelectionHandle handle)
+    {
+        return handle == SelectionHandle.TopCenter ||
+               handle == SelectionHandle.BottomCenter ||
+               handle == SelectionHandle.MiddleLeft ||
+               handle == SelectionHandle.MiddleRight;
+    }
+
+    /// <summary>
     /// Finds all strokes that belong to the same group as the stroke at the given index.
     /// If the stroke has no GroupId, only that stroke is returned (individual line).
     /// </summary>

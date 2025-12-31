@@ -10,20 +10,10 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <None Remove="GIF 12-17-2025 8-22-54 PM.gif" />
-    <None Remove="GIF 12-19-2025 3-24-20 AM.gif" />
-  </ItemGroup>
-
-  <ItemGroup>
     <PackageReference Include="Emoji.Wpf" Version="0.3.4" />
     <PackageReference Include="FontAwesome.WPF" Version="4.7.0.9" />
     <PackageReference Include="System.IO.Ports" Version="10.0.1" />
     <PackageReference Include="WpfAnimatedGif" Version="2.0.2" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <Resource Include="GIF 12-17-2025 8-22-54 PM.gif" />
-    <Resource Include="GIF 12-19-2025 3-24-20 AM.gif" />
   </ItemGroup>
 
   <ItemGroup>

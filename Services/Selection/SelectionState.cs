@@ -19,6 +19,8 @@ public enum SelectionHandle
     BottomLeft, BottomCenter, BottomRight,
     Rotate,
     Body // For moving the entire selection
+    // Note: Edge midpoint handles (TopCenter, BottomCenter, MiddleLeft, MiddleRight)
+    // are used for skew operations when dragged
 }
 
 /// <summary>
@@ -30,7 +32,8 @@ public enum SelectionMode
     MarqueeSelecting,
     Moving,
     Resizing,
-    Rotating
+    Rotating,
+    Skewing
 }
 
 /// <summary>
@@ -116,6 +119,16 @@ public sealed class SelectionState
     public Rect LogicalBounds { get; set; }
 
     /// <summary>
+    /// Gets or sets the horizontal skew factor (shear along X axis).
+    /// </summary>
+    public double SkewX { get; set; }
+
+    /// <summary>
+    /// Gets or sets the vertical skew factor (shear along Y axis).
+    /// </summary>
+    public double SkewY { get; set; }
+
+    /// <summary>
     /// Gets whether there is an active selection.
     /// </summary>
     public bool HasSelection => _selectedIndices.Count > 0 || _selectedPaintWellIds.Count > 0;
@@ -135,6 +148,8 @@ public sealed class SelectionState
         SelectionBounds = Rect.Empty;
         LogicalBounds = Rect.Empty;
         RotationAngle = 0;
+        SkewX = 0;
+        SkewY = 0;
         Mode = SelectionMode.Idle;
         ActiveHandle = SelectionHandle.None;
         ClearDragState();

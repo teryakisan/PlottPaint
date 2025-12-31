@@ -51,6 +51,7 @@ public sealed class SelectionVisuals
     private ImageAwesome? _rotateIcon;
     private Border? _resizeHandleHoverRing;
     private ImageAwesome? _resizeIcon;
+    private ImageAwesome? _skewIcon;
 
     // Position tracking for hit testing
     private readonly List<Point> _resizeHandlePositions = new();
@@ -214,6 +215,11 @@ public sealed class SelectionVisuals
         if (mode == SelectionMode.Resizing && _resizeIcon == null)
         {
             ShowResizeIcon(bounds, isActive: true);
+        }
+
+        if (mode == SelectionMode.Skewing && _skewIcon == null)
+        {
+            ShowSkewIcon(bounds, isActive: true);
         }
     }
 
@@ -470,6 +476,7 @@ public sealed class SelectionVisuals
 
         ClearRotateHoverVisuals();
         ClearResizeHoverVisuals();
+        ClearSkewHoverVisuals();
     }
 
     /// <summary>
@@ -537,5 +544,54 @@ public sealed class SelectionVisuals
         var iconSize = visualSize * ICON_SIZE_RATIO;
 
         return Math.Clamp(iconSize, MIN_ICON_SIZE, MAX_ICON_SIZE);
+    }
+
+    /// <summary>
+    /// Shows the skew icon at the selection center.
+    /// </summary>
+    public void ShowSkewIcon(Rect selectionBounds, bool isActive)
+    {
+        if (_skewIcon != null) return;
+
+        var iconSize = CalculateIconSize(selectionBounds);
+        var alpha = isActive ? (byte)80 : (byte)140;
+
+        _skewIcon = new ImageAwesome
+        {
+            Icon = FontAwesomeIcon.Columns, // Using columns icon to suggest shear
+            Width = iconSize,
+            Height = iconSize,
+            Foreground = new SolidColorBrush(Color.FromArgb(alpha, 255, 140, 0)), // DarkOrange
+            IsHitTestVisible = false,
+            SnapsToDevicePixels = true
+        };
+        Canvas.SetLeft(_skewIcon, _selectionCenterPosition.X - iconSize / 2);
+        Canvas.SetTop(_skewIcon, _selectionCenterPosition.Y - iconSize / 2);
+        Panel.SetZIndex(_skewIcon, 3);
+        _canvas.Children.Add(_skewIcon);
+    }
+
+    /// <summary>
+    /// Clears skew hover visuals.
+    /// </summary>
+    public void ClearSkewHoverVisuals()
+    {
+        if (_skewIcon != null)
+        {
+            _canvas.Children.Remove(_skewIcon);
+            _skewIcon = null;
+        }
+    }
+
+    /// <summary>
+    /// Sets the skew icon transparency for active skew state.
+    /// </summary>
+    public void SetSkewIconActive(bool isActive)
+    {
+        if (_skewIcon != null)
+        {
+            var alpha = isActive ? (byte)80 : (byte)140;
+            _skewIcon.Foreground = new SolidColorBrush(Color.FromArgb(alpha, 255, 140, 0));
+        }
     }
 }

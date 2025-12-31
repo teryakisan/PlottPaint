@@ -218,4 +218,65 @@ public static class GeometryHelpers
     {
         return ScaleAndFlipRect(original, oldBounds, newBounds, false, false);
     }
+
+    /// <summary>
+    /// Applies a skew (shear) transformation to a point relative to bounds.
+    /// </summary>
+    /// <param name="point">The point to skew</param>
+    /// <param name="bounds">The reference bounds (skew is relative to center)</param>
+    /// <param name="skewX">Horizontal skew factor (shear along X axis based on Y position)</param>
+    /// <param name="skewY">Vertical skew factor (shear along Y axis based on X position)</param>
+    public static PointMm SkewPoint(PointMm point, Rect bounds, double skewX, double skewY)
+    {
+        // Calculate center of bounds
+        var centerX = bounds.Left + bounds.Width / 2;
+        var centerY = bounds.Top + bounds.Height / 2;
+
+        // Get position relative to center
+        var relX = point.X - centerX;
+        var relY = point.Y - centerY;
+
+        // Apply skew transformation:
+        // x' = x + skewX * y
+        // y' = y + skewY * x
+        var newX = centerX + relX + skewX * relY;
+        var newY = centerY + relY + skewY * relX;
+
+        return new PointMm(newX, newY);
+    }
+
+    /// <summary>
+    /// Applies a skew transformation to a stroke.
+    /// </summary>
+    public static LineStroke SkewStroke(LineStroke original, Rect bounds, double skewX, double skewY)
+    {
+        var newA = SkewPoint(original.A, bounds, skewX, skewY);
+        var newB = SkewPoint(original.B, bounds, skewX, skewY);
+        return new LineStroke(newA, newB)
+        {
+            PaintWellId = original.PaintWellId,
+            GroupId = original.GroupId,
+            IsGroupStart = original.IsGroupStart,
+            IsGroupEnd = original.IsGroupEnd
+        };
+    }
+
+    /// <summary>
+    /// Applies a skew transformation to a rectangle by skewing its center point.
+    /// Note: This moves the rectangle but doesn't actually skew its shape.
+    /// </summary>
+    public static Rect SkewRect(Rect original, Rect bounds, double skewX, double skewY)
+    {
+        // Skew the center point
+        var rectCenterX = original.Left + original.Width / 2;
+        var rectCenterY = original.Top + original.Height / 2;
+        var skewedCenter = SkewPoint(new PointMm(rectCenterX, rectCenterY), bounds, skewX, skewY);
+
+        // Return rect centered at new position with same size
+        return new Rect(
+            skewedCenter.X - original.Width / 2,
+            skewedCenter.Y - original.Height / 2,
+            original.Width,
+            original.Height);
+    }
 }

@@ -221,6 +221,10 @@ public sealed class SelectionController
                 UpdateRotate(point);
                 return true;
 
+            case SelectionMode.Skewing:
+                UpdateSkew(point);
+                return true;
+
             default:
                 // When idle, check for hover over rotation handle to show highlight
                 if (HasSelection)
@@ -241,14 +245,15 @@ public sealed class SelectionController
         // Check rotation handle hover
         var isHoveringRotate = _hitTester.IsHoveringRotateHandle(point, _visuals.RotateHandlePosition);
         
-        // Check resize handle hover
-        var (isHoveringResize, hoveredResizeHandleIndex) = _hitTester.CheckResizeHandleHover(point, _visuals.ResizeHandlePositions);
+        // Check resize handle hover (edge handles are used for skew, corners for resize)
+        var (isHoveringHandle, hoveredHandleIndex) = _hitTester.CheckResizeHandleHover(point, _visuals.ResizeHandlePositions);
 
-        // Handle rotation hover
+        // Handle rotation hover (highest priority)
         if (isHoveringRotate)
         {
-            // Clear any resize hover first
+            // Clear any resize/skew hover first
             _visuals.ClearResizeHoverVisuals();
+            _visuals.ClearSkewHoverVisuals();
             
             // Show rotation hover visuals
             _visuals.ShowRotateHoverGlow();
@@ -260,17 +265,35 @@ public sealed class SelectionController
             _visuals.ClearRotateHoverVisuals();
         }
         
-        // Handle resize hover (only if not hovering rotate)
-        if (!isHoveringRotate && isHoveringResize)
+        // Handle handle hover (check if it's an edge handle for skew or corner for resize)
+        if (!isHoveringRotate && isHoveringHandle)
         {
-            // Show resize hover visuals
-            _visuals.ShowResizeHoverGlow(hoveredResizeHandleIndex);
-            _visuals.ShowResizeIcon(_state.SelectionBounds, isActive: false);
+            // Determine handle type from index
+            // Handle order: TopLeft(0), TopCenter(1), TopRight(2), MiddleLeft(3), MiddleRight(4), 
+            //               BottomLeft(5), BottomCenter(6), BottomRight(7)
+            var isEdgeHandle = hoveredHandleIndex == 1 || hoveredHandleIndex == 3 || 
+                               hoveredHandleIndex == 4 || hoveredHandleIndex == 6;
+            
+            if (isEdgeHandle)
+            {
+                // Edge handle = skew
+                _visuals.ClearResizeHoverVisuals();
+                _visuals.ShowSkewIcon(_state.SelectionBounds, isActive: false);
+            }
+            else
+            {
+                // Corner handle = resize
+                _visuals.ClearSkewHoverVisuals();
+                _visuals.ShowResizeHoverGlow(hoveredHandleIndex);
+                _visuals.ShowResizeIcon(_state.SelectionBounds, isActive: false);
+            }
         }
-        else if (!isHoveringResize && _state.Mode != SelectionMode.Resizing)
+        else if (!isHoveringHandle)
         {
-            // Hide the resize hover visuals when not hovering and not resizing
-            _visuals.ClearResizeHoverVisuals();
+            if (_state.Mode != SelectionMode.Resizing)
+                _visuals.ClearResizeHoverVisuals();
+            if (_state.Mode != SelectionMode.Skewing)
+                _visuals.ClearSkewHoverVisuals();
         }
         
         // During rotation, make the icon more transparent to indicate active rotation
@@ -283,6 +306,12 @@ public sealed class SelectionController
         if (_state.Mode == SelectionMode.Resizing)
         {
             _visuals.SetResizeIconActive(true);
+        }
+
+        // During skewing, make the icon more transparent to indicate active skewing
+        if (_state.Mode == SelectionMode.Skewing)
+        {
+            _visuals.SetSkewIconActive(true);
         }
     }
     
@@ -303,6 +332,7 @@ public sealed class SelectionController
             case SelectionMode.Moving:
             case SelectionMode.Resizing:
             case SelectionMode.Rotating:
+            case SelectionMode.Skewing:
                 result = CommitTransform();
                 break;
         }
@@ -322,7 +352,8 @@ public sealed class SelectionController
     /// </summary>
     public void Cancel()
     {
-        if (_state.Mode == SelectionMode.Moving || _state.Mode == SelectionMode.Resizing || _state.Mode == SelectionMode.Rotating)
+        if (_state.Mode == SelectionMode.Moving || _state.Mode == SelectionMode.Resizing || 
+            _state.Mode == SelectionMode.Rotating || _state.Mode == SelectionMode.Skewing)
         {
             var doc = _getDocument();
 
@@ -932,8 +963,14 @@ public sealed class SelectionController
             // Calculate initial angle from center to mouse position (both in canvas coords)
             _state.OriginalAngle = Math.Atan2(start.Y - visualCenterY, start.X - visualCenterX);
         }
+        else if (SelectionHitTester.IsEdgeHandle(handle))
+        {
+            // Edge handles (TopCenter, BottomCenter, MiddleLeft, MiddleRight) trigger skew
+            BeginSkew(handle, start);
+        }
         else
         {
+            // Corner handles trigger resize
             _state.Mode = SelectionMode.Resizing;
             
             // For resize after rotation, we need to work in the logical (unrotated) coordinate space
@@ -1291,6 +1328,101 @@ public sealed class SelectionController
 
         // The logical bounds stay the same during rotation - only the angle changes
         // Don't update _state.LogicalBounds here
+
+        _requestRender();
+    }
+
+    // ===== SKEW =====
+
+    private void BeginSkew(SelectionHandle handle, PointMm start)
+    {
+        _state.Mode = SelectionMode.Skewing;
+        _state.ActiveHandle = handle;
+        _state.DragStart = start;
+        
+        // Use logical bounds as the reference for skew
+        _state.OriginalBounds = _state.LogicalBounds.IsEmpty ? _state.SelectionBounds : _state.LogicalBounds;
+        SaveOriginalStrokes();
+        _canvas.CaptureMouse();
+    }
+
+    private void UpdateSkew(PointMm current)
+    {
+        if (_state.OriginalBounds.IsEmpty) return;
+
+        var doc = _getDocument();
+
+        // Calculate mouse delta from drag start
+        var dx = current.X - _state.DragStart.X;
+        var dy = current.Y - _state.DragStart.Y;
+
+        // Calculate skew factors based on which edge handle is being dragged
+        // Skew factor is proportional to the mouse movement relative to bounds size
+        double skewX = 0;
+        double skewY = 0;
+
+        var boundsWidth = Math.Max(1, _state.OriginalBounds.Width);
+        var boundsHeight = Math.Max(1, _state.OriginalBounds.Height);
+
+        switch (_state.ActiveHandle)
+        {
+            case SelectionHandle.TopCenter:
+            case SelectionHandle.BottomCenter:
+                // Horizontal skew: drag left/right to shear horizontally
+                skewX = dx / boundsHeight;
+                // Invert for bottom handle
+                if (_state.ActiveHandle == SelectionHandle.BottomCenter)
+                    skewX = -skewX;
+                break;
+
+            case SelectionHandle.MiddleLeft:
+            case SelectionHandle.MiddleRight:
+                // Vertical skew: drag up/down to shear vertically
+                skewY = dy / boundsWidth;
+                // Invert for right handle
+                if (_state.ActiveHandle == SelectionHandle.MiddleRight)
+                    skewY = -skewY;
+                break;
+        }
+
+        // Apply skew to strokes
+        if (_state.OriginalStrokes != null)
+        {
+            var indices = _state.SelectedIndices.ToList();
+            for (int i = 0; i < indices.Count; i++)
+            {
+                var idx = indices[i];
+                if (i >= _state.OriginalStrokes.Count) continue;
+
+                var original = _state.OriginalStrokes[i];
+                doc.Strokes[idx] = GeometryHelpers.SkewStroke(original, _state.OriginalBounds, skewX, skewY);
+            }
+        }
+
+        // Apply skew to paint wells
+        if (_state.OriginalPaintWellBounds != null)
+        {
+            foreach (var (id, originalWellBounds, originalRotation) in _state.OriginalPaintWellBounds)
+            {
+                var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
+                if (well != null)
+                {
+                    var skewed = GeometryHelpers.SkewRect(originalWellBounds, _state.OriginalBounds, skewX, skewY);
+                    
+                    // Convert back to document coordinates for storage
+                    well.Bounds = new Rect(
+                        skewed.Left - RULER_THICKNESS,
+                        skewed.Top - RULER_THICKNESS,
+                        skewed.Width,
+                        skewed.Height);
+                    well.Rotation = originalRotation;
+                }
+            }
+        }
+
+        // Store skew values
+        _state.SkewX = skewX;
+        _state.SkewY = skewY;
 
         _requestRender();
     }
