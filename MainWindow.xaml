@@ -40,7 +40,7 @@ Style="{DynamicResource ThemedWindow}">
                                              behaviors:DragValueBehavior.Maximum="500"
                                              behaviors:DragValueBehavior.Sensitivity="3"
                                              behaviors:DragValueBehavior.Step="1"
-                                             ToolTip="Drag up/down to adjust value"/>
+                                             ToolTip="Drag up/down to adjust value" Text="0"/>
                                     <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
                                     <CheckBox x:Name="ShowMarginOverlayCheck" Content="Show" IsChecked="True" 
                                               Margin="10,0,0,0" VerticalAlignment="Center" Click="ShowMarginOverlayCheck_Click"/>
@@ -67,7 +67,7 @@ Style="{DynamicResource ThemedWindow}">
                                             <RowDefinition Height="Auto"/>
                                             <RowDefinition Height="Auto"/>
                                         </Grid.RowDefinitions>
-                                        
+
                                         <!-- Left margin -->
                                         <TextBlock Grid.Row="0" Grid.Column="0" Text="L:" VerticalAlignment="Center" Margin="0,0,2,4"/>
                                         <TextBox x:Name="MarginLeftBox" Grid.Row="0" Grid.Column="1" Width="35" Text="50" 
@@ -78,7 +78,7 @@ Style="{DynamicResource ThemedWindow}">
                                                  behaviors:DragValueBehavior.Sensitivity="3"
                                                  behaviors:DragValueBehavior.Step="1"
                                                  ToolTip="Drag up/down to adjust"/>
-                                        
+
                                         <!-- Top margin -->
                                         <TextBlock Grid.Row="0" Grid.Column="2" Text="T:" VerticalAlignment="Center" Margin="0,0,2,4"/>
                                         <TextBox x:Name="MarginTopBox" Grid.Row="0" Grid.Column="3" Width="35" Text="50" 
@@ -89,7 +89,7 @@ Style="{DynamicResource ThemedWindow}">
                                                  behaviors:DragValueBehavior.Sensitivity="3"
                                                  behaviors:DragValueBehavior.Step="1"
                                                  ToolTip="Drag up/down to adjust"/>
-                                        
+
                                         <!-- Right margin -->
                                         <TextBlock Grid.Row="1" Grid.Column="0" Text="R:" VerticalAlignment="Center" Margin="0,0,2,0"/>
                                         <TextBox x:Name="MarginRightBox" Grid.Row="1" Grid.Column="1" Width="35" Text="50" 
@@ -100,7 +100,7 @@ Style="{DynamicResource ThemedWindow}">
                                                  behaviors:DragValueBehavior.Sensitivity="3"
                                                  behaviors:DragValueBehavior.Step="1"
                                                  ToolTip="Drag up/down to adjust"/>
-                                        
+
                                         <!-- Bottom margin -->
                                         <TextBlock Grid.Row="1" Grid.Column="2" Text="B:" VerticalAlignment="Center" Margin="0,0,2,0"/>
                                         <TextBox x:Name="MarginBottomBox" Grid.Row="1" Grid.Column="3" Width="35" Text="50" 
@@ -133,7 +133,7 @@ Style="{DynamicResource ThemedWindow}">
                                         <ComboBoxItem Content="Selection / Transform Tool" Tag="Select"/>
                                         <ComboBoxItem Content="Crop / Mask Tool" Tag="Crop"/>
                                         <ComboBoxItem Content="Image Alignment Tool" Tag="ImageAlign"/>
-                                        
+
                                     </ComboBox>
                                 </StackPanel>
 
@@ -177,7 +177,7 @@ behaviors:DragValueBehavior.Step="1"/>
                                                 ToolTip="Click and drag on canvas to define paint canvas area"/>
                                         <Button x:Name="ClearPaintCanvasBtn" Content="Clear" Width="60" Margin="4,0,0,0" Click="ClearWorkingAreaBtn_Click"/>
                                     </StackPanel>
-                                    
+
                                     <!-- Manual Width/Height inputs -->
                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                         <TextBlock Text="" Width="90"/>
@@ -201,7 +201,70 @@ behaviors:DragValueBehavior.Step="1"/>
                                                  ToolTip="Paint canvas height (drag or click to edit)"/>
                                         <TextBlock Text="mm" VerticalAlignment="Center" Margin="4,0,0,0"/>
                                     </StackPanel>
-                                    
+
+                                    <!-- Popular Canvas Sizes -->
+                                    <Border BorderBrush="{DynamicResource BorderBrush}" BorderThickness="1" 
+                                            CornerRadius="4" Padding="6" Margin="0,4,0,4"
+                                            Background="{DynamicResource TertiaryBackgroundBrush}">
+                                        <StackPanel>
+                                            <TextBlock Text="Popular Sizes:" FontSize="10" Foreground="{DynamicResource SecondaryTextBrush}" Margin="0,0,0,4"/>
+                                            <UniformGrid Rows="4" Columns="4" HorizontalAlignment="Stretch">
+                                                <!-- Row 1: A-series paper sizes -->
+                                                <Button Content="A4" Height="24" Margin="2" FontSize="10"
+                                                        Tag="210,297" Click="CanvasSizePreset_Click"
+                                                        ToolTip="A4: 210 × 297 mm"/>
+                                                <Button Content="A3" Height="24" Margin="2" FontSize="10"
+                                                        Tag="297,420" Click="CanvasSizePreset_Click"
+                                                        ToolTip="A3: 297 × 420 mm"/>
+                                                <Button Content="A2" Height="24" Margin="2" FontSize="10"
+                                                        Tag="420,594" Click="CanvasSizePreset_Click"
+                                                        ToolTip="A2: 420 × 594 mm"/>
+                                                <Button Content="A1" Height="24" Margin="2" FontSize="10"
+                                                        Tag="594,841" Click="CanvasSizePreset_Click"
+                                                        ToolTip="A1: 594 × 841 mm"/>
+                                                <!-- Row 2: A0, US Paper, Square -->
+                                                <Button Content="A0" Height="24" Margin="2" FontSize="10"
+                                                        Tag="841,1189" Click="CanvasSizePreset_Click"
+                                                        ToolTip="A0: 841 × 1189 mm"/>
+                                                <Button Content="Letter" Height="24" Margin="2" FontSize="10"
+                                                        Tag="216,279" Click="CanvasSizePreset_Click"
+                                                        ToolTip="US Letter: 216 × 279 mm (8.5 × 11 in)"/>
+                                                <Button Content="Legal" Height="24" Margin="2" FontSize="10"
+                                                        Tag="216,356" Click="CanvasSizePreset_Click"
+                                                        ToolTip="US Legal: 216 × 356 mm (8.5 × 14 in)"/>
+                                                <Button Content="□12&quot;" Height="24" Margin="2" FontSize="10"
+                                                        Tag="305,305" Click="CanvasSizePreset_Click"
+                                                        ToolTip="12 × 12 inches: 305 × 305 mm (square)"/>
+                                                <!-- Row 3: Common art canvas sizes -->
+                                                <Button Content="8×10" Height="24" Margin="2" FontSize="10"
+                                                        Tag="203,254" Click="CanvasSizePreset_Click"
+                                                        ToolTip="8 × 10 inches: 203 × 254 mm"/>
+                                                <Button Content="11×14" Height="24" Margin="2" FontSize="10"
+                                                        Tag="279,356" Click="CanvasSizePreset_Click"
+                                                        ToolTip="11 × 14 inches: 279 × 356 mm"/>
+                                                <Button Content="16×20" Height="24" Margin="2" FontSize="10"
+                                                        Tag="406,508" Click="CanvasSizePreset_Click"
+                                                        ToolTip="16 × 20 inches: 406 × 508 mm"/>
+                                                <Button Content="□20&quot;" Height="24" Margin="2" FontSize="10"
+                                                        Tag="508,508" Click="CanvasSizePreset_Click"
+                                                        ToolTip="20 × 20 inches: 508 × 508 mm (square)"/>
+                                                <!-- Row 4: Larger canvas sizes -->
+                                                <Button Content="18×24" Height="24" Margin="2" FontSize="10"
+                                                        Tag="457,610" Click="CanvasSizePreset_Click"
+                                                        ToolTip="18 × 24 inches: 457 × 610 mm"/>
+                                                <Button Content="24×36" Height="24" Margin="2" FontSize="10"
+                                                        Tag="610,914" Click="CanvasSizePreset_Click"
+                                                        ToolTip="24 × 36 inches: 610 × 914 mm"/>
+                                                <Button Content="30×40" Height="24" Margin="2" FontSize="10"
+                                                        Tag="762,1016" Click="CanvasSizePreset_Click"
+                                                        ToolTip="30 × 40 inches: 762 × 1016 mm"/>
+                                                <Button Content="36×48" Height="24" Margin="2" FontSize="10"
+                                                        Tag="914,1219" Click="CanvasSizePreset_Click"
+                                                        ToolTip="36 × 48 inches: 914 × 1219 mm"/>
+                                            </UniformGrid>
+                                        </StackPanel>
+                                    </Border>
+
                                     <!-- Lock margins to canvas checkbox -->
                                     <StackPanel Orientation="Horizontal" Margin="0,0,0,4">
                                         <TextBlock Text="" Width="90"/>
@@ -514,7 +577,7 @@ behaviors:DragValueBehavior.Step="1"/>
 
                     </GroupBox>
 
-               
+
 
 
                 </StackPanel>
@@ -530,10 +593,10 @@ behaviors:DragValueBehavior.Step="1"/>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
                     </Grid.RowDefinitions>
-                    
+
                     <!-- Toolbar -->
                     <DockPanel Grid.Row="0" Background="{DynamicResource TertiaryBackgroundBrush}" Height="30" LastChildFill="False">
-                       
+
                         <!-- Left side buttons -->
                         <Button x:Name="NewProjectBtn" DockPanel.Dock="Left" Content="📄 New" Width="60" Margin="5,2" Click="NewProjectBtn_Click" ToolTip="New Project (Ctrl+N)"/>
                         <Button x:Name="OpenProjectBtn" DockPanel.Dock="Left" Content="📂 Open" Width="85" Margin="0,2,5,2" Click="OpenProjectBtn_Click" ToolTip="Open Project (Ctrl+O)"/>
@@ -543,7 +606,7 @@ behaviors:DragValueBehavior.Step="1"/>
                         <Button x:Name="ShowConsoleBtn" DockPanel.Dock="Left" Content="📋 Console" Width="87" Margin="5,2" Click="ShowConsoleBtn_Click" ToolTip="Show/Hide Console Window"/>
                         <Button x:Name="ReferenceImageBtn" DockPanel.Dock="Left" Content="🖼 Reference" Width="95" Margin="5,2" Click="ReferenceImageBtn_Click" ToolTip="Open Reference Image Window"/>
                         <Button x:Name="BrushProfilesBtn" DockPanel.Dock="Left" Content="🖌 Profiles" Width="95" Margin="5,2" Click="BrushProfilesBtn_Click" ToolTip="Open Brush Stroke Profiles"/>
-                        
+
                         <!-- Theme Toggle Switch - docked to the right -->
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0,10,0">
                             <TextBlock Text="☀" FontSize="12" FontFamily="Segoe UI Emoji" VerticalAlignment="Center" Margin="0,0,4,0" 
@@ -556,7 +619,7 @@ behaviors:DragValueBehavior.Step="1"/>
                                        Foreground="{DynamicResource SecondaryTextBrush}"/>
                         </StackPanel>
                     </DockPanel>
-                    
+
                     <ScrollViewer x:Name="CanvasScroll" Grid.Row="1"
                       SizeChanged="CanvasScroll_SizeChanged"
                       HorizontalScrollBarVisibility="Visible"

@@ -91,7 +91,7 @@ public sealed class SelectionVisuals
     /// <summary>
     /// Renders the selection box with handles around the given bounds.
     /// </summary>
-    public void RenderSelectionBox(Rect bounds, double rotationAngle, SelectionMode mode)
+    public void RenderSelectionBox(Rect bounds, double rotationAngle, SelectionMode mode, double skewX = 0, double skewY = 0)
     {
         if (bounds.IsEmpty) return;
 
@@ -103,24 +103,17 @@ public sealed class SelectionVisuals
         var visualRight = visualLeft + visualWidth;
         var visualBottom = visualTop + visualHeight;
 
-        // Calculate center for rotation
+        // Calculate center for transformations
         var centerX = visualLeft + visualWidth / 2;
         var centerY = visualTop + visualHeight / 2;
 
-        // Create rotation transform if we have a rotation angle
-        RotateTransform? rotateTransform = null;
-        if (Math.Abs(rotationAngle) > 0.001)
-        {
-            rotateTransform = new RotateTransform(rotationAngle * 180 / Math.PI, centerX, centerY);
-        }
+        // Calculate corner positions, applying skew then rotation
+        var topLeft = SkewAndRotatePoint(visualLeft, visualTop, centerX, centerY, skewX, skewY, rotationAngle);
+        var topRight = SkewAndRotatePoint(visualRight, visualTop, centerX, centerY, skewX, skewY, rotationAngle);
+        var bottomRight = SkewAndRotatePoint(visualRight, visualBottom, centerX, centerY, skewX, skewY, rotationAngle);
+        var bottomLeft = SkewAndRotatePoint(visualLeft, visualBottom, centerX, centerY, skewX, skewY, rotationAngle);
 
-        // Calculate rotated corner positions
-        var topLeft = TransformPoint(visualLeft, visualTop, rotateTransform);
-        var topRight = TransformPoint(visualRight, visualTop, rotateTransform);
-        var bottomRight = TransformPoint(visualRight, visualBottom, rotateTransform);
-        var bottomLeft = TransformPoint(visualLeft, visualBottom, rotateTransform);
-
-        // Bounding box as a Path connecting the rotated corners
+        // Bounding box as a Path connecting the transformed corners
         var geometry = new PathGeometry();
         var figure = new PathFigure
         {
@@ -145,7 +138,7 @@ public sealed class SelectionVisuals
         Panel.SetZIndex(_boundsPath, 18);
         _canvas.Children.Add(_boundsPath);
 
-        // Resize handles at padded corners (with rotation applied)
+        // Resize handles at transformed corners
         AddHandle(topLeft.X, topLeft.Y, SelectionHandle.TopLeft);
         AddHandle((topLeft.X + topRight.X) / 2, (topLeft.Y + topRight.Y) / 2, SelectionHandle.TopCenter);
         AddHandle(topRight.X, topRight.Y, SelectionHandle.TopRight);
@@ -155,21 +148,32 @@ public sealed class SelectionVisuals
         AddHandle((bottomLeft.X + bottomRight.X) / 2, (bottomLeft.Y + bottomRight.Y) / 2, SelectionHandle.BottomCenter);
         AddHandle(bottomRight.X, bottomRight.Y, SelectionHandle.BottomRight);
 
-        // Rotation handle - position relative to the rotated top edge
+        // Rotation handle - positioned above the top center of the skewed box
         var topCenter = new Point((topLeft.X + topRight.X) / 2, (topLeft.Y + topRight.Y) / 2);
 
-        // Calculate the outward direction from the rotated top edge
-        var topEdgeDx = topRight.X - topLeft.X;
-        var topEdgeDy = topRight.Y - topLeft.Y;
-        var topEdgeLength = Math.Sqrt(topEdgeDx * topEdgeDx + topEdgeDy * topEdgeDy);
+        // The rotation handle direction should only be affected by ROTATION, not skew.
+        // Calculate the "up" direction based on rotation only (ignoring skew).
+        // Without any rotation, "up" is (0, -1). With rotation, we rotate that vector.
+        double upX = 0;
+        double upY = -1;
+        
+        if (Math.Abs(rotationAngle) > 0.001)
+        {
+            var cos = Math.Cos(rotationAngle);
+            var sin = Math.Sin(rotationAngle);
+            upX = upX * cos - upY * sin;  // = sin(rotationAngle)
+            upY = upX * sin + upY * cos;  // This is wrong, let me recalculate
+            
+            // Actually, rotating (0, -1) by angle:
+            // x' = 0 * cos - (-1) * sin = sin
+            // y' = 0 * sin + (-1) * cos = -cos
+            upX = Math.Sin(rotationAngle);
+            upY = -Math.Cos(rotationAngle);
+        }
 
-        // Perpendicular direction pointing OUTWARD from the box
-        double perpX = topEdgeDy / topEdgeLength;
-        double perpY = -topEdgeDx / topEdgeLength;
-
-        // Rotation handle position - OUTSIDE the box
-        var rotateHandleX = topCenter.X + perpX * ROTATE_HANDLE_OFFSET;
-        var rotateHandleY = topCenter.Y + perpY * ROTATE_HANDLE_OFFSET;
+        // Rotation handle position - straight up from top center (respecting rotation only)
+        var rotateHandleX = topCenter.X + upX * ROTATE_HANDLE_OFFSET;
+        var rotateHandleY = topCenter.Y + upY * ROTATE_HANDLE_OFFSET;
 
         _rotateConnector = new Line
         {
@@ -513,6 +517,32 @@ public sealed class SelectionVisuals
     {
         var point = new Point(x, y);
         return transform?.Transform(point) ?? point;
+    }
+
+    /// <summary>
+    /// Applies skew then rotation to a point around a center.
+    /// </summary>
+    private static Point SkewAndRotatePoint(double x, double y, double centerX, double centerY, double skewX, double skewY, double rotationAngle)
+    {
+        // Get position relative to center
+        var relX = x - centerX;
+        var relY = y - centerY;
+
+        // Apply skew: x' = x + skewX * y, y' = y + skewY * x
+        var skewedX = relX + skewX * relY;
+        var skewedY = relY + skewY * relX;
+
+        // Apply rotation if needed
+        if (Math.Abs(rotationAngle) > 0.001)
+        {
+            var cos = Math.Cos(rotationAngle);
+            var sin = Math.Sin(rotationAngle);
+            var rotatedX = skewedX * cos - skewedY * sin;
+            var rotatedY = skewedX * sin + skewedY * cos;
+            return new Point(centerX + rotatedX, centerY + rotatedY);
+        }
+
+        return new Point(centerX + skewedX, centerY + skewedY);
     }
 
     private static RadialGradientBrush CreateLimeGreenGlowBrush()

@@ -73,6 +73,40 @@ public sealed class WorkingAreaManager
         IsDragging = false;
     }
 
+    /// <summary>
+    /// Sets the working area with boundary constraints to ensure it doesn't extend past the drawing area.
+    /// The area is clamped and trimmed to fit within the document bounds.
+    /// </summary>
+    /// <param name="area">The desired area in canvas coordinates (includes ruler thickness offset)</param>
+    /// <param name="docWidthMm">The document width in mm</param>
+    /// <param name="docHeightMm">The document height in mm</param>
+    public void SetArea(Rect area, double docWidthMm, double docHeightMm)
+    {
+        const double rulerThickness = 18.0;
+        
+        // Calculate the maximum bounds in canvas coordinates
+        var maxRight = rulerThickness + docWidthMm;
+        var maxBottom = rulerThickness + docHeightMm;
+        
+        // Clamp the position to be within the document area
+        var x = Math.Max(rulerThickness, Math.Min(area.X, maxRight));
+        var y = Math.Max(rulerThickness, Math.Min(area.Y, maxBottom));
+        
+        // Trim the width and height so the area doesn't extend past the document bounds
+        var width = Math.Max(0, Math.Min(area.Width, maxRight - x));
+        var height = Math.Max(0, Math.Min(area.Height, maxBottom - y));
+        
+        // Only set the area if it has positive dimensions
+        if (width > 0 && height > 0)
+        {
+            DefinedArea = new Rect(x, y, width, height);
+        }
+        
+        PreviewArea = null;
+        IsDefining = false;
+        IsDragging = false;
+    }
+
     public string GetStatusText()
     {
         if (IsDefining)

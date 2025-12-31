@@ -65,7 +65,16 @@ public sealed class SelectionController
         // Check if clicking on a handle (handles are in canvas space for paint wells)
         if (HasSelection)
         {
-            var handle = _hitTester.HitTestHandle(point, GetBoundsForHitTest(), _state.RotationAngle, _state.Mode);
+            // Use stored visual positions for accurate hit testing (they match what's rendered)
+            var handle = _hitTester.HitTestHandle(
+                point, 
+                GetBoundsForHitTest(), 
+                _state.RotationAngle, 
+                _state.Mode, 
+                _state.SkewX, 
+                _state.SkewY,
+                _visuals.HasRotateHandle ? _visuals.RotateHandlePosition : null,
+                _visuals.ResizeHandlePositions.Count > 0 ? _visuals.ResizeHandlePositions : null);
             if (handle != SelectionHandle.None)
             {
                 BeginHandleOperation(handle, point);
@@ -565,8 +574,8 @@ public sealed class SelectionController
 
         if (boundsToUse.IsEmpty) return;
 
-        // Delegate rendering to SelectionVisuals
-        _visuals.RenderSelectionBox(boundsToUse, _state.RotationAngle, _state.Mode);
+        // Delegate rendering to SelectionVisuals with current skew values
+        _visuals.RenderSelectionBox(boundsToUse, _state.RotationAngle, _state.Mode, _state.SkewX, _state.SkewY);
         
         // Store the rotation center for hit testing
         _state.RotationCenter = _visuals.SelectionCenterPosition;
@@ -1352,9 +1361,25 @@ public sealed class SelectionController
 
         var doc = _getDocument();
 
-        // Calculate mouse delta from drag start
+        // Calculate center of bounds for rotation compensation
+        var centerX = _state.OriginalBounds.Left + _state.OriginalBounds.Width / 2;
+        var centerY = _state.OriginalBounds.Top + _state.OriginalBounds.Height / 2;
+        var center = new PointMm(centerX, centerY);
+
+        // Transform the mouse delta into the unrotated coordinate space if we have rotation
         var dx = current.X - _state.DragStart.X;
         var dy = current.Y - _state.DragStart.Y;
+        
+        if (Math.Abs(_state.RotationAngle) > 0.001)
+        {
+            // Rotate the delta backwards to get movement in logical space
+            var cos = Math.Cos(-_state.RotationAngle);
+            var sin = Math.Sin(-_state.RotationAngle);
+            var rotatedDx = dx * cos - dy * sin;
+            var rotatedDy = dx * sin + dy * cos;
+            dx = rotatedDx;
+            dy = rotatedDy;
+        }
 
         // Calculate skew factors based on which edge handle is being dragged
         // Skew factor is proportional to the mouse movement relative to bounds size
@@ -1385,7 +1410,7 @@ public sealed class SelectionController
                 break;
         }
 
-        // Apply skew to strokes
+        // Apply skew to strokes: unrotate -> skew -> re-rotate
         if (_state.OriginalStrokes != null)
         {
             var indices = _state.SelectedIndices.ToList();
@@ -1395,11 +1420,32 @@ public sealed class SelectionController
                 if (i >= _state.OriginalStrokes.Count) continue;
 
                 var original = _state.OriginalStrokes[i];
-                doc.Strokes[idx] = GeometryHelpers.SkewStroke(original, _state.OriginalBounds, skewX, skewY);
+                
+                // Step 1: Unrotate the original stroke back to logical space
+                LineStroke unrotated;
+                if (Math.Abs(_state.RotationAngle) > 0.001)
+                {
+                    unrotated = GeometryHelpers.RotateStroke(original, center, -_state.RotationAngle);
+                }
+                else
+                {
+                    unrotated = original;
+                }
+                
+                // Step 2: Apply skew in logical space
+                var skewed = GeometryHelpers.SkewStroke(unrotated, _state.OriginalBounds, skewX, skewY);
+                
+                // Step 3: Re-rotate around the center
+                if (Math.Abs(_state.RotationAngle) > 0.001)
+                {
+                    skewed = GeometryHelpers.RotateStroke(skewed, center, _state.RotationAngle);
+                }
+                
+                doc.Strokes[idx] = skewed;
             }
         }
 
-        // Apply skew to paint wells
+        // Apply skew to paint wells: unrotate -> skew -> re-rotate
         if (_state.OriginalPaintWellBounds != null)
         {
             foreach (var (id, originalWellBounds, originalRotation) in _state.OriginalPaintWellBounds)
@@ -1407,7 +1453,25 @@ public sealed class SelectionController
                 var well = doc.PaintWells.FirstOrDefault(w => w.Id == id);
                 if (well != null)
                 {
-                    var skewed = GeometryHelpers.SkewRect(originalWellBounds, _state.OriginalBounds, skewX, skewY);
+                    // Step 1: Unrotate around center
+                    Rect unrotated;
+                    if (Math.Abs(_state.RotationAngle) > 0.001)
+                    {
+                        unrotated = GeometryHelpers.RotateRect(originalWellBounds, center, -_state.RotationAngle);
+                    }
+                    else
+                    {
+                        unrotated = originalWellBounds;
+                    }
+                    
+                    // Step 2: Apply skew
+                    var skewed = GeometryHelpers.SkewRect(unrotated, _state.OriginalBounds, skewX, skewY);
+                    
+                    // Step 3: Re-rotate
+                    if (Math.Abs(_state.RotationAngle) > 0.001)
+                    {
+                        skewed = GeometryHelpers.RotateRect(skewed, center, _state.RotationAngle);
+                    }
                     
                     // Convert back to document coordinates for storage
                     well.Bounds = new Rect(
@@ -1423,6 +1487,10 @@ public sealed class SelectionController
         // Store skew values
         _state.SkewX = skewX;
         _state.SkewY = skewY;
+
+        // After skew, we need to recalculate the logical bounds from the actual stroke positions
+        // but keep using the original bounds during the drag for consistent skew application
+        // The bounds will be properly reset when the operation commits
 
         _requestRender();
     }
@@ -1459,6 +1527,26 @@ public sealed class SelectionController
             return null;
 
         var doc = _getDocument();
+        
+        // After a skew operation, reset ALL transform state.
+        // The skew has been "baked into" the stroke positions, so we need to:
+        // 1. Reset skew values (the visual skew is now in the actual stroke coordinates)
+        // 2. Reset rotation angle (the old rotation was relative to the pre-skew coordinate frame)
+        // 3. Recalculate bounds from actual positions (fresh start)
+        // This prevents axis flipping and incorrect rotation when interacting after skew.
+        if (_state.Mode == SelectionMode.Skewing)
+        {
+            // Reset all transform state - skew has been permanently applied
+            _state.SkewX = 0;
+            _state.SkewY = 0;
+            _state.RotationAngle = 0;
+            _state.BaseRotationAngle = 0;
+            
+            // Recalculate bounds from actual stroke positions
+            UpdateSelectionBounds(doc.Strokes, doc.PaintWells);
+            _state.LogicalBounds = _state.SelectionBounds;
+        }
+        
         return _state.SelectedIndices
             .OrderBy(i => i)
             .Where(i => i >= 0 && i < doc.Strokes.Count)

@@ -66,8 +66,9 @@ public sealed class SelectionHitTester
 
     /// <summary>
     /// Determines which selection handle (if any) is at the given point.
+    /// Uses stored handle positions from the visual layer when available for accuracy.
     /// </summary>
-    public SelectionHandle HitTestHandle(PointMm point, Rect bounds, double rotationAngle, SelectionMode currentMode)
+    public SelectionHandle HitTestHandle(PointMm point, Rect bounds, double rotationAngle, SelectionMode currentMode, double skewX = 0, double skewY = 0, Point? storedRotateHandlePosition = null, IReadOnlyList<Point>? storedResizeHandlePositions = null)
     {
         if (bounds.IsEmpty) return SelectionHandle.None;
 
@@ -75,7 +76,35 @@ public sealed class SelectionHitTester
         if (currentMode == SelectionMode.Rotating)
             return SelectionHandle.None;
 
-        // Calculate padded bounds matching the visual display
+        // Check rotate handle first using stored position if available (most accurate)
+        if (storedRotateHandlePosition.HasValue)
+        {
+            if (GeometryHelpers.Distance(point, new PointMm(storedRotateHandlePosition.Value.X, storedRotateHandlePosition.Value.Y)) <= ROTATE_HANDLE_HIT_RADIUS)
+                return SelectionHandle.Rotate;
+        }
+
+        // Check resize handles using stored positions if available
+        if (storedResizeHandlePositions != null && storedResizeHandlePositions.Count == 8)
+        {
+            // Handle order: TopLeft(0), TopCenter(1), TopRight(2), MiddleLeft(3), MiddleRight(4), 
+            //               BottomLeft(5), BottomCenter(6), BottomRight(7)
+            var handleTypes = new[] {
+                SelectionHandle.TopLeft, SelectionHandle.TopCenter, SelectionHandle.TopRight,
+                SelectionHandle.MiddleLeft, SelectionHandle.MiddleRight,
+                SelectionHandle.BottomLeft, SelectionHandle.BottomCenter, SelectionHandle.BottomRight
+            };
+
+            for (int i = 0; i < storedResizeHandlePositions.Count; i++)
+            {
+                var handlePos = storedResizeHandlePositions[i];
+                if (GeometryHelpers.Distance(point, new PointMm(handlePos.X, handlePos.Y)) <= HANDLE_HIT_RADIUS)
+                    return handleTypes[i];
+            }
+
+            return SelectionHandle.None;
+        }
+
+        // Fallback: Calculate positions if stored positions not available
         var paddedLeft = bounds.Left - SELECTION_PADDING;
         var paddedTop = bounds.Top - SELECTION_PADDING;
         var paddedRight = bounds.Right + SELECTION_PADDING;
@@ -83,29 +112,19 @@ public sealed class SelectionHitTester
         var paddedCenterX = (paddedLeft + paddedRight) / 2;
         var paddedCenterY = (paddedTop + paddedBottom) / 2;
 
-        // Create rotation transform if we have a rotation angle
-        RotateTransform? rotateTransform = null;
-        if (Math.Abs(rotationAngle) > 0.001)
-        {
-            rotateTransform = new RotateTransform(rotationAngle * 180 / Math.PI, paddedCenterX, paddedCenterY);
-        }
-
-        // Calculate rotated corner positions
-        var topLeft = TransformPoint(paddedLeft, paddedTop, rotateTransform);
-        var topRight = TransformPoint(paddedRight, paddedTop, rotateTransform);
-        var bottomRight = TransformPoint(paddedRight, paddedBottom, rotateTransform);
-        var bottomLeft = TransformPoint(paddedLeft, paddedBottom, rotateTransform);
+        // Calculate corner positions with skew and rotation applied
+        var topLeft = SkewAndRotatePoint(paddedLeft, paddedTop, paddedCenterX, paddedCenterY, skewX, skewY, rotationAngle);
+        var topRight = SkewAndRotatePoint(paddedRight, paddedTop, paddedCenterX, paddedCenterY, skewX, skewY, rotationAngle);
+        var bottomRight = SkewAndRotatePoint(paddedRight, paddedBottom, paddedCenterX, paddedCenterY, skewX, skewY, rotationAngle);
+        var bottomLeft = SkewAndRotatePoint(paddedLeft, paddedBottom, paddedCenterX, paddedCenterY, skewX, skewY, rotationAngle);
 
         // Calculate rotation handle position
         var topCenter = new Point((topLeft.X + topRight.X) / 2, (topLeft.Y + topRight.Y) / 2);
-        var topEdgeDx = topRight.X - topLeft.X;
-        var topEdgeDy = topRight.Y - topLeft.Y;
-        var topEdgeLength = Math.Sqrt(topEdgeDx * topEdgeDx + topEdgeDy * topEdgeDy);
-        double perpX = topEdgeLength > 0 ? topEdgeDy / topEdgeLength : 0;
-        double perpY = topEdgeLength > 0 ? -topEdgeDx / topEdgeLength : -1;
-        var rotateHandlePos = new Point(topCenter.X + perpX * ROTATE_HANDLE_OFFSET, topCenter.Y + perpY * ROTATE_HANDLE_OFFSET);
+        double upX = Math.Sin(rotationAngle);
+        double upY = -Math.Cos(rotationAngle);
+        var rotateHandlePos = new Point(topCenter.X + upX * ROTATE_HANDLE_OFFSET, topCenter.Y + upY * ROTATE_HANDLE_OFFSET);
 
-        // Check rotate handle first - use larger hit radius for easier clicking
+        // Check rotate handle
         if (GeometryHelpers.Distance(point, new PointMm(rotateHandlePos.X, rotateHandlePos.Y)) <= ROTATE_HANDLE_HIT_RADIUS)
             return SelectionHandle.Rotate;
 
@@ -135,6 +154,32 @@ public sealed class SelectionHitTester
             return SelectionHandle.MiddleRight;
 
         return SelectionHandle.None;
+    }
+
+    /// <summary>
+    /// Applies skew then rotation to a point around a center.
+    /// </summary>
+    private static Point SkewAndRotatePoint(double x, double y, double centerX, double centerY, double skewX, double skewY, double rotationAngle)
+    {
+        // Get position relative to center
+        var relX = x - centerX;
+        var relY = y - centerY;
+
+        // Apply skew: x' = x + skewX * y, y' = y + skewY * x
+        var skewedX = relX + skewX * relY;
+        var skewedY = relY + skewY * relX;
+
+        // Apply rotation if needed
+        if (Math.Abs(rotationAngle) > 0.001)
+        {
+            var cos = Math.Cos(rotationAngle);
+            var sin = Math.Sin(rotationAngle);
+            var rotatedX = skewedX * cos - skewedY * sin;
+            var rotatedY = skewedX * sin + skewedY * cos;
+            return new Point(centerX + rotatedX, centerY + rotatedY);
+        }
+
+        return new Point(centerX + skewedX, centerY + skewedY);
     }
 
     /// <summary>
@@ -279,10 +324,4 @@ public sealed class SelectionHitTester
     }
 
     // ===== PRIVATE HELPERS =====
-
-    private static Point TransformPoint(double x, double y, RotateTransform? transform)
-    {
-        var point = new Point(x, y);
-        return transform?.Transform(point) ?? point;
-    }
 }

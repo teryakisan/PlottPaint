@@ -3405,8 +3405,13 @@ namespace NVSPlotter
             // Update the working area width while preserving position
             if (_workingAreaManager.DefinedArea is Rect area)
             {
+                // Clamp width so paint canvas doesn't extend past the drawing area
+                var maxWidth = _doc.WidthMm - (area.X - 18.0); // 18.0 is ruler thickness
+                width = Math.Min(width, maxWidth);
+                if (width <= 0) return;
+                
                 var newArea = new Rect(area.X, area.Y, width, area.Height);
-                _workingAreaManager.SetArea(newArea);
+                _workingAreaManager.SetArea(newArea, _doc.WidthMm, _doc.HeightMm);
                 RenderAll();
             }
             else if (width > 0)
@@ -3417,6 +3422,10 @@ namespace NVSPlotter
                 
                 // Ruler thickness offset (working area is stored in canvas coordinates)
                 const double rulerThickness = 18.0;
+                
+                // Clamp dimensions to document bounds
+                width = Math.Min(width, _doc.WidthMm);
+                height = Math.Min(height, _doc.HeightMm);
                 
                 // Get the effective margins
                 var margins = GetEffectiveMargins();
@@ -3442,7 +3451,7 @@ namespace NVSPlotter
                 var canvasY = rulerThickness + docY;
                 
                 var newArea = new Rect(canvasX, canvasY, width, height);
-                _workingAreaManager.SetArea(newArea);
+                _workingAreaManager.SetArea(newArea, _doc.WidthMm, _doc.HeightMm);
                 RenderAll();
             }
         }
@@ -3458,8 +3467,13 @@ namespace NVSPlotter
             // Update the working area height while preserving position
             if (_workingAreaManager.DefinedArea is Rect area)
             {
+                // Clamp height so paint canvas doesn't extend past the drawing area
+                var maxHeight = _doc.HeightMm - (area.Y - 18.0); // 18.0 is ruler thickness
+                height = Math.Min(height, maxHeight);
+                if (height <= 0) return;
+                
                 var newArea = new Rect(area.X, area.Y, area.Width, height);
-                _workingAreaManager.SetArea(newArea);
+                _workingAreaManager.SetArea(newArea, _doc.WidthMm, _doc.HeightMm);
                 RenderAll();
             }
             else if (height > 0)
@@ -3470,6 +3484,10 @@ namespace NVSPlotter
                 
                 // Ruler thickness offset (working area is stored in canvas coordinates)
                 const double rulerThickness = 18.0;
+                
+                // Clamp dimensions to document bounds
+                width = Math.Min(width, _doc.WidthMm);
+                height = Math.Min(height, _doc.HeightMm);
                 
                 // Get the effective margins
                 var margins = GetEffectiveMargins();
@@ -3495,7 +3513,7 @@ namespace NVSPlotter
                 var canvasY = rulerThickness + docY;
                 
                 var newArea = new Rect(canvasX, canvasY, width, height);
-                _workingAreaManager.SetArea(newArea);
+                _workingAreaManager.SetArea(newArea, _doc.WidthMm, _doc.HeightMm);
                 RenderAll();
             }
         }
@@ -3513,6 +3531,36 @@ namespace NVSPlotter
             AppendLog(cb.IsChecked == true 
                 ? "Safe margins now relative to paint canvas area." 
                 : "Safe margins now relative to plotter bed.");
+        }
+
+        /// <summary>
+        /// Handles click on a canvas size preset button.
+        /// Parses the Tag property (format: "width,height") and sets the paint canvas dimensions.
+        /// </summary>
+        private void CanvasSizePreset_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not Button btn) return;
+            if (btn.Tag is not string sizeTag) return;
+            
+            // Parse "width,height" from Tag
+            var parts = sizeTag.Split(',');
+            if (parts.Length != 2) return;
+            
+            if (!double.TryParse(parts[0], NumberStyles.Float, CultureInfo.InvariantCulture, out var width)) return;
+            if (!double.TryParse(parts[1], NumberStyles.Float, CultureInfo.InvariantCulture, out var height)) return;
+            
+            // Update the text boxes (which will trigger the TextChanged handlers)
+            if (FindName("PaintCanvasWidthBox") is TextBox widthBox)
+            {
+                widthBox.Text = width.ToString("0", CultureInfo.InvariantCulture);
+            }
+            
+            if (FindName("PaintCanvasHeightBox") is TextBox heightBox)
+            {
+                heightBox.Text = height.ToString("0", CultureInfo.InvariantCulture);
+            }
+            
+            AppendLog($"Paint canvas size set to: {width} × {height} mm");
         }
 
        
