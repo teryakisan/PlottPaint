@@ -158,16 +158,11 @@ namespace NVSPlotter.Services
         /// </summary>
         private void DrawHomeCornerIndicator(double rulerThickness)
         {
-            // Get home corner from combo box selection
-            int selectedIndex = mw.HomeCornerCombo?.SelectedIndex ?? 0;
-            
-            // Determine which corner based on selection:
-            // 0 = Top Right (common iDraw)
-            // 1 = Top Left
-            // 2 = Bottom Right
-            // 3 = Bottom Left
-            bool isRight = selectedIndex == 0 || selectedIndex == 2;
-            bool isTop = selectedIndex == 0 || selectedIndex == 1;
+            // Get home corner from settings
+            // manualHomeAtMaxX = true means X homes at right side
+            // manualHomeAtMaxY = true means Y homes at top side
+            bool isRight = Settings.Default.manualHomeAtMaxX;
+            bool isTop = Settings.Default.manualHomeAtMaxY;
             
             // Calculate corner position
             double docWidth = mw._doc.WidthMm;

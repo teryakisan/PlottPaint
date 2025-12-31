@@ -85,6 +85,42 @@ namespace NVSPlotter.Properties {
         
         [global::System.Configuration.UserScopedSettingAttribute()]
         [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("Auto")]
+        public string bedSizeMode {
+            get {
+                return ((string)(this["bedSizeMode"]));
+            }
+            set {
+                this["bedSizeMode"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool manualHomeAtMaxX {
+            get {
+                return ((bool)(this["manualHomeAtMaxX"]));
+            }
+            set {
+                this["manualHomeAtMaxX"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
+        [global::System.Configuration.DefaultSettingValueAttribute("True")]
+        public bool manualHomeAtMaxY {
+            get {
+                return ((bool)(this["manualHomeAtMaxY"]));
+            }
+            set {
+                this["manualHomeAtMaxY"] = value;
+            }
+        }
+        
+        [global::System.Configuration.UserScopedSettingAttribute()]
+        [global::System.Diagnostics.DebuggerNonUserCodeAttribute()]
         [global::System.Configuration.DefaultSettingValueAttribute("100")]
         public double ToolsWindowLeft {
             get {

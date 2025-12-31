@@ -3,6 +3,7 @@ using NVSPlotter.Models;
 using NVSPlotter.Properties;
 using NVSPlotter.Services;
 using NVSPlotter.Util;
+using NVSPlotter.Windows;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -466,16 +467,8 @@ namespace NVSPlotter
         // ----------------------------
         // UI: Document / View
         // ----------------------------
-        private void PagePresetCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
-        {
-            if (!IsLoaded) return;
-
-            var idx = PagePresetCombo.SelectedIndex;
-            _doc = idx == 1 ? new PlotDocument(1189, 841) : new PlotDocument(841, 1189);
-            _undoGroupSizes.Clear();
-            _lastGcode = "";
-            RenderAll();
-        }
+        // NOTE: Page/Bed size is now configured via Machine Settings dialog (MachineSettingsWindow)
+        // The PagePresetCombo has been removed from the UI
 
         private void ZoomSlider_ValueChanged(object sender, RoutedPropertyChangedEventArgs<double> e)
         {
@@ -655,6 +648,58 @@ namespace NVSPlotter
         {
             RefreshPorts();
             AppendLog("Ports refreshed.");
+        }
+
+        private void MachineSettingsBtn_Click(object sender, RoutedEventArgs e)
+        {
+            var dialog = new MachineSettingsWindow(_grblManager, OnMachineSettingsChanged)
+            {
+                Owner = this
+            };
+            dialog.ShowDialog();
+        }
+
+        private void OnMachineSettingsChanged()
+        {
+            // Update the GRBL manager with new manual settings if in manual mode
+            var isManualMode = Settings.Default.bedSizeMode?.Equals("Manual", StringComparison.OrdinalIgnoreCase) == true;
+            
+            if (isManualMode || !_grblManager.IsConnected)
+            {
+                // Apply manual bed size settings
+                _grblManager.SetManualBedSize(
+                    Settings.Default.bedX,
+                    Settings.Default.bedY,
+                    Settings.Default.manualHomeAtMaxX,
+                    Settings.Default.manualHomeAtMaxY);
+            }
+            
+            // Update the document size to match the new bed dimensions
+            // This will update the drawing area, rulers, and all measurements
+            var newWidth = Settings.Default.bedX;
+            var newHeight = Settings.Default.bedY;
+            
+            if (Math.Abs(_doc.WidthMm - newWidth) > 0.001 || Math.Abs(_doc.HeightMm - newHeight) > 0.001)
+            {
+                // Resize the document - preserve existing strokes and paint wells
+                _doc.ResizePreserveContent(newWidth, newHeight);
+                
+                // Clear working area if it's now outside the document bounds
+                if (_workingAreaManager.DefinedArea is Rect area)
+                {
+                    if (area.Right > newWidth || area.Bottom > newHeight)
+                    {
+                        _workingAreaManager.Clear();
+                        UpdateWorkingAreaStatus();
+                        AppendLog("Working area cleared (exceeded new document bounds).");
+                    }
+                }
+            }
+            
+            // Invalidate G-code cache and re-render
+            _lastGcode = "";
+            RenderAll();
+            AppendLog($"Machine settings updated: {newWidth} × {newHeight} mm");
         }
 
         private async void ConnectBtn_Click(object sender, RoutedEventArgs e)
@@ -3565,6 +3610,15 @@ namespace NVSPlotter
 
         private void PaintModeEnabledCheck_Click(object sender, RoutedEventArgs e)
         {
+            var isEnabled = IsPaintModeEnabled;
+            
+            // Enable/disable the paint mode controls panel
+            if (FindName("PaintModeControlsPanel") is StackPanel controlsPanel)
+            {
+                controlsPanel.IsEnabled = isEnabled;
+                controlsPanel.Opacity = isEnabled ? 1.0 : 0.5;
+            }
+            
             _lastGcode = ""; // Invalidate G-code cache
             RenderAll();
         }
@@ -4099,9 +4153,9 @@ namespace NVSPlotter
             // Collect current UI settings
             var settings = new ProjectSettings
             {
-                // Document settings
-                PagePresetIndex = PagePresetCombo?.SelectedIndex ?? 0,
-                HomeCornerIndex = HomeCornerCombo?.SelectedIndex ?? 0,
+                // Document settings - bed size now comes from Settings
+                PagePresetIndex = 0, // Deprecated - bed size is now in Settings.Default.bedX/bedY
+                HomeCornerIndex = 0, // Deprecated - home position is now in Settings.Default.manualHomeAtMaxX/Y
 
                 // Snap settings
                 SnapEnabled = (FindName("SnapEnabledCheck") as CheckBox)?.IsChecked ?? true,
@@ -4146,9 +4200,9 @@ namespace NVSPlotter
             // Apply settings to UI
             var settings = result.Settings;
 
-            // Document settings
-            if (PagePresetCombo != null) PagePresetCombo.SelectedIndex = settings.PagePresetIndex;
-            if (HomeCornerCombo != null) HomeCornerCombo.SelectedIndex = settings.HomeCornerIndex;
+            // Document settings - Page/Home combos have been removed
+            // Bed size is now controlled via Machine Settings dialog
+            // Legacy project files may have these indices but they are ignored
 
             // Snap settings
             if (FindName("SnapEnabledCheck") is CheckBox snapCheck) snapCheck.IsChecked = settings.SnapEnabled;

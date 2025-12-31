@@ -567,7 +567,8 @@ public sealed class PaintWellController
     /// Renders all paint wells on the canvas.
     /// </summary>
     /// <param name="canvasRotationAngle">Current canvas rotation angle (0, 90, 180, 270) to counter-rotate labels</param>
-    public void RenderPaintWells(double canvasRotationAngle = 0)
+    /// <param name="isPaintModeEnabled">When false, wells are grayed out with an X indicator</param>
+    public void RenderPaintWells(double canvasRotationAngle = 0, bool isPaintModeEnabled = true)
     {
         var doc = _getDocument();
         const double rulerThickness = 18.0;
@@ -583,6 +584,27 @@ public sealed class PaintWellController
             var centerX = well.Bounds.Left + well.Bounds.Width / 2.0;
             var centerY = well.Bounds.Top + well.Bounds.Height / 2.0;
 
+            // Determine colors based on paint mode enabled state
+            Color wellColor;
+            Color fillColor;
+            Color strokeColor;
+            
+            if (isPaintModeEnabled)
+            {
+                // Normal colors
+                wellColor = well.Color;
+                fillColor = Color.FromArgb(isWashWell ? (byte)60 : (byte)80, well.Color.R, well.Color.G, well.Color.B);
+                strokeColor = well.Color;
+            }
+            else
+            {
+                // Grayed out colors when paint mode is disabled
+                var grayLevel = (byte)((well.Color.R + well.Color.G + well.Color.B) / 3);
+                wellColor = Color.FromRgb(grayLevel, grayLevel, grayLevel);
+                fillColor = Color.FromArgb(40, grayLevel, grayLevel, grayLevel);
+                strokeColor = Color.FromRgb((byte)(grayLevel * 0.7), (byte)(grayLevel * 0.7), (byte)(grayLevel * 0.7));
+            }
+
             if (isWashWell)
             {
                 // Render wash wells as circles (they're typically round cups)
@@ -593,13 +615,13 @@ public sealed class PaintWellController
                 {
                     Width = diameter,
                     Height = diameter,
-                    Fill = new SolidColorBrush(Color.FromArgb(60, well.Color.R, well.Color.G, well.Color.B)),
-                    Stroke = new SolidColorBrush(well.Color),
-                    StrokeThickness = isSelected ? 6 : (isActive ? 5 : 4), // Wide stroke for cup appearance
+                    Fill = new SolidColorBrush(fillColor),
+                    Stroke = new SolidColorBrush(strokeColor),
+                    StrokeThickness = isPaintModeEnabled ? (isSelected ? 6 : (isActive ? 5 : 4)) : 3,
                     SnapsToDevicePixels = true
                 };
 
-                if (isActive)
+                if (isPaintModeEnabled && isActive)
                 {
                     circle.StrokeDashArray = [6, 3];
                 }
@@ -617,13 +639,13 @@ public sealed class PaintWellController
                 {
                     Width = well.Bounds.Width,
                     Height = well.Bounds.Height,
-                    Fill = new SolidColorBrush(Color.FromArgb(80, well.Color.R, well.Color.G, well.Color.B)),
-                    Stroke = new SolidColorBrush(well.Color),
-                    StrokeThickness = isSelected ? 3 : (isActive ? 2.5 : 1.5),
+                    Fill = new SolidColorBrush(fillColor),
+                    Stroke = new SolidColorBrush(strokeColor),
+                    StrokeThickness = isPaintModeEnabled ? (isSelected ? 3 : (isActive ? 2.5 : 1.5)) : 1.5,
                     SnapsToDevicePixels = true
                 };
 
-                if (isActive)
+                if (isPaintModeEnabled && isActive)
                 {
                     rect.StrokeDashArray = [6, 3];
                 }
@@ -634,28 +656,79 @@ public sealed class PaintWellController
                 _canvas.Children.Add(rect);
             }
 
-            // Create a darker shade of the well color for the center indicator border
-            var darkerColor = Color.FromArgb(
-                255,
-                (byte)Math.Max(0, well.Color.R - 60),
-                (byte)Math.Max(0, well.Color.G - 60),
-                (byte)Math.Max(0, well.Color.B - 60));
-            
-            // Center indicator - shows where the brush will dip
-            var centerIndicator = new Ellipse
+            if (isPaintModeEnabled)
             {
-                Width = centerIndicatorSize,
-                Height = centerIndicatorSize,
-                Fill = Brushes.Transparent,
-                Stroke = new SolidColorBrush(darkerColor),
-                StrokeThickness = 4,
-                SnapsToDevicePixels = true,
-                IsHitTestVisible = false
-            };
-            Canvas.SetLeft(centerIndicator, rulerThickness + centerX - centerIndicatorSize / 2);
-            Canvas.SetTop(centerIndicator, rulerThickness + centerY - centerIndicatorSize / 2);
-            Panel.SetZIndex(centerIndicator, 9);
-            _canvas.Children.Add(centerIndicator);
+                // Create a darker shade of the well color for the center indicator border
+                var darkerColor = Color.FromArgb(
+                    255,
+                    (byte)Math.Max(0, well.Color.R - 60),
+                    (byte)Math.Max(0, well.Color.G - 60),
+                    (byte)Math.Max(0, well.Color.B - 60));
+                
+                // Center indicator - shows where the brush will dip
+                var centerIndicator = new Ellipse
+                {
+                    Width = centerIndicatorSize,
+                    Height = centerIndicatorSize,
+                    Fill = Brushes.Transparent,
+                    Stroke = new SolidColorBrush(darkerColor),
+                    StrokeThickness = 4,
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                Canvas.SetLeft(centerIndicator, rulerThickness + centerX - centerIndicatorSize / 2);
+                Canvas.SetTop(centerIndicator, rulerThickness + centerY - centerIndicatorSize / 2);
+                Panel.SetZIndex(centerIndicator, 9);
+                _canvas.Children.Add(centerIndicator);
+            }
+            else
+            {
+                // When paint mode is disabled, show an X icon instead of the center indicator
+                // Scale the X based on the well size
+                var xSize = Math.Min(well.Bounds.Width, well.Bounds.Height) * 0.4;
+                xSize = Math.Max(xSize, 15); // Minimum size
+                xSize = Math.Min(xSize, 50); // Maximum size
+                
+                var xColor = Color.FromArgb(120, 128, 128, 128); // Semi-transparent gray
+                var strokeThickness = Math.Max(2, xSize / 10);
+                
+                // Draw X using two lines
+                var line1 = new Line
+                {
+                    X1 = rulerThickness + centerX - xSize / 2,
+                    Y1 = rulerThickness + centerY - xSize / 2,
+                    X2 = rulerThickness + centerX + xSize / 2,
+                    Y2 = rulerThickness + centerY + xSize / 2,
+                    Stroke = new SolidColorBrush(xColor),
+                    StrokeThickness = strokeThickness,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                Canvas.SetLeft(line1, 0);
+                Canvas.SetTop(line1, 0);
+                Panel.SetZIndex(line1, 9);
+                _canvas.Children.Add(line1);
+                
+                var line2 = new Line
+                {
+                    X1 = rulerThickness + centerX + xSize / 2,
+                    Y1 = rulerThickness + centerY - xSize / 2,
+                    X2 = rulerThickness + centerX - xSize / 2,
+                    Y2 = rulerThickness + centerY + xSize / 2,
+                    Stroke = new SolidColorBrush(xColor),
+                    StrokeThickness = strokeThickness,
+                    StrokeStartLineCap = PenLineCap.Round,
+                    StrokeEndLineCap = PenLineCap.Round,
+                    SnapsToDevicePixels = true,
+                    IsHitTestVisible = false
+                };
+                Canvas.SetLeft(line2, 0);
+                Canvas.SetTop(line2, 0);
+                Panel.SetZIndex(line2, 9);
+                _canvas.Children.Add(line2);
+            }
 
             // Label with name - positioned at top-left of well
             // Labels rotate with the canvas, which keeps them associated with their wells
@@ -664,7 +737,7 @@ public sealed class PaintWellController
                 Text = well.Name,
                 FontSize = 10,
                 FontWeight = System.Windows.FontWeights.Bold,
-                Foreground = new SolidColorBrush(well.Color),
+                Foreground = new SolidColorBrush(isPaintModeEnabled ? well.Color : Colors.Gray),
                 Background = new SolidColorBrush(Color.FromArgb(200, 255, 255, 255)),
                 Padding = new Thickness(2, 1, 2, 1),
                 IsHitTestVisible = false
@@ -679,8 +752,8 @@ public sealed class PaintWellController
             Panel.SetZIndex(label, 9);
             _canvas.Children.Add(label);
 
-            // Draw resize handles if selected (always at rectangle corners for consistent resizing)
-            if (isSelected)
+            // Draw resize handles if selected and paint mode is enabled
+            if (isSelected && isPaintModeEnabled)
             {
                 DrawHandle(well.Bounds.Left, well.Bounds.Top, well.Color, rulerThickness);
                 DrawHandle(well.Bounds.Right, well.Bounds.Top, well.Color, rulerThickness);
@@ -747,7 +820,7 @@ public sealed class PaintWellController
 
     /// <summary>
     /// Creates a quick setup of 5 paint wells (Red, Green, Blue, Wash, Wipe)
-    /// positioned at the bottom of the canvas.
+    /// positioned at the bottom of the canvas, scaled to fit the bed dimensions.
     /// </summary>
     /// <param name="docWidth">Document width in mm</param>
     /// <param name="docHeight">Document height in mm</param>
@@ -757,22 +830,65 @@ public sealed class PaintWellController
         // Clear existing wells first
         ClearAll();
 
-        // Well dimensions
-        const double wellWidth = 140;
-        const double wellHeight = 100;
-        const double marginFromEdge = 20;
         const int numWells = 5;
-
-        // Calculate spacing to evenly distribute wells across the bottom
+        const double marginFromEdge = 20;
+        const double minSpacing = 10;
+        
+        // Reference dimensions (designed for A0 size: 841 x 1189 mm)
+        const double referenceWidth = 841.0;
+        const double referenceWellWidth = 140.0;
+        const double referenceWellHeight = 100.0;
+        
+        // Calculate scale factor based on document width compared to reference
+        // This ensures wells scale proportionally to the bed size
+        double scaleFactor = docWidth / referenceWidth;
+        
+        // Clamp scale factor to reasonable bounds (don't make wells too small or too large)
+        scaleFactor = Math.Clamp(scaleFactor, 0.25, 2.0);
+        
+        // Calculate scaled well dimensions
+        double wellWidth = referenceWellWidth * scaleFactor;
+        double wellHeight = referenceWellHeight * scaleFactor;
+        
+        // Ensure minimum well size for usability
+        const double minWellSize = 40.0;
+        wellWidth = Math.Max(wellWidth, minWellSize);
+        wellHeight = Math.Max(wellHeight, minWellSize);
+        
+        // Calculate available width and check if wells fit
         double availableWidth = docWidth - (2 * marginFromEdge);
         double totalWellsWidth = numWells * wellWidth;
+        
+        // If wells don't fit, scale them down to fit
+        if (totalWellsWidth + (minSpacing * (numWells - 1)) > availableWidth)
+        {
+            // Calculate maximum well width that fits
+            double maxTotalWellWidth = availableWidth - (minSpacing * (numWells - 1));
+            wellWidth = maxTotalWellWidth / numWells;
+            wellWidth = Math.Max(wellWidth, minWellSize); // Maintain minimum size
+            
+            // Scale height proportionally
+            wellHeight = wellWidth * (referenceWellHeight / referenceWellWidth);
+            wellHeight = Math.Max(wellHeight, minWellSize);
+        }
+        
+        // Recalculate total width and spacing
+        totalWellsWidth = numWells * wellWidth;
         double spacing = (availableWidth - totalWellsWidth) / (numWells - 1);
+        spacing = Math.Max(spacing, minSpacing);
 
-        // If spacing is negative, wells are too big - reduce spacing to minimum
-        if (spacing < 10) spacing = 10;
+        // Ensure wells don't exceed the document height
+        if (wellHeight + marginFromEdge * 2 > docHeight)
+        {
+            wellHeight = docHeight - marginFromEdge * 2;
+            wellHeight = Math.Max(wellHeight, minWellSize);
+        }
 
         // Position at bottom of canvas
         double startY = docHeight - wellHeight - marginFromEdge;
+        
+        // Ensure startY is not negative
+        startY = Math.Max(startY, marginFromEdge);
 
         // Red well
         CreateWell(

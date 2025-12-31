@@ -139,6 +139,32 @@ namespace NVSPlotter.Services
             // Initialize from settings
             _bedX = Settings.Default.bedX;
             _bedY = Settings.Default.bedY;
+            
+            // Apply manual home position settings if in manual mode
+            var isManualMode = Settings.Default.bedSizeMode?.Equals("Manual", StringComparison.OrdinalIgnoreCase) == true;
+            if (isManualMode)
+            {
+                _homeAtMaxX = Settings.Default.manualHomeAtMaxX;
+                _homeAtMaxY = Settings.Default.manualHomeAtMaxY;
+            }
+        }
+
+        /// <summary>
+        /// Sets manual bed size and home position (used when not connected or in manual mode).
+        /// </summary>
+        /// <param name="bedX">Bed width in mm</param>
+        /// <param name="bedY">Bed height in mm</param>
+        /// <param name="homeAtMaxX">Whether X homes at max position</param>
+        /// <param name="homeAtMaxY">Whether Y homes at max position</param>
+        public void SetManualBedSize(double bedX, double bedY, bool homeAtMaxX, bool homeAtMaxY)
+        {
+            _bedX = bedX;
+            _bedY = bedY;
+            _homeAtMaxX = homeAtMaxX;
+            _homeAtMaxY = homeAtMaxY;
+            _bedFromGrbl = false; // Mark as manually configured
+            
+            OnMachineStateChanged();
         }
 
         /// <summary>

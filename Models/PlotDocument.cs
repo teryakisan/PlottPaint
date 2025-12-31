@@ -24,6 +24,17 @@ public sealed class PlotDocument
         // Note: PaintWells are preserved on resize
     }
 
+    /// <summary>
+    /// Resizes the document while preserving all strokes and paint wells.
+    /// Use this for machine settings changes where content should be kept.
+    /// </summary>
+    public void ResizePreserveContent(double widthMm, double heightMm)
+    {
+        WidthMm = widthMm;
+        HeightMm = heightMm;
+        // Strokes and PaintWells are preserved
+    }
+
     public void ClearAll()
     {
         Strokes.Clear();

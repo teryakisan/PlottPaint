@@ -23,22 +23,10 @@ Style="{DynamicResource ThemedWindow}">
 
                         <Expander Header="Settings" Margin="0,0,0,10">
                             <StackPanel Margin="10">
-                                <StackPanel x:Name="Page" Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="Page:" Width="90" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="PagePresetCombo" Width="203" SelectionChanged="PagePresetCombo_SelectionChanged">
-                                        <ComboBoxItem Content="A0 Portrait (841 x 1189 mm)" IsSelected="True"/>
-                                        <ComboBoxItem Content="A0 Landscape (1189 x 841 mm)"/>
-                                    </ComboBox>
-                                </StackPanel>
-
-                                <StackPanel x:Name="HomeCornere" Orientation="Horizontal" Margin="0,0,0,8">
-                                    <TextBlock Text="Home Corner:" Width="90" VerticalAlignment="Center"/>
-                                    <ComboBox x:Name="HomeCornerCombo" Width="203">
-                                        <ComboBoxItem Content="Top Right (common iDraw)" IsSelected="True"/>
-                                        <ComboBoxItem Content="Top Left"/>
-                                        <ComboBoxItem Content="Bottom Right"/>
-                                        <ComboBoxItem Content="Bottom Left"/>
-                                    </ComboBox>
+                                <!-- Machine Settings Button -->
+                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                    <Button x:Name="MachineSettingsBtn" Content="⚙ Machine Settings" Width="293" 
+                                            Click="MachineSettingsBtn_Click" ToolTip="Configure plotter bed size, page dimensions, and home position"/>
                                 </StackPanel>
 
                                 <StackPanel x:Name="Tools" Orientation="Horizontal" Margin="0,0,0,8" Visibility="Collapsed">
@@ -126,150 +114,153 @@ Style="{DynamicResource ThemedWindow}">
                                Click="PaintModeEnabledCheck_Click"/>
                                 </StackPanel>
 
-                                <!-- Auto Wash/Wipe on Color Change -->
-                                <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
-                                    <CheckBox x:Name="AutoWashWipeCheck" Content="Auto Wash/Wipe on color change" 
-                               IsChecked="True" VerticalAlignment="Center" 
-                               ToolTip="Automatically rinse and wipe brush when changing colors"/>
-                                </StackPanel>
-
-                                <!-- Paint Wells Grid -->
-                                <TextBlock Text="Paint Wells:" Margin="0,5,0,3" FontWeight="SemiBold"/>
-                                <ItemsControl x:Name="PaintWellsGrid" Margin="0,0,0,8">
-                                    <ItemsControl.ItemsPanel>
-                                        <ItemsPanelTemplate>
-                                            <WrapPanel Orientation="Horizontal"/>
-                                        </ItemsPanelTemplate>
-                                    </ItemsControl.ItemsPanel>
-                                    <ItemsControl.ItemTemplate>
-                                        <DataTemplate>
-                                            <!-- Outer border for selection highlight with glow effect -->
-                                            <Border x:Name="SelectionHighlight" 
-                                                    Width="42" Height="42" Margin="3" 
-                                                    BorderThickness="0" CornerRadius="6"
-                                                    Background="Transparent">
-                                                <Border x:Name="WellChip" Width="36" Height="36"
-                                                        BorderThickness="2" CornerRadius="4" Cursor="Hand"
-                                                        MouseLeftButtonDown="PaintWellChip_MouseLeftButtonDown"
-                                                        Tag="{Binding}"
-                                                        BorderBrush="{Binding Color, Converter={StaticResource ColorToBrushConverter}}"
-                                                        Background="{Binding Color, Converter={StaticResource ColorToBrushConverter}, ConverterParameter=0.7}">
-                                                    <Border.ToolTip>
-                                                        <StackPanel MaxWidth="200">
-                                                            <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="12"/>
-                                                            <Separator Margin="0,3"/>
-                                                            <TextBlock Text="{Binding DipDepth, StringFormat='Dip Depth: {0:0.#} mm'}" FontSize="11"/>
-                                                            <TextBlock Text="{Binding DwellTimeMs, StringFormat='Dwell Time: {0} ms'}" FontSize="11"/>
-                                                            <TextBlock FontSize="11">
-                                                                <TextBlock.Text>
-                                                                    <MultiBinding StringFormat="Refresh: {0:0}-{1:0} mm">
-                                                                        <Binding Path="RefreshDistanceMinMm"/>
-                                                                        <Binding Path="RefreshDistanceMaxMm"/>
-                                                                    </MultiBinding>
-                                                                </TextBlock.Text>
-                                                            </TextBlock>
-                                                            <TextBlock FontSize="11">
-                                                                <TextBlock.Text>
-                                                                    <MultiBinding StringFormat="Position: ({0:0}, {1:0})">
-                                                                        <Binding Path="Bounds.Left"/>
-                                                                        <Binding Path="Bounds.Top"/>
-                                                                    </MultiBinding>
-                                                                </TextBlock.Text>
-                                                            </TextBlock>
-                                                            <TextBlock FontSize="11">
-                                                                <TextBlock.Text>
-                                                                    <MultiBinding StringFormat="Size: {0:0} x {1:0} mm">
-                                                                        <Binding Path="Bounds.Width"/>
-                                                                        <Binding Path="Bounds.Height"/>
-                                                                    </MultiBinding>
-                                                                </TextBlock.Text>
-                                                            </TextBlock>
-                                                            <Separator Margin="0,3"/>
-                                                            <TextBlock Text="Click to select" FontSize="10" Foreground="Gray" FontStyle="Italic"/>
-                                                        </StackPanel>
-                                                    </Border.ToolTip>
-                                                    <!-- Show first letter of name as label -->
-                                                    <TextBlock Text="{Binding Name, Converter={StaticResource FirstLetterConverter}}" 
-                                                               HorizontalAlignment="Center" VerticalAlignment="Center"
-                                                               FontWeight="Bold" FontSize="14"
-                                                               Foreground="White">
-                                                        <TextBlock.Effect>
-                                                            <DropShadowEffect ShadowDepth="1" BlurRadius="2" Color="Black" Opacity="0.7"/>
-                                                        </TextBlock.Effect>
-                                                    </TextBlock>
-                                                </Border>
-                                            </Border>
-                                        </DataTemplate>
-                                    </ItemsControl.ItemTemplate>
-                                </ItemsControl>
-                                <!-- Hidden ListBox for backward compatibility with selection logic -->
-                                <ListBox x:Name="PaintWellsList" Visibility="Collapsed"
-                                         SelectionChanged="PaintWellsList_SelectionChanged"/>
-
-                                <!-- Paint Well Actions -->
-                                <WrapPanel Margin="0,0,0,8">
-                                    <Button x:Name="ClearActivePaintWellBtn" Content="None" Width="50" Margin="0,0,5,0" 
-                                            Click="ClearActivePaintWell_Click" ToolTip="Clear active paint selection (use black)"/>
-                                    <Button x:Name="AddPaintWellBtn" Content="Add Well" Width="70" Margin="0,0,5,0" 
-                                    Click="AddPaintWellBtn_Click" ToolTip="Create a new paint well at the center of the canvas"/>
-                                    <Button x:Name="RemovePaintWellBtn" Content="Remove" Width="60" Margin="0,0,5,0" 
-                             Click="RemovePaintWellBtn_Click"/>
-                                    <Button x:Name="ClearPaintWellsBtn" Content="Clear All" Width="60" 
-                             Click="ClearPaintWellsBtn_Click"/>
-                                </WrapPanel>
-
-                                <!-- Quick Setup -->
-                                <Button x:Name="QuickSetupPaintWellsBtn" Content="🎨 Quick Setup" 
-                         Margin="0,0,0,8" Click="QuickSetupPaintWellsBtn_Click"
-                         ToolTip="Create Red, Green, Blue, Wash (black), and Wipe (gray) paint wells automatically"/>
-
-                                <!-- Selected Well Properties -->
-                                <Border BorderBrush="#CCC" BorderThickness="1" Padding="8" Margin="0,5,0,0"
-                         Visibility="{Binding ElementName=PaintWellsList, Path=SelectedItem, Converter={StaticResource NullToVisibilityConverter}}">
-                                    <StackPanel>
-                                        <TextBlock Text="Selected Well Properties:" FontWeight="SemiBold" Margin="0,0,0,5"/>
-
-                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                                            <TextBlock Text="Name:" Width="70" VerticalAlignment="Center"/>
-                                            <TextBox x:Name="PaintWellNameBox" Width="150" 
-                                      TextChanged="PaintWellNameBox_TextChanged"/>
-                                        </StackPanel>
-
-                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                                            <TextBlock Text="Color:" Width="70" VerticalAlignment="Center"/>
-                                            <Rectangle x:Name="PaintWellColorPreview" Width="24" Height="24" 
-                                        Stroke="Gray" StrokeThickness="1" Margin="0,0,8,0"
-                                        MouseLeftButtonDown="PaintWellColorPreview_Click" Cursor="Hand"/>
-                                            <Button Content="Pick Color" Width="80" Click="PaintWellColorPreview_Click"/>
-                                        </StackPanel>
-
-                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                                            <TextBlock Text="Dip Depth:" Width="70" VerticalAlignment="Center"/>
-                                            <TextBox x:Name="PaintWellDipDepthBox" Width="60" 
-                                      TextChanged="PaintWellDipDepthBox_TextChanged"/>
-                                            <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                                        </StackPanel>
-
-                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                                            <TextBlock Text="Dwell Time:" Width="70" VerticalAlignment="Center"/>
-                                            <TextBox x:Name="PaintWellDwellBox" Width="60" 
-                                      TextChanged="PaintWellDwellBox_TextChanged"/>
-                                            <TextBlock Text="ms" Margin="5,0,0,0" VerticalAlignment="Center"/>
-                                        </StackPanel>
-
-                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
-                                            <TextBlock Text="Refresh:" Width="70" VerticalAlignment="Center"/>
-                                            <TextBox x:Name="PaintWellRefreshMinBox" Width="40" 
-                                      TextChanged="PaintWellRefreshMinBox_TextChanged"
-                                      ToolTip="Minimum distance before paint refresh"/>
-                                            <TextBlock Text="-" Margin="3,0,3,0" VerticalAlignment="Center"/>
-                                            <TextBox x:Name="PaintWellRefreshMaxBox" Width="40" 
-                                      TextChanged="PaintWellRefreshMaxBox_TextChanged"
-                                      ToolTip="Maximum distance before paint refresh"/>
-                                            <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center" FontSize="10"/>
-                                        </StackPanel>
+                                <!-- Paint Mode Controls Container - disabled when paint mode is off -->
+                                <StackPanel x:Name="PaintModeControlsPanel">
+                                    <!-- Auto Wash/Wipe on Color Change -->
+                                    <StackPanel Orientation="Horizontal" Margin="0,0,0,8">
+                                        <CheckBox x:Name="AutoWashWipeCheck" Content="Auto Wash/Wipe on color change" 
+                                   IsChecked="True" VerticalAlignment="Center" 
+                                   ToolTip="Automatically rinse and wipe brush when changing colors"/>
                                     </StackPanel>
-                                </Border>
+
+                                    <!-- Paint Wells Grid -->
+                                    <TextBlock Text="Paint Wells:" Margin="0,5,0,3" FontWeight="SemiBold"/>
+                                    <ItemsControl x:Name="PaintWellsGrid" Margin="0,0,0,8">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel Orientation="Horizontal"/>
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <!-- Outer border for selection highlight with glow effect -->
+                                                <Border x:Name="SelectionHighlight" 
+                                                        Width="42" Height="42" Margin="3" 
+                                                        BorderThickness="0" CornerRadius="6"
+                                                        Background="Transparent">
+                                                    <Border x:Name="WellChip" Width="36" Height="36"
+                                                            BorderThickness="2" CornerRadius="4" Cursor="Hand"
+                                                            MouseLeftButtonDown="PaintWellChip_MouseLeftButtonDown"
+                                                            Tag="{Binding}"
+                                                            BorderBrush="{Binding Color, Converter={StaticResource ColorToBrushConverter}}"
+                                                            Background="{Binding Color, Converter={StaticResource ColorToBrushConverter}, ConverterParameter=0.7}">
+                                                        <Border.ToolTip>
+                                                            <StackPanel MaxWidth="200">
+                                                                <TextBlock Text="{Binding Name}" FontWeight="Bold" FontSize="12"/>
+                                                                <Separator Margin="0,3"/>
+                                                                <TextBlock Text="{Binding DipDepth, StringFormat='Dip Depth: {0:0.#} mm'}" FontSize="11"/>
+                                                                <TextBlock Text="{Binding DwellTimeMs, StringFormat='Dwell Time: {0} ms'}" FontSize="11"/>
+                                                                <TextBlock FontSize="11">
+                                                                    <TextBlock.Text>
+                                                                        <MultiBinding StringFormat="Refresh: {0:0}-{1:0} mm">
+                                                                            <Binding Path="RefreshDistanceMinMm"/>
+                                                                            <Binding Path="RefreshDistanceMaxMm"/>
+                                                                        </MultiBinding>
+                                                                    </TextBlock.Text>
+                                                                </TextBlock>
+                                                                <TextBlock FontSize="11">
+                                                                    <TextBlock.Text>
+                                                                        <MultiBinding StringFormat="Position: ({0:0}, {1:0})">
+                                                                            <Binding Path="Bounds.Left"/>
+                                                                            <Binding Path="Bounds.Top"/>
+                                                                        </MultiBinding>
+                                                                    </TextBlock.Text>
+                                                                </TextBlock>
+                                                                <TextBlock FontSize="11">
+                                                                    <TextBlock.Text>
+                                                                        <MultiBinding StringFormat="Size: {0:0} x {1:0} mm">
+                                                                            <Binding Path="Bounds.Width"/>
+                                                                            <Binding Path="Bounds.Height"/>
+                                                                        </MultiBinding>
+                                                                    </TextBlock.Text>
+                                                                </TextBlock>
+                                                                <Separator Margin="0,3"/>
+                                                                <TextBlock Text="Click to select" FontSize="10" Foreground="Gray" FontStyle="Italic"/>
+                                                            </StackPanel>
+                                                        </Border.ToolTip>
+                                                        <!-- Show first letter of name as label -->
+                                                        <TextBlock Text="{Binding Name, Converter={StaticResource FirstLetterConverter}}" 
+                                                                   HorizontalAlignment="Center" VerticalAlignment="Center"
+                                                                   FontWeight="Bold" FontSize="14"
+                                                                   Foreground="White">
+                                                            <TextBlock.Effect>
+                                                                <DropShadowEffect ShadowDepth="1" BlurRadius="2" Color="Black" Opacity="0.7"/>
+                                                            </TextBlock.Effect>
+                                                        </TextBlock>
+                                                    </Border>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                    <!-- Hidden ListBox for backward compatibility with selection logic -->
+                                    <ListBox x:Name="PaintWellsList" Visibility="Collapsed"
+                                             SelectionChanged="PaintWellsList_SelectionChanged"/>
+
+                                    <!-- Paint Well Actions -->
+                                    <WrapPanel Margin="0,0,0,8">
+                                        <Button x:Name="ClearActivePaintWellBtn" Content="None" Width="50" Margin="0,0,5,0" 
+                                                Click="ClearActivePaintWell_Click" ToolTip="Clear active paint selection (use black)"/>
+                                        <Button x:Name="AddPaintWellBtn" Content="Add Well" Width="70" Margin="0,0,5,0" 
+                                        Click="AddPaintWellBtn_Click" ToolTip="Create a new paint well at the center of the canvas"/>
+                                        <Button x:Name="RemovePaintWellBtn" Content="Remove" Width="60" Margin="0,0,5,0" 
+                                 Click="RemovePaintWellBtn_Click"/>
+                                        <Button x:Name="ClearPaintWellsBtn" Content="Clear All" Width="60" 
+                                 Click="ClearPaintWellsBtn_Click"/>
+                                    </WrapPanel>
+
+                                    <!-- Quick Setup -->
+                                    <Button x:Name="QuickSetupPaintWellsBtn" Content="🎨 Quick Setup" 
+                             Margin="0,0,0,8" Click="QuickSetupPaintWellsBtn_Click"
+                             ToolTip="Create Red, Green, Blue, Wash (black), and Wipe (gray) paint wells automatically"/>
+
+                                    <!-- Selected Well Properties -->
+                                    <Border BorderBrush="#CCC" BorderThickness="1" Padding="8" Margin="0,5,0,0"
+                             Visibility="{Binding ElementName=PaintWellsList, Path=SelectedItem, Converter={StaticResource NullToVisibilityConverter}}">
+                                        <StackPanel>
+                                            <TextBlock Text="Selected Well Properties:" FontWeight="SemiBold" Margin="0,0,0,5"/>
+
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                                <TextBlock Text="Name:" Width="70" VerticalAlignment="Center"/>
+                                                <TextBox x:Name="PaintWellNameBox" Width="150" 
+                                          TextChanged="PaintWellNameBox_TextChanged"/>
+                                            </StackPanel>
+
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                                <TextBlock Text="Color:" Width="70" VerticalAlignment="Center"/>
+                                                <Rectangle x:Name="PaintWellColorPreview" Width="24" Height="24" 
+                                            Stroke="Gray" StrokeThickness="1" Margin="0,0,8,0"
+                                            MouseLeftButtonDown="PaintWellColorPreview_Click" Cursor="Hand"/>
+                                                <Button Content="Pick Color" Width="80" Click="PaintWellColorPreview_Click"/>
+                                            </StackPanel>
+
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                                <TextBlock Text="Dip Depth:" Width="70" VerticalAlignment="Center"/>
+                                                <TextBox x:Name="PaintWellDipDepthBox" Width="60" 
+                                          TextChanged="PaintWellDipDepthBox_TextChanged"/>
+                                                <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                                            </StackPanel>
+
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                                <TextBlock Text="Dwell Time:" Width="70" VerticalAlignment="Center"/>
+                                                <TextBox x:Name="PaintWellDwellBox" Width="60" 
+                                          TextChanged="PaintWellDwellBox_TextChanged"/>
+                                                <TextBlock Text="ms" Margin="5,0,0,0" VerticalAlignment="Center"/>
+                                            </StackPanel>
+
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,0,5">
+                                                <TextBlock Text="Refresh:" Width="70" VerticalAlignment="Center"/>
+                                                <TextBox x:Name="PaintWellRefreshMinBox" Width="40" 
+                                          TextChanged="PaintWellRefreshMinBox_TextChanged"
+                                          ToolTip="Minimum distance before paint refresh"/>
+                                                <TextBlock Text="-" Margin="3,0,3,0" VerticalAlignment="Center"/>
+                                                <TextBox x:Name="PaintWellRefreshMaxBox" Width="40" 
+                                          TextChanged="PaintWellRefreshMaxBox_TextChanged"
+                                          ToolTip="Maximum distance before paint refresh"/>
+                                                <TextBlock Text="mm" Margin="5,0,0,0" VerticalAlignment="Center" FontSize="10"/>
+                                            </StackPanel>
+                                        </StackPanel>
+                                    </Border>
+                                </StackPanel>
                             </StackPanel>
                         </Expander>
                     </GroupBox>

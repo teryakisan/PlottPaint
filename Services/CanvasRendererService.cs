@@ -131,7 +131,7 @@ namespace NVSPlotter.Services
             }
 
             // Paint wells (render before strokes so strokes appear on top)
-            _paintWellController.RenderPaintWells(settings.CanvasRotationAngle);
+            _paintWellController.RenderPaintWells(settings.CanvasRotationAngle, settings.IsPaintModeEnabled);
 
             // Render strokes
             RenderStrokes(settings);
