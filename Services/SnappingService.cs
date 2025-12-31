@@ -32,6 +32,7 @@ namespace NVSPlotter.Services
         private readonly Func<double> _getSnapRadius;
         private readonly Func<bool> _getIsSnapToGridEnabled;
         private readonly Func<double> _getGridSpacing;
+        private readonly Func<double> _getSafeMargin;
 
         private const double RULER_THICKNESS = 18.0;
 
@@ -43,18 +44,21 @@ namespace NVSPlotter.Services
         /// <param name="getSnapRadius">Function to get the snap radius (mm)</param>
         /// <param name="getIsSnapToGridEnabled">Function to check if grid snapping is enabled</param>
         /// <param name="getGridSpacing">Function to get the grid spacing (mm)</param>
+        /// <param name="getSafeMargin">Function to get the safe margin (mm), or null to disable margin clamping</param>
         public SnappingService(
             Func<PlotDocument> getDocument,
             Func<bool> getIsSnapEnabled,
             Func<double> getSnapRadius,
             Func<bool> getIsSnapToGridEnabled,
-            Func<double> getGridSpacing)
+            Func<double> getGridSpacing,
+            Func<double>? getSafeMargin = null)
         {
             _getDocument = getDocument ?? throw new ArgumentNullException(nameof(getDocument));
             _getIsSnapEnabled = getIsSnapEnabled ?? throw new ArgumentNullException(nameof(getIsSnapEnabled));
             _getSnapRadius = getSnapRadius ?? throw new ArgumentNullException(nameof(getSnapRadius));
             _getIsSnapToGridEnabled = getIsSnapToGridEnabled ?? throw new ArgumentNullException(nameof(getIsSnapToGridEnabled));
             _getGridSpacing = getGridSpacing ?? throw new ArgumentNullException(nameof(getGridSpacing));
+            _getSafeMargin = getSafeMargin ?? (() => 0.0);
         }
 
         #region Endpoint Snapping
@@ -130,6 +134,7 @@ namespace NVSPlotter.Services
 
         /// <summary>
         /// Snaps a point to the nearest grid intersection if snap-to-grid is enabled.
+        /// Respects safe margins on all sides (left, top, right, bottom).
         /// </summary>
         /// <param name="raw">The raw point to snap</param>
         /// <returns>The snapped point, or the original if grid snapping is disabled</returns>
@@ -140,6 +145,9 @@ namespace NVSPlotter.Services
             var spacing = _getGridSpacing();
             if (spacing <= 0) return raw;
 
+            var doc = _getDocument();
+            var safeMargin = _getSafeMargin();
+
             // Grid lines are drawn at rulerThickness + (n * spacing) positions
             // To snap to grid intersections, we need to account for this offset
 
@@ -149,6 +157,16 @@ namespace NVSPlotter.Services
 
             var snappedDocX = Math.Round(docX / spacing) * spacing;
             var snappedDocY = Math.Round(docY / spacing) * spacing;
+
+            // Clamp to safe area within document bounds
+            // Safe margin is applied on all sides: left, top, right, and bottom
+            var minX = safeMargin;
+            var minY = safeMargin;
+            var maxX = Math.Max(safeMargin, doc.WidthMm - safeMargin);
+            var maxY = Math.Max(safeMargin, doc.HeightMm - safeMargin);
+
+            snappedDocX = Math.Clamp(snappedDocX, minX, maxX);
+            snappedDocY = Math.Clamp(snappedDocY, minY, maxY);
 
             // Convert back to canvas coordinates
             return new PointMm(snappedDocX + RULER_THICKNESS, snappedDocY + RULER_THICKNESS);
@@ -286,6 +304,11 @@ namespace NVSPlotter.Services
         /// Gets the current grid spacing.
         /// </summary>
         public double GridSpacing => _getGridSpacing();
+
+        /// <summary>
+        /// Gets the current safe margin.
+        /// </summary>
+        public double SafeMargin => _getSafeMargin();
 
         #endregion
     }

@@ -215,7 +215,10 @@ namespace NVSPlotter.Services
         {
             var bedX = _getBedX();
             var margin = _getSafeMargin();
-            return Math.Clamp(x, margin, bedX - margin);
+            // Ensure margin is applied symmetrically on both left and right
+            var minX = margin;
+            var maxX = Math.Max(margin, bedX - margin);
+            return Math.Clamp(x, minX, maxX);
         }
 
         /// <summary>
@@ -227,7 +230,20 @@ namespace NVSPlotter.Services
         {
             var bedY = _getBedY();
             var margin = _getSafeMargin();
-            return Math.Clamp(y, margin, bedY - margin);
+            // Ensure margin is applied symmetrically on both top and bottom
+            var minY = margin;
+            var maxY = Math.Max(margin, bedY - margin);
+            return Math.Clamp(y, minY, maxY);
+        }
+
+        /// <summary>
+        /// Clamps a bed point to the safe area (respecting margins on all sides).
+        /// </summary>
+        /// <param name="point">Point in bed coordinates</param>
+        /// <returns>Clamped point within safe margins</returns>
+        public PointMm ClampToSafeArea(PointMm point)
+        {
+            return new PointMm(ClampBedX(point.X), ClampBedY(point.Y));
         }
 
         #endregion

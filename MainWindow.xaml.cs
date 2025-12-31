@@ -264,7 +264,8 @@ namespace NVSPlotter
                 () => IsSnapEnabled,
                 () => GetSnapRadius(),
                 () => IsSnapToGridEnabled,
-                () => GetGridSpacing());
+                () => GetGridSpacing(),
+                () => SafeMarginMm);
 
             // Initialize G-code generator service
             _gcodeGenerator = new GcodeGeneratorService(
@@ -352,6 +353,10 @@ namespace NVSPlotter
              
              // Apply window chrome theme after window is loaded
              Loaded += (s, e) => ApplyWindowChromeTheme();
+             
+             // Fit the drawing area to the available height on initial load
+             // Use ContentRendered event because viewport dimensions are not accurate until layout is complete
+             ContentRendered += (s, e) => FitToHeight();
              
              // Subscribe to theme changes to update title bar
              ThemeManager.Instance.ThemeChanged += (s, isDark) => ApplyWindowChromeTheme();
@@ -505,6 +510,24 @@ namespace NVSPlotter
             var zx = viewportW / (_doc.WidthMm + rulerThickness);
             var zy = viewportH / (_doc.HeightMm + rulerThickness);
             var z = Math.Clamp(Math.Min(zx, zy) * 0.95, ZoomSlider.Minimum, ZoomSlider.Maximum);
+            ZoomSlider.Value = z;
+        }
+
+        /// <summary>
+        /// Fits the drawing area to the available viewport height, accounting for the plotter size setting.
+        /// This is called on application startup to show the full drawing area height.
+        /// </summary>
+        private void FitToHeight()
+        {
+            var viewportH = CanvasScroll.ViewportHeight;
+            if (viewportH <= 0) return;
+
+            const double rulerThickness = 18.0;
+            const double padding = 40.0; // Account for canvas margin/padding
+            
+            // Calculate zoom level to fit the document height in the viewport
+            var zy = viewportH / (_doc.HeightMm + rulerThickness + padding);
+            var z = Math.Clamp(zy * 0.95, ZoomSlider.Minimum, ZoomSlider.Maximum);
             ZoomSlider.Value = z;
         }
 
@@ -3483,56 +3506,7 @@ namespace NVSPlotter
             return _lastGcode;
         }
 
-        private CoordinateTransformService.FitSpec ComputeFit(double docW, double docH, double bedX, double bedY, double margin)
-        {
-            //var ux = Math.Max(1.0, bedX - margin * 2);
-            //var uy = Math.Max(1.0, bedY - margin * 2);
-
-            //// No-rotate scale
-            //var s0 = Math.Min(ux / docW, uy / docH);
-            //// Rotate CW scale
-            //var s1 = Math.Min(ux / docH, uy / docW);
-
-            //// Never scale up above 1.0
-            //s0 = Math.Min(s0, 1.0);
-            //s1 = Math.Min(s1, 1.0);
-
-            //if (s1 > s0) return new FitSpec(FitMode.RotateCW, s1, margin, docW, docH);
-            //return new FitSpec(FitMode.None, s0, margin, docW, docH);
-            return _coordTransform.ComputeFit(docW, docH, bedX, bedY, margin);
-        }
-
-        // Map doc point into bed coordinates (origin = bed min/min corner), inside margins.
-        private PointMm DocToBed(PointMm p, CoordinateTransformService.FitSpec fit)
-        {
-            return _coordTransform.DocToBed(p, fit);
-        }
-
-        private PointMm DocToBed(PointMm p, CoordinateTransformService.FitSpec fit, bool clamp)
-        {
-            return _coordTransform.DocToBed(p, fit, clamp);
-        }
-
-        private double ClampBedX(double x)
-        {
-            return _coordTransform.ClampBedX(x);
-        }
-        private double ClampBedY(double y)
-        {
-            return _coordTransform.ClampBedY(y);
-        }   
-
-        // Convert bed-local positive coords into WORK coords relative to home (0,0).
-        // REQUIRED BY USER: X ALWAYS positive, Y ALWAYS negative.
-        //
-        // We still compute "distance into the bed from HOME" using $23, because home might be at min or max.
-        // Then we apply the requested sign convention:
-        //   X = +distance, Y = -distance
-        private PointMm BedToWork(PointMm bed)
-        {
-            // Distance from HOME along each axis into the bed (always positive)
-            return _coordTransform.BedToWork(bed);
-        }
+       
 
         private static double ParseDouble(string? s, double fallback)
         {
