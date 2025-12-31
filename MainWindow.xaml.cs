@@ -226,38 +226,7 @@ namespace NVSPlotter
             return result;
         }
 
-        /// <summary>
-        /// Checks if the given group ID or any of its ancestors have intermediate points enabled.
-        /// This walks up the parent chain to check for inherited intermediate point display.
-        /// </summary>
-        /// <param name="groupId">The group ID to check</param>
-        /// <returns>True if this group or any ancestor has intermediate points enabled</returns>
-        private bool HasAncestorWithIntermediatePointsEnabled(Guid groupId)
-        {
-            // First check if this group itself has it enabled
-            if (_showIntermediatePointsForGroups.Contains(groupId))
-                return true;
-            
-            // Find the ParentGroupId for this group (any stroke with this GroupId will have the same parent)
-            var parentGroupId = _doc.Strokes
-                .FirstOrDefault(s => s.GroupId == groupId)?.ParentGroupId;
-            
-            // Walk up the ancestor chain
-            var visited = new HashSet<Guid> { groupId }; // Prevent infinite loops
-            while (parentGroupId.HasValue && !visited.Contains(parentGroupId.Value))
-            {
-                if (_showIntermediatePointsForGroups.Contains(parentGroupId.Value))
-                    return true;
-                
-                visited.Add(parentGroupId.Value);
-                
-                // Find the next parent up the chain
-                parentGroupId = _doc.Strokes
-                    .FirstOrDefault(s => s.GroupId == parentGroupId.Value)?.ParentGroupId;
-            }
-            
-            return false;
-        }
+        
 
         public MainWindow()
         {
@@ -349,6 +318,9 @@ namespace NVSPlotter
                 DrawCanvas ?? throw new InvalidOperationException("DrawCanvas control is missing."),
                 () => _doc,
                 RenderAll);
+
+            // Subscribe to paint well events for automatic UI updates
+            _paintWellController.PaintWellsChanged += OnPaintWellsChanged;
 
             // Initialize canvas renderer service
             _canvasRenderer = new CanvasRendererService(
@@ -1384,24 +1356,7 @@ namespace NVSPlotter
             RenderAll();
         }
 
-        private int GetCurrentSubdivisionCount()
-        {
-            // Count current segments in subdivided strokes
-            if (_subdivideStrokeIndices == null || _subdivideStrokeIndices.Count == 0) return 2;
-            
-            // For grouped strokes, count all strokes in the group
-            var firstIdx = _subdivideStrokeIndices[0];
-            if (firstIdx >= 0 && firstIdx < _doc.Strokes.Count)
-            {
-                var stroke = _doc.Strokes[firstIdx];
-                if (stroke.GroupId.HasValue)
-                {
-                    var groupCount = _doc.Strokes.Count(s => s.GroupId == stroke.GroupId);
-                    return groupCount + 1; // segments + 1 = points
-                }
-            }
-            return 2;
-        }
+       
 
         private void ApplySubdivision(int pointCount)
         {
@@ -2207,25 +2162,7 @@ namespace NVSPlotter
             return ParseDouble(tb.Text, 5.0);
         }
 
-        /// <summary>
-        /// Snaps a point to the nearest stroke endpoint if within snap radius.
-        /// Returns the snapped point (or original if no snap), and sets snapType to indicate
-        /// whether it snapped to a line start (A) or end (B).
-        /// </summary>
-        private PointMm SnapToEndpoint(PointMm raw, out PointMm? snappedTo, out SnapType snapType)
-        {
-            var result = _snappingService.SnapToEndpoint(raw, out snappedTo, out var serviceSnapType);
-            snapType = (SnapType)serviceSnapType; // Cast from service enum to local enum
-            return result;
-        }
-
-        /// <summary>
-        /// Overload for cases where snap type isn't needed.
-        /// </summary>
-        private PointMm SnapToEndpoint(PointMm raw, out PointMm? snappedTo)
-        {
-            return _snappingService.SnapToEndpoint(raw, out snappedTo);
-        }
+     
 
         private void UpdateSnapIndicator(PointMm? snapPoint, SnapType snapType, PointMm? gridSnapPoint = null)
         {
@@ -2683,194 +2620,6 @@ namespace NVSPlotter
 
         private bool IsMarginOverlayVisible => FindName("ShowMarginOverlayCheck") is CheckBox cb && cb.IsChecked == true;
 
-        /// <summary>
-        /// Draws a transparent overlay showing the safe margin zones around the edges.
-        /// </summary>
-        private void DrawSafeMarginOverlay()
-        {
-            if (DrawCanvas == null) return;
-            if (!IsMarginOverlayVisible) return;
-
-            var margin = SafeMarginMm;
-            if (margin <= 0) return;
-
-            const double rulerThickness = 18.0; // Must match ruler thickness
-
-            var marginBrush = new SolidColorBrush(Color.FromArgb(40, 255, 100, 100)); // Semi-transparent red
-            var marginStroke = new SolidColorBrush(Color.FromArgb(80, 200, 50, 50)); // Slightly more opaque border
-
-            // Document area starts after ruler offset
-            var docLeft = rulerThickness;
-            var docTop = rulerThickness;
-            var docWidth = _doc.WidthMm;
-            var docHeight = _doc.HeightMm;
-
-            // Top margin zone
-            if (margin < docHeight)
-            {
-                var topRect = new Rectangle
-                {
-                    Width = docWidth,
-                    Height = Math.Min(margin, docHeight),
-                    Fill = marginBrush,
-                    Stroke = marginStroke,
-                    StrokeThickness = 0.5,
-                    IsHitTestVisible = false,
-                    SnapsToDevicePixels = true
-                };
-                Canvas.SetLeft(topRect, docLeft);
-                Canvas.SetTop(topRect, docTop);
-                Panel.SetZIndex(topRect, 1);
-                DrawCanvas.Children.Add(topRect);
-            }
-
-            // Bottom margin zone
-            if (margin < docHeight)
-            {
-                var bottomRect = new Rectangle
-                {
-                    Width = docWidth,
-                    Height = Math.Min(margin, docHeight),
-                    Fill = marginBrush,
-                    Stroke = marginStroke,
-                    StrokeThickness = 0.5,
-                    IsHitTestVisible = false,
-                    SnapsToDevicePixels = true
-                };
-                Canvas.SetLeft(bottomRect, docLeft);
-                Canvas.SetTop(bottomRect, docTop + docHeight - margin);
-                Panel.SetZIndex(bottomRect, 1);
-                DrawCanvas.Children.Add(bottomRect);
-            }
-
-            // Left margin zone (between top and bottom margins)
-            var verticalHeight = Math.Max(0, docHeight - 2 * margin);
-            if (margin < docWidth && verticalHeight > 0)
-            {
-                var leftRect = new Rectangle
-                {
-                    Width = Math.Min(margin, docWidth),
-                    Height = verticalHeight,
-                    Fill = marginBrush,
-                    Stroke = marginStroke,
-                    StrokeThickness = 0.5,
-                    IsHitTestVisible = false,
-                    SnapsToDevicePixels = true
-                };
-                Canvas.SetLeft(leftRect, docLeft);
-                Canvas.SetTop(leftRect, docTop + margin);
-                Panel.SetZIndex(leftRect, 1);
-                DrawCanvas.Children.Add(leftRect);
-            }
-
-            // Right margin zone (between top and bottom margins)
-            if (margin < docWidth && verticalHeight > 0)
-            {
-                var rightRect = new Rectangle
-                {
-                    Width = Math.Min(margin, docWidth),
-                    Height = verticalHeight,
-                    Fill = marginBrush,
-                    Stroke = marginStroke,
-                    StrokeThickness = 0.5,
-                    IsHitTestVisible = false,
-                    SnapsToDevicePixels = true
-                };
-                Canvas.SetLeft(rightRect, docLeft + docWidth - margin);
-                Canvas.SetTop(rightRect, docTop + margin);
-                Panel.SetZIndex(rightRect, 1);
-                DrawCanvas.Children.Add(rightRect);
-            }
-
-            // Draw a dashed inner border to clearly show the safe area boundary
-            var safeAreaBorder = new Rectangle
-            {
-                Width = Math.Max(0, docWidth - 2 * margin),
-                Height = Math.Max(0, docHeight - 2 * margin),
-                Stroke = new SolidColorBrush(Color.FromRgb(200, 100, 100)),
-                StrokeThickness = 1,
-                StrokeDashArray = [4, 2],
-                Fill = Brushes.Transparent,
-                IsHitTestVisible = false,
-                SnapsToDevicePixels = true
-            };
-            Canvas.SetLeft(safeAreaBorder, docLeft + margin);
-            Canvas.SetTop(safeAreaBorder, docTop + margin);
-            Panel.SetZIndex(safeAreaBorder, 1);
-            DrawCanvas.Children.Add(safeAreaBorder);
-        }
-
-        /// <summary>
-        /// Draws the grid on the canvas if enabled.
-        /// Grid opacity and thickness adapt to zoom level to ensure drawing strokes remain visible.
-        /// </summary>
-        private void DrawGrid()
-        {
-            if (DrawCanvas == null || !IsGridVisible) return;
-
-            var spacing = GetGridSpacing();
-            if (spacing <= 0) return;
-
-            // Adaptive grid appearance based on zoom level
-            // At low zoom, grid becomes more transparent and thinner to avoid obscuring strokes
-            var currentZoom = _zoom.ScaleX;
-            
-            // Grid opacity: 100% at zoom >= 1.0, fades to 40% at zoom <= 0.2
-            var gridOpacity = Math.Clamp(0.4 + 0.6 * Math.Min(1.0, currentZoom), 0.4, 1.0);
-            
-            // Grid thickness: 1.0 at zoom >= 1.0, thins to 0.5 at low zoom
-            var gridThickness = Math.Clamp(0.5 + 0.5 * Math.Min(1.0, currentZoom), 0.5, 1.0);
-            
-            var gridColor = Color.FromArgb((byte)(200 * gridOpacity), 200, 200, 200);
-            var gridBrush = new SolidColorBrush(gridColor);
-            const double rulerThickness = 18.0;
-
-            // Draw vertical lines - offset by ruler thickness to align with ruler ticks
-            for (double x = 0; x <= _doc.WidthMm; x += spacing)
-            {
-                var line = new Line
-                {
-                    X1 = rulerThickness + x,
-                    Y1 = rulerThickness,
-                    X2 = rulerThickness + x,
-                    Y2 = rulerThickness + _doc.HeightMm,
-                    Stroke = gridBrush,
-                    StrokeThickness = gridThickness,
-                    SnapsToDevicePixels = true,
-                    IsHitTestVisible = false
-                };
-                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
-                Panel.SetZIndex(line, 2);
-                DrawCanvas.Children.Add(line);
-            }
-
-            // Draw horizontal lines - offset by ruler thickness to align with ruler ticks
-            for (double y = 0; y <= _doc.HeightMm; y += spacing)
-            {
-                var line = new Line
-                {
-                    X1 = rulerThickness,
-                    Y1 = rulerThickness + y,
-                    X2 = rulerThickness + _doc.WidthMm,
-                    Y2 = rulerThickness + y,
-                    Stroke = gridBrush,
-                    StrokeThickness = gridThickness,
-                    SnapsToDevicePixels = true,
-                    IsHitTestVisible = false
-                };
-                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
-                Panel.SetZIndex(line, 2);
-                DrawCanvas.Children.Add(line);
-            }
-        }
-
-        /// <summary>
-        /// Snaps a point to the nearest grid intersection if snap-to-grid is enabled.
-        /// </summary>
-        private PointMm SnapToGrid(PointMm raw)
-        {
-            return _snappingService.SnapToGrid(raw);
-        }
 
         /// <summary>
         /// Combined snapping: endpoints first (higher priority), then grid.
@@ -3407,139 +3156,9 @@ namespace NVSPlotter
             WorkingAreaStatus.Text = _workingAreaManager.GetStatusText();
         }
 
-        private void DrawRulers()
-        {
-            if (RulerCanvas == null) return;
+       
 
-            const double rulerThickness = 18.0;
-            const double majorStep = 10.0;
-            double labelStep = 50.0;
-
-            Brush rulerFill = new SolidColorBrush(Color.FromRgb(248, 248, 248));
-            Brush borderBrush = Brushes.LightGray;
-            Brush tickBrush = Brushes.Gray;
-
-            Rectangle CreateBackground(double width, double height)
-            {
-                return new Rectangle
-                {
-                    Width = width,
-                    Height = height,
-                    Fill = rulerFill,
-                    Stroke = borderBrush,
-                    StrokeThickness = 0.5,
-                    IsHitTestVisible = false
-                };
-            }
-
-            // Corner block
-            var corner = CreateBackground(rulerThickness, rulerThickness);
-            Canvas.SetLeft(corner, 0);
-            Canvas.SetTop(corner, 0);
-            RulerCanvas.Children.Add(corner);
-
-            // Top ruler background (starts at rulerThickness to not overlap corner)
-            var topBackground = CreateBackground(_doc.WidthMm, rulerThickness);
-            Canvas.SetLeft(topBackground, rulerThickness);
-            Canvas.SetTop(topBackground, 0);
-            RulerCanvas.Children.Add(topBackground);
-
-            // Left ruler background (starts at rulerThickness to not overlap corner)
-            var leftBackground = CreateBackground(rulerThickness, _doc.HeightMm);
-            Canvas.SetLeft(leftBackground, 0);
-            Canvas.SetTop(leftBackground, rulerThickness);
-            RulerCanvas.Children.Add(leftBackground);
-
-            // Vertical ticks on top ruler - position matches document coordinates
-            var gridSpacing = GetGridSpacing();
-            for (double x = 0; x <= _doc.WidthMm; x += gridSpacing)
-            {
-                bool isMajor = Math.Abs(x % majorStep) < 0.0001 || x == 0;
-                bool showLabel = Math.Abs(x % labelStep) < 0.0001;
-                double len = isMajor ? rulerThickness : rulerThickness / 2.5;
-
-                // Draw tick at position that aligns with grid (offset by ruler corner)
-                double cx = rulerThickness + x;
-
-                var line = new Line
-                {
-                    X1 = cx,
-                    X2 = cx,
-                    Y1 = rulerThickness - len,
-                    Y2 = rulerThickness,
-                    Stroke = tickBrush,
-                    StrokeThickness = isMajor ? 1.0 : 0.6,
-                    SnapsToDevicePixels = true,
-                    IsHitTestVisible = false
-                };
-                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
-                RulerCanvas.Children.Add(line);
-
-                if (showLabel && x > 0)
-                {
-                    var label = CreateRulerLabel(x, rotate: false);
-                    // Measure text width to center label on tick mark
-                    label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-                    var textWidth = label.DesiredSize.Width;
-                    Canvas.SetLeft(label, cx - textWidth / 2);
-                    Canvas.SetTop(label, 1);
-                    RulerCanvas.Children.Add(label);
-                }
-            }
-
-            // Horizontal ticks on left ruler - position matches document coordinates
-            for (double y = 0; y <= _doc.HeightMm; y += gridSpacing)
-            {
-                bool isMajor = Math.Abs(y % majorStep) < 0.0001 || y == 0;
-                bool showLabel = Math.Abs(y % labelStep) < 0.0001;
-                double len = isMajor ? rulerThickness : rulerThickness / 2.5;
-
-                // Draw tick at position that aligns with grid (offset by ruler corner)
-                double cy = rulerThickness + y;
-
-                var line = new Line
-                {
-                    X1 = rulerThickness - len,
-                    X2 = rulerThickness,
-                    Y1 = cy,
-                    Y2 = cy,
-                    Stroke = tickBrush,
-                    StrokeThickness = isMajor ? 1.0 : 0.6,
-                    SnapsToDevicePixels = true,
-                    IsHitTestVisible = false
-                };
-                RenderOptions.SetEdgeMode(line, EdgeMode.Aliased);
-                RulerCanvas.Children.Add(line);
-
-                if (showLabel && y > 0)
-                {
-                    var label = CreateRulerLabel(y, rotate: true);
-                    // Measure text to center label on tick mark (after rotation, width becomes height)
-                    label.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
-                    var textHeight = label.DesiredSize.Height; // After -90° rotation, this is the visual width
-                    Canvas.SetLeft(label, 1);
-                    Canvas.SetTop(label, cy - textHeight / 2);
-                    RulerCanvas.Children.Add(label);
-                }
-            }
-        }
-
-        private static TextBlock CreateRulerLabel(double value, bool rotate)
-        {
-            var tb = new TextBlock
-            {
-                Text = value.ToString("0"),
-                FontSize = 9,
-                FontWeight= FontWeights.Bold,
-                Foreground = Brushes.Gray,
-                IsHitTestVisible = false
-            };
-            if (rotate)
-            {
-                tb.LayoutTransform = new RotateTransform(-90);
-            }
-            return tb;
-        }
+        
 
         private void RenderAll()
         {
@@ -3653,362 +3272,9 @@ namespace NVSPlotter
             Panel.SetZIndex(rotateHandle, 8);
         }
 
-        /// <summary>
-        /// Draws start/end indicators for selected strokes using IsGroupStart/IsGroupEnd markers.
-        /// For grouped objects: shows start at stroke with IsGroupStart=true, end at stroke with IsGroupEnd=true.
-        /// For closed loops (start == end across ALL groups): shows a single purple indicator.
-        /// For individual strokes (no group): shows start/end on that stroke.
-        /// </summary>
-        private void DrawSelectionIndicators()
-        {
-            if (!_selectionController.HasSelection) return;
+        
 
-            const double indicatorSize = 18.0; // Larger indicator size for better visibility
-            const double closedLoopTolerance = 0.5; // mm tolerance for considering points equal
-
-            // Get selected strokes in sorted order for consistency
-            var selectedIndices = _selectionController.SelectedIndices.OrderBy(i => i).ToList();
-            if (selectedIndices.Count == 0) return;
-
-            // Group selected strokes by GroupId
-            var groupedStrokes = new Dictionary<Guid, List<LineStroke>>();
-            var ungroupedStrokes = new List<LineStroke>();
-
-            foreach (var idx in selectedIndices)
-            {
-                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
-                var stroke = _doc.Strokes[idx];
-                
-                if (stroke.GroupId == null)
-                {
-                    ungroupedStrokes.Add(stroke);
-                }
-                else
-                {
-                    if (!groupedStrokes.TryGetValue(stroke.GroupId.Value, out var list))
-                    {
-                        list = new List<LineStroke>();
-                        groupedStrokes[stroke.GroupId.Value] = list;
-                    }
-                    list.Add(stroke);
-                }
-            }
-
-            // During subdivision, also include ANCESTOR groups (parent, grandparent, etc.)
-            // This ensures parent indicators remain visible while subdividing a child
-            if (_isSubdividing)
-            {
-                // Find all ancestor group IDs for the selected groups
-                var ancestorGroupIds = new HashSet<Guid>();
-                foreach (var groupId in groupedStrokes.Keys.ToList())
-                {
-                    // Walk up the ancestor chain
-                    var currentGroupId = groupId;
-                    var visited = new HashSet<Guid> { currentGroupId };
-                    
-                    while (true)
-                    {
-                        var parentGroupId = _doc.Strokes
-                            .FirstOrDefault(s => s.GroupId == currentGroupId)?.ParentGroupId;
-                        
-                        if (!parentGroupId.HasValue || visited.Contains(parentGroupId.Value))
-                            break;
-                        
-                        ancestorGroupIds.Add(parentGroupId.Value);
-                        visited.Add(parentGroupId.Value);
-                        currentGroupId = parentGroupId.Value;
-                    }
-                }
-                
-                // Add ancestor group strokes if they have intermediate points enabled
-                foreach (var ancestorId in ancestorGroupIds)
-                {
-                    if (_showIntermediatePointsForGroups.Contains(ancestorId))
-                    {
-                        if (!groupedStrokes.ContainsKey(ancestorId))
-                        {
-                            var ancestorStrokes = _doc.Strokes.Where(s => s.GroupId == ancestorId).ToList();
-                            if (ancestorStrokes.Count > 0)
-                            {
-                                groupedStrokes[ancestorId] = ancestorStrokes;
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Find and add child groups if parent group has intermediate points enabled
-            // This allows child group indicators to be shown when the parent is selected
-            // Note: We iterate over a copy of the keys to avoid modifying the dictionary while iterating
-            // Use recursive lookup to find ALL descendants (children, grandchildren, etc.)
-            var parentGroupIds = groupedStrokes.Keys.ToList();
-            var allDescendantGroupIds = GetAllDescendantGroupIds(
-                parentGroupIds.Where(id => _showIntermediatePointsForGroups.Contains(id)));
-            
-            // Add all descendant group strokes to the rendering
-            foreach (var stroke in _doc.Strokes)
-            {
-                if (stroke.GroupId.HasValue && allDescendantGroupIds.Contains(stroke.GroupId.Value))
-                {
-                    // Add this descendant group's strokes (if not already added)
-                    if (!groupedStrokes.TryGetValue(stroke.GroupId.Value, out var childList))
-                    {
-                        childList = new List<LineStroke>();
-                        groupedStrokes[stroke.GroupId.Value] = childList;
-                    }
-                    if (!childList.Contains(stroke))
-                    {
-                        childList.Add(stroke);
-                    }
-                }
-            }
-
-            // Collect ALL start and end points from all groups to detect cross-group closed loops
-            var allStartPoints = new List<PointMm>();
-            var allEndPoints = new List<PointMm>();
-
-            foreach (var (_, strokes) in groupedStrokes)
-            {
-                var startStroke = strokes.FirstOrDefault(s => s.IsGroupStart);
-                var endStroke = strokes.FirstOrDefault(s => s.IsGroupEnd);
-                
-                if (startStroke != null) allStartPoints.Add(startStroke.A);
-                else if (strokes.Count > 0) allStartPoints.Add(strokes[0].A);
-                
-                if (endStroke != null) allEndPoints.Add(endStroke.B);
-                else if (strokes.Count > 0) allEndPoints.Add(strokes[^1].B);
-            }
-
-            foreach (var stroke in ungroupedStrokes)
-            {
-                allStartPoints.Add(stroke.A);
-                allEndPoints.Add(stroke.B);
-            }
-
-            // Find points that are both a start AND an end (closed loop junctions)
-            var closedLoopPoints = new HashSet<(double X, double Y)>();
-            foreach (var startPt in allStartPoints)
-            {
-                foreach (var endPt in allEndPoints)
-                {
-                    if (Math.Abs(startPt.X - endPt.X) < closedLoopTolerance &&
-                        Math.Abs(startPt.Y - endPt.Y) < closedLoopTolerance)
-                    {
-                        // Use rounded coordinates as key to handle tolerance
-                        closedLoopPoints.Add((Math.Round(startPt.X, 1), Math.Round(startPt.Y, 1)));
-                    }
-                }
-            }
-
-            // Draw indicators for each group, passing the closed loop info
-            foreach (var (_, strokes) in groupedStrokes)
-            {
-                DrawIndicatorsUsingMarkers(strokes, indicatorSize, closedLoopTolerance, closedLoopPoints);
-            }
-
-            // Draw indicators for ungrouped strokes (each is its own group)
-            foreach (var stroke in ungroupedStrokes)
-            {
-                DrawIndicatorsUsingMarkers(new List<LineStroke> { stroke }, indicatorSize, closedLoopTolerance, closedLoopPoints);
-            }
-        }
-
-        /// <summary>
-        /// Draws indicators for a group of strokes using their IsGroupStart/IsGroupEnd markers.
-        /// Shows only start (green) and end (red) indicators, or purple if they overlap (closed loop).
-        /// If intermediate points are enabled for this group, also shows all connection points with heat map colors.
-        /// The closedLoopPoints set contains points that are both a start AND an end across all selected groups.
-        /// </summary>
-        private void DrawIndicatorsUsingMarkers(List<LineStroke> strokes, double indicatorSize, double closedLoopTolerance, HashSet<(double X, double Y)> closedLoopPoints)
-        {
-            if (strokes.Count == 0) return;
-
-            // Check if any stroke in this group has intermediate points enabled
-            // Also check if any ANCESTOR group has intermediate points enabled (hierarchical - any depth)
-            var groupId = strokes.FirstOrDefault(s => s.GroupId.HasValue)?.GroupId;
-            
-            // Use the helper method to check the entire ancestor chain
-            var showIntermediatePoints = groupId.HasValue && HasAncestorWithIntermediatePointsEnabled(groupId.Value);
-
-            // Find the start point (stroke with IsGroupStart=true)
-            var startStroke = strokes.FirstOrDefault(s => s.IsGroupStart);
-            var startPoint = startStroke?.A ?? strokes[0].A;
-
-            // Find the end point (stroke with IsGroupEnd=true)
-            var endStroke = strokes.FirstOrDefault(s => s.IsGroupEnd);
-            var endPoint = endStroke?.B ?? strokes[^1].B;
-
-            // Check if start point is part of a closed loop (overlaps with any end point across all groups)
-            var startRounded = (Math.Round(startPoint.X, 1), Math.Round(startPoint.Y, 1));
-            var endRounded = (Math.Round(endPoint.X, 1), Math.Round(endPoint.Y, 1));
-            
-            bool startIsClosed = closedLoopPoints.Contains(startRounded);
-            bool endIsClosed = closedLoopPoints.Contains(endRounded);
-
-            // Check if start and end of THIS group are at the same position
-            bool isSelfClosed = Math.Abs(startPoint.X - endPoint.X) < closedLoopTolerance &&
-                               Math.Abs(startPoint.Y - endPoint.Y) < closedLoopTolerance;
-
-            // If showing intermediate points, draw all connection points with heat map colors
-            if (showIntermediatePoints && strokes.Count > 1)
-            {
-                // Collect all unique points in order
-                var allPoints = new List<PointMm>();
-                var seenPoints = new HashSet<(double, double)>();
-                
-                // Add start point
-                allPoints.Add(strokes[0].A);
-                seenPoints.Add((Math.Round(strokes[0].A.X, 2), Math.Round(strokes[0].A.Y, 2)));
-                
-                // Add all B points (and A points if not already added, for non-contiguous paths)
-                foreach (var stroke in strokes)
-                {
-                    var aKey = (Math.Round(stroke.A.X, 2), Math.Round(stroke.A.Y, 2));
-                    var bKey = (Math.Round(stroke.B.X, 2), Math.Round(stroke.B.Y, 2));
-                    
-                    if (!seenPoints.Contains(aKey))
-                    {
-                        allPoints.Add(stroke.A);
-                        seenPoints.Add(aKey);
-                    }
-                    if (!seenPoints.Contains(bKey))
-                    {
-                        allPoints.Add(stroke.B);
-                        seenPoints.Add(bKey);
-                    }
-                }
-
-                // Draw intermediate points (skip first and last which get special treatment)
-                const double intermediateSize = 10.0; // Smaller size for intermediate points
-                for (int i = 1; i < allPoints.Count - 1; i++)
-                {
-                    var point = allPoints[i];
-                    var progress = (double)i / (allPoints.Count - 1);
-                    var (fillColor, strokeColor) = GetHeatMapColor(progress);
-                    
-                    var indicator = new Ellipse
-                    {
-                        Width = intermediateSize,
-                        Height = intermediateSize,
-                        Fill = new SolidColorBrush(fillColor),
-                        Stroke = new SolidColorBrush(strokeColor),
-                        StrokeThickness = 1.5,
-                        IsHitTestVisible = false,
-                        SnapsToDevicePixels = true
-                    };
-                    Canvas.SetLeft(indicator, point.X - intermediateSize / 2.0);
-                    Canvas.SetTop(indicator, point.Y - intermediateSize / 2.0);
-                    Panel.SetZIndex(indicator, 4); // Below main start/end indicators
-                    DrawCanvas.Children.Add(indicator);
-                }
-            }
-
-            if (isSelfClosed)
-            {
-                // This group forms a complete closed loop by itself - single purple indicator
-                var closedIndicator = new Ellipse
-                {
-                    Width = indicatorSize,
-                    Height = indicatorSize,
-                    Fill = new SolidColorBrush(Color.FromArgb(180, 128, 0, 128)), // Purple fill
-                    Stroke = new SolidColorBrush(Color.FromRgb(100, 0, 100)), // Dark purple border
-                    StrokeThickness = 2,
-                    IsHitTestVisible = false,
-                    SnapsToDevicePixels = true
-                };
-                Canvas.SetLeft(closedIndicator, startPoint.X - indicatorSize / 2.0);
-                Canvas.SetTop(closedIndicator, startPoint.Y - indicatorSize / 2.0);
-                Panel.SetZIndex(closedIndicator, 5);
-                DrawCanvas.Children.Add(closedIndicator);
-            }
-            else
-            {
-                // Open path within this group, but check if endpoints connect to other groups
-                
-                // Start indicator - purple if it's part of a cross-group closed loop, green otherwise
-                if (startIsClosed)
-                {
-                    // This start point coincides with an end point from another group - purple
-                    var closedIndicator = new Ellipse
-                    {
-                        Width = indicatorSize,
-                        Height = indicatorSize,
-                        Fill = new SolidColorBrush(Color.FromArgb(180, 128, 0, 128)), // Purple fill
-                        Stroke = new SolidColorBrush(Color.FromRgb(100, 0, 100)), // Dark purple border
-                        StrokeThickness = 2,
-                        IsHitTestVisible = false,
-                        SnapsToDevicePixels = true
-                    };
-                    Canvas.SetLeft(closedIndicator, startPoint.X - indicatorSize / 2.0);
-                    Canvas.SetTop(closedIndicator, startPoint.Y - indicatorSize / 2.0);
-                    Panel.SetZIndex(closedIndicator, 5);
-                    DrawCanvas.Children.Add(closedIndicator);
-                }
-                else
-                {
-                    // Normal start indicator (green)
-                    var startIndicator = new Ellipse
-                    {
-                        Width = indicatorSize,
-                        Height = indicatorSize,
-                        Fill = new SolidColorBrush(Color.FromArgb(180, 0, 180, 0)), // Green fill
-                        Stroke = new SolidColorBrush(Color.FromRgb(0, 120, 0)), // Dark green border
-                        StrokeThickness = 2,
-                        IsHitTestVisible = false,
-                        SnapsToDevicePixels = true
-                    };
-                    Canvas.SetLeft(startIndicator, startPoint.X - indicatorSize / 2.0);
-                    Canvas.SetTop(startIndicator, startPoint.Y - indicatorSize / 2.0);
-                    Panel.SetZIndex(startIndicator, 5);
-                    DrawCanvas.Children.Add(startIndicator);
-                }
-
-                // End indicator - purple if it's part of a cross-group closed loop, red otherwise
-                // But skip if end point is at the same location as start (already drawn)
-                bool endSameAsStart = Math.Abs(startPoint.X - endPoint.X) < closedLoopTolerance &&
-                                     Math.Abs(startPoint.Y - endPoint.Y) < closedLoopTolerance;
-                
-                if (!endSameAsStart)
-                {
-                    if (endIsClosed)
-                    {
-                        // This end point coincides with a start point from another group - purple
-                        var closedIndicator = new Ellipse
-                        {
-                            Width = indicatorSize,
-                            Height = indicatorSize,
-                            Fill = new SolidColorBrush(Color.FromArgb(180, 128, 0, 128)), // Purple fill
-                            Stroke = new SolidColorBrush(Color.FromRgb(100, 0, 100)), // Dark purple border
-                            StrokeThickness = 2,
-                            IsHitTestVisible = false,
-                            SnapsToDevicePixels = true
-                        };
-                        Canvas.SetLeft(closedIndicator, endPoint.X - indicatorSize / 2.0);
-                        Canvas.SetTop(closedIndicator, endPoint.Y - indicatorSize / 2.0);
-                        Panel.SetZIndex(closedIndicator, 5);
-                        DrawCanvas.Children.Add(closedIndicator);
-                    }
-                    else
-                    {
-                        // Normal end indicator (red)
-                        var endIndicator = new Ellipse
-                        {
-                            Width = indicatorSize,
-                            Height = indicatorSize,
-                            Fill = new SolidColorBrush(Color.FromArgb(180, 220, 50, 50)), // Red fill
-                            Stroke = new SolidColorBrush(Color.FromRgb(160, 30, 30)), // Dark red border
-                            StrokeThickness = 2,
-                            IsHitTestVisible = false,
-                            SnapsToDevicePixels = true
-                        };
-                        Canvas.SetLeft(endIndicator, endPoint.X - indicatorSize / 2.0);
-                        Canvas.SetTop(endIndicator, endPoint.Y - indicatorSize / 2.0);
-                        Panel.SetZIndex(endIndicator, 5);
-                        DrawCanvas.Children.Add(endIndicator);
-                    }
-                }
-            }
-        }
+        
 
         /// <summary>
         /// Calculates a heat map color gradient from green (t=0) through yellow (t=0.5) to red (t=1).
@@ -4050,119 +3316,7 @@ namespace NVSPlotter
             return (fill, stroke);
         }
 
-        private void RenderReferenceImage()
-        {
-            if (_imageService.ProcessedImage == null || _imageService.ImageRect is not Rect rect) return;
-
-            var image = new Image
-            {
-                Source = _imageService.ProcessedImage,
-                Width = rect.Width,
-                Height = rect.Height,
-                Opacity = 0.65,
-                IsHitTestVisible = false
-            };
-            DrawCanvas.Children.Add(image);
-            Canvas.SetLeft(image, rect.Left);
-            Canvas.SetTop(image, rect.Top);
-            ApplyImageRotation(image, _imageService.Angle);
-            Panel.SetZIndex(image, 1);
-
-            var outline = new Rectangle
-            {
-                Width = rect.Width,
-                Height = rect.Height,
-                Stroke = Brushes.DimGray,
-                StrokeThickness = 1,
-                StrokeDashArray = [4, 2],
-                Fill = Brushes.Transparent,
-                IsHitTestVisible = false
-            };
-            DrawCanvas.Children.Add(outline);
-            Canvas.SetLeft(outline, rect.Left);
-            Canvas.SetTop(outline, rect.Top);
-            ApplyImageRotation(outline, _imageService.Angle);
-            Panel.SetZIndex(outline, 6);
-
-            if (_imageService.IsLocked)
-            {
-                return;
-            }
-
-            var hitBox = new Rectangle
-            {
-                Width = rect.Width,
-                Height = rect.Height,
-                Fill = Brushes.Transparent,
-                Cursor = Cursors.SizeAll,
-                Tag = ImageHandle.Move
-            };
-            hitBox.MouseDown += ReferenceHandle_MouseDown;
-            DrawCanvas.Children.Add(hitBox);
-            Canvas.SetLeft(hitBox, rect.Left);
-            Canvas.SetTop(hitBox, rect.Top);
-            Panel.SetZIndex(hitBox, 5);
-
-            void AddHandle(ImageHandle handle, double cx, double cy, Cursor cursor)
-            {
-                const double size = 10;
-                var handleRect = new Rectangle
-                {
-                    Width = size,
-                    Height = size,
-                    Fill = Brushes.White,
-                    Stroke = Brushes.DodgerBlue,
-                    StrokeThickness = 1,
-                    Cursor = cursor,
-                    Tag = handle
-                };
-                handleRect.MouseDown += ReferenceHandle_MouseDown;
-                DrawCanvas.Children.Add(handleRect);
-                Canvas.SetLeft(handleRect, cx - size / 2.0);
-                Canvas.SetTop(handleRect, cy - size / 2.0);
-                Panel.SetZIndex(handleRect, 7);
-            }
-
-            AddHandle(ImageHandle.Nw, rect.Left, rect.Top, Cursors.SizeNWSE);
-            AddHandle(ImageHandle.Ne, rect.Right, rect.Top, Cursors.SizeNESW);
-            AddHandle(ImageHandle.Se, rect.Right, rect.Bottom, Cursors.SizeNWSE);
-            AddHandle(ImageHandle.Sw, rect.Left, rect.Bottom, Cursors.SizeNESW);
-
-            var center = new Point(rect.Left + rect.Width / 2.0, rect.Top + rect.Height / 2.0);
-            var rotatedVector = Utility.RotateVector(new Vector(0, -ROTATE_HANDLE_OFFSET), _imageService.Angle);
-            var handleCenter = new Point(center.X + rotatedVector.X, center.Y + rotatedVector.Y);
-
-            var connector = new Line
-            {
-                X1 = center.X,
-                Y1 = center.Y,
-                X2 = handleCenter.X,
-                Y2 = handleCenter.Y,
-                Stroke = Brushes.DodgerBlue,
-                StrokeThickness = 1,
-                StrokeDashArray = [2, 2],
-                IsHitTestVisible = false
-            };
-            DrawCanvas.Children.Add(connector);
-            Panel.SetZIndex(connector, 6);
-
-            var rotateHandle = new Ellipse
-            {
-                Width = ROTATE_HANDLE_SIZE,
-                Height = ROTATE_HANDLE_SIZE,
-                Fill = Brushes.White,
-                Stroke = Brushes.DodgerBlue,
-                StrokeThickness = 1.2,
-                Cursor = Cursors.Hand,
-                Tag = ImageHandle.Rotate
-            };
-
-            rotateHandle.MouseDown += ReferenceHandle_MouseDown;
-            DrawCanvas.Children.Add(rotateHandle);
-            Canvas.SetLeft(rotateHandle, handleCenter.X - ROTATE_HANDLE_SIZE / 2.0);
-            Canvas.SetTop(rotateHandle, handleCenter.Y - ROTATE_HANDLE_SIZE / 2.0);
-            Panel.SetZIndex(rotateHandle, 8);
-        }
+        
 
         private void ReferenceHandle_MouseDown(object sender, MouseButtonEventArgs e)
         {
@@ -4347,6 +3501,67 @@ namespace NVSPlotter
         private bool IsPaintModeEnabled => FindName("PaintModeEnabledCheck") is CheckBox cb && cb.IsChecked == true;
 
         private bool _suppressPaintWellUIUpdate;
+
+        /// <summary>
+        /// Handles changes from PaintWellController and updates UI accordingly.
+        /// </summary>
+        private void OnPaintWellsChanged(object? sender, PaintWellsChangedEventArgs e)
+        {
+            // Skip if we're already in a UI update (prevents recursion)
+            if (_suppressPaintWellUIUpdate) return;
+
+            switch (e.ChangeType)
+            {
+                case PaintWellChangeType.WellCreated:
+                case PaintWellChangeType.WellRemoved:
+                case PaintWellChangeType.WellsCleared:
+                    // Collection changed - full UI refresh
+                    UpdatePaintWellsUI();
+                    break;
+
+                case PaintWellChangeType.SelectionChanged:
+                    // Selection changed - update property panel and sync ListBox
+                    _suppressPaintWellUIUpdate = true;
+                    try
+                    {
+                        if (FindName("PaintWellsList") is ListBox list)
+                        {
+                            list.SelectedItem = e.AffectedWell;
+                        }
+                        UpdateSelectedWellPropertiesUI();
+                    }
+                    finally
+                    {
+                        _suppressPaintWellUIUpdate = false;
+                    }
+                    break;
+
+                case PaintWellChangeType.ActiveColorChanged:
+                    // Active color changed - update chip highlights
+                    UpdatePaintWellChipHighlights();
+                    break;
+
+                case PaintWellChangeType.WellUpdated:
+                    // Well properties changed - refresh display
+                    _suppressPaintWellUIUpdate = true;
+                    try
+                    {
+                        if (FindName("PaintWellsList") is ListBox list)
+                        {
+                            list.Items.Refresh();
+                        }
+                        if (FindName("PaintWellsGrid") is ItemsControl grid)
+                        {
+                            grid.Items.Refresh();
+                        }
+                    }
+                    finally
+                    {
+                        _suppressPaintWellUIUpdate = false;
+                    }
+                    break;
+            }
+        }
 
         private void PaintModeEnabledCheck_Click(object sender, RoutedEventArgs e)
         {
@@ -4567,16 +3782,8 @@ namespace NVSPlotter
                 AppendLog($"Active color set to: {well.Name}");
             }
             
-            // Also sync the hidden ListBox selection for backward compatibility
-            if (FindName("PaintWellsList") is ListBox list)
-            {
-                _suppressPaintWellUIUpdate = true;
-                list.SelectedItem = well;
-                _suppressPaintWellUIUpdate = false;
-            }
-            
-            UpdateSelectedWellPropertiesUI();
-            UpdatePaintWellChipHighlights(); // Update visual highlight
+            // UI updates (property panel, chip highlights, ListBox selection) are handled 
+            // by OnPaintWellsChanged event for SelectionChanged and ActiveColorChanged
             RenderAll(); // Update visuals to show active well and applied colors
             e.Handled = true;
         }
@@ -4601,33 +3808,14 @@ namespace NVSPlotter
             
             var bounds = new Rect(centerX, centerY, defaultWidth, defaultHeight);
             var index = existingCount + 1;
-            var color = GetDefaultPaintWellColor(index);
+            var color = PaintWellController.GetDefaultPaintWellColor(index);
             var name = $"Paint {index}";
             
             _paintWellController.CreateWell(bounds, color, name);
             _lastGcode = "";
-            UpdatePaintWellsUI();
+            // UI update handled by OnPaintWellsChanged event
             
             AppendLog($"Created paint well '{name}' at ({centerX:0}, {centerY:0})");
-        }
-
-        /// <summary>
-        /// Gets a default color for a new paint well based on its index.
-        /// </summary>
-        private static Color GetDefaultPaintWellColor(int index)
-        {
-            // Cycle through a palette of distinct colors
-            return (index % 8) switch
-            {
-                1 => Colors.Red,
-                2 => Colors.Blue,
-                3 => Colors.Green,
-                4 => Colors.Orange,
-                5 => Colors.Purple,
-                6 => Colors.Cyan,
-                7 => Colors.Magenta,
-                _ => Colors.Brown
-            };
         }
 
         private void RemovePaintWellBtn_Click(object sender, RoutedEventArgs e)
@@ -4641,7 +3829,7 @@ namespace NVSPlotter
 
             _paintWellController.RemoveWell(selected.Id);
             _lastGcode = "";
-            UpdatePaintWellsUI();
+            // UI update handled by OnPaintWellsChanged event
             AppendLog($"Removed paint well: {selected.Name}");
         }
 
@@ -4659,14 +3847,14 @@ namespace NVSPlotter
             {
                 _paintWellController.ClearAll();
                 _lastGcode = "";
-                UpdatePaintWellsUI();
+                // UI update handled by OnPaintWellsChanged event
                 AppendLog("Cleared all paint wells.");
             }
         }
 
         private void QuickSetupPaintWellsBtn_Click(object sender, RoutedEventArgs e)
         {
-            // Clear existing wells if any
+            // Confirm if there are existing wells
             if (_doc.PaintWells.Count > 0)
             {
                 var result = MessageBox.Show(
@@ -4676,62 +3864,15 @@ namespace NVSPlotter
                     MessageBoxImage.Question);
 
                 if (result != MessageBoxResult.Yes) return;
-
-                _paintWellController.ClearAll();
             }
 
-            // Create paint wells - positioned at bottom of canvas, evenly distributed
-            // 5 wells: Red, Green, Blue, Wash (black), Wipe (light gray)
-            const double wellWidth = 140;
-            const double wellHeight = 100;
-            const double marginFromEdge = 20;
-            const int numWells = 5;
-
-            // Calculate spacing to evenly distribute wells across the bottom
-            double availableWidth = _doc.WidthMm - (2 * marginFromEdge);
-            double totalWellsWidth = numWells * wellWidth;
-            double spacing = (availableWidth - totalWellsWidth) / (numWells - 1);
-            
-            // If spacing is negative, wells are too big - reduce spacing to minimum
-            if (spacing < 10) spacing = 10;
-
-            // Position at bottom of canvas
-            double startY = _doc.HeightMm - wellHeight - marginFromEdge;
-
-            // Red well
-            _paintWellController.CreateWell(
-                new System.Windows.Rect(marginFromEdge, startY, wellWidth, wellHeight),
-                System.Windows.Media.Colors.Red,
-                "Red");
-
-            // Green well
-            _paintWellController.CreateWell(
-                new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 1, startY, wellWidth, wellHeight),
-                System.Windows.Media.Colors.Green,
-                "Green");
-
-            // Blue well
-            _paintWellController.CreateWell(
-                new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 2, startY, wellWidth, wellHeight),
-                System.Windows.Media.Colors.Blue,
-                "Blue");
-
-            // Wash well (black - for cleaning/washing brush)
-            _paintWellController.CreateWell(
-                new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 3, startY, wellWidth, wellHeight),
-                System.Windows.Media.Colors.Black,
-                "Wash");
-
-            // Wipe well (light gray - for wiping/drying brush)
-            _paintWellController.CreateWell(
-                new System.Windows.Rect(marginFromEdge + (wellWidth + spacing) * 4, startY, wellWidth, wellHeight),
-                System.Windows.Media.Color.FromRgb(192, 192, 192),
-                "Wipe");
+            // Delegate to controller
+            var count = _paintWellController.QuickSetupWells(_doc.WidthMm, _doc.HeightMm);
 
             _lastGcode = "";
-            UpdatePaintWellsUI();
+            // UI update handled by OnPaintWellsChanged event (multiple WellCreated events)
             RenderAll();
-            AppendLog($"Created 5 paint wells at bottom: Red, Green, Blue, Wash, Wipe ({wellWidth}x{wellHeight}mm each).");
+            AppendLog($"Created {count} paint wells at bottom: Red, Green, Blue, Wash, Wipe.");
         }
 
         private void PaintWellNameBox_TextChanged(object sender, TextChangedEventArgs e)

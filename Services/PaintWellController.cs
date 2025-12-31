@@ -18,6 +18,47 @@ using Panel = System.Windows.Controls.Panel;
 namespace NVSPlotter.Services;
 
 /// <summary>
+/// Event arguments for paint well collection changes.
+/// </summary>
+public sealed class PaintWellsChangedEventArgs : EventArgs
+{
+    /// <summary>
+    /// The type of change that occurred.
+    /// </summary>
+    public PaintWellChangeType ChangeType { get; }
+
+    /// <summary>
+    /// The affected paint well, if applicable.
+    /// </summary>
+    public PaintWell? AffectedWell { get; }
+
+    public PaintWellsChangedEventArgs(PaintWellChangeType changeType, PaintWell? affectedWell = null)
+    {
+        ChangeType = changeType;
+        AffectedWell = affectedWell;
+    }
+}
+
+/// <summary>
+/// Types of changes to the paint wells collection.
+/// </summary>
+public enum PaintWellChangeType
+{
+    /// <summary>A new well was created.</summary>
+    WellCreated,
+    /// <summary>A well was removed.</summary>
+    WellRemoved,
+    /// <summary>All wells were cleared.</summary>
+    WellsCleared,
+    /// <summary>The selected well changed.</summary>
+    SelectionChanged,
+    /// <summary>The active color well changed.</summary>
+    ActiveColorChanged,
+    /// <summary>A well's properties were updated.</summary>
+    WellUpdated
+}
+
+/// <summary>
 /// Manages paint wells (color areas) for the painting mode feature.
 /// Handles creation, selection, dragging, and resizing of paint wells.
 /// </summary>
@@ -48,6 +89,11 @@ public sealed class PaintWellController
     private PointMm _createStart;
     private Rectangle? _createPreview;
 
+    /// <summary>
+    /// Raised when the paint wells collection changes (add, remove, clear).
+    /// </summary>
+    public event EventHandler<PaintWellsChangedEventArgs>? PaintWellsChanged;
+
     public PaintWell? SelectedWell => _selectedWell;
     public PaintWell? ActiveColorWell => _activeColorWell;
     public bool IsCreating => _isCreating;
@@ -61,6 +107,14 @@ public sealed class PaintWellController
     }
 
     /// <summary>
+    /// Raises the PaintWellsChanged event.
+    /// </summary>
+    private void OnPaintWellsChanged(PaintWellChangeType changeType, PaintWell? affectedWell = null)
+    {
+        PaintWellsChanged?.Invoke(this, new PaintWellsChangedEventArgs(changeType, affectedWell));
+    }
+
+    /// <summary>
     /// Creates a new paint well with the specified properties.
     /// </summary>
     public PaintWell CreateWell(Rect bounds, Color color, string name)
@@ -69,6 +123,7 @@ public sealed class PaintWellController
         _getDocument().PaintWells.Add(well);
         _selectedWell = well;
         _requestRender();
+        OnPaintWellsChanged(PaintWellChangeType.WellCreated, well);
         return well;
     }
 
@@ -93,6 +148,7 @@ public sealed class PaintWellController
         if (_activeColorWell == well) _activeColorWell = null;
 
         _requestRender();
+        OnPaintWellsChanged(PaintWellChangeType.WellRemoved, well);
     }
 
     /// <summary>
@@ -100,7 +156,9 @@ public sealed class PaintWellController
     /// </summary>
     public void SetActiveColor(PaintWell? well)
     {
+        if (_activeColorWell == well) return;
         _activeColorWell = well;
+        OnPaintWellsChanged(PaintWellChangeType.ActiveColorChanged, well);
     }
 
     /// <summary>
@@ -108,8 +166,10 @@ public sealed class PaintWellController
     /// </summary>
     public void SelectWell(PaintWell? well)
     {
+        if (_selectedWell == well) return;
         _selectedWell = well;
         _requestRender();
+        OnPaintWellsChanged(PaintWellChangeType.SelectionChanged, well);
     }
 
     /// <summary>
@@ -382,13 +442,19 @@ public sealed class PaintWellController
         var bounds = new Rect(left, top, width, height);
         var doc = _getDocument();
         var index = doc.PaintWells.Count + 1;
-        var color = GetDefaultColor(index);
+        var color = GetDefaultPaintWellColor(index);
         var name = $"Paint {index}";
 
         CreateWell(bounds, color, name);
     }
 
-    private static Color GetDefaultColor(int index)
+    /// <summary>
+    /// Gets a default color for a new paint well based on its index.
+    /// Cycles through a palette of 8 distinct colors.
+    /// </summary>
+    /// <param name="index">The 1-based index of the paint well</param>
+    /// <returns>A color from the palette</returns>
+    public static Color GetDefaultPaintWellColor(int index)
     {
         // Cycle through a palette of distinct colors
         return (index % 8) switch
@@ -658,6 +724,7 @@ public sealed class PaintWellController
         _selectedWell = null;
         _activeColorWell = null;
         _requestRender();
+        OnPaintWellsChanged(PaintWellChangeType.WellsCleared);
     }
 
     /// <summary>
@@ -675,5 +742,68 @@ public sealed class PaintWellController
         if (refreshDistanceMaxMm.HasValue) _selectedWell.RefreshDistanceMaxMm = refreshDistanceMaxMm.Value;
 
         _requestRender();
+        OnPaintWellsChanged(PaintWellChangeType.WellUpdated, _selectedWell);
+    }
+
+    /// <summary>
+    /// Creates a quick setup of 5 paint wells (Red, Green, Blue, Wash, Wipe)
+    /// positioned at the bottom of the canvas.
+    /// </summary>
+    /// <param name="docWidth">Document width in mm</param>
+    /// <param name="docHeight">Document height in mm</param>
+    /// <returns>Number of wells created</returns>
+    public int QuickSetupWells(double docWidth, double docHeight)
+    {
+        // Clear existing wells first
+        ClearAll();
+
+        // Well dimensions
+        const double wellWidth = 140;
+        const double wellHeight = 100;
+        const double marginFromEdge = 20;
+        const int numWells = 5;
+
+        // Calculate spacing to evenly distribute wells across the bottom
+        double availableWidth = docWidth - (2 * marginFromEdge);
+        double totalWellsWidth = numWells * wellWidth;
+        double spacing = (availableWidth - totalWellsWidth) / (numWells - 1);
+
+        // If spacing is negative, wells are too big - reduce spacing to minimum
+        if (spacing < 10) spacing = 10;
+
+        // Position at bottom of canvas
+        double startY = docHeight - wellHeight - marginFromEdge;
+
+        // Red well
+        CreateWell(
+            new Rect(marginFromEdge, startY, wellWidth, wellHeight),
+            Colors.Red,
+            "Red");
+
+        // Green well
+        CreateWell(
+            new Rect(marginFromEdge + (wellWidth + spacing) * 1, startY, wellWidth, wellHeight),
+            Colors.Green,
+            "Green");
+
+        // Blue well
+        CreateWell(
+            new Rect(marginFromEdge + (wellWidth + spacing) * 2, startY, wellWidth, wellHeight),
+            Colors.Blue,
+            "Blue");
+
+        // Wash well (black - for cleaning/washing brush)
+        CreateWell(
+            new Rect(marginFromEdge + (wellWidth + spacing) * 3, startY, wellWidth, wellHeight),
+            Colors.Black,
+            "Wash");
+
+        // Wipe well (light gray - for wiping/drying brush)
+        CreateWell(
+            new Rect(marginFromEdge + (wellWidth + spacing) * 4, startY, wellWidth, wellHeight),
+            Color.FromRgb(192, 192, 192),
+            "Wipe");
+
+        return numWells;
     }
 }
