@@ -427,7 +427,6 @@ namespace NVSPlotter.Services
             var doc = _getDocument();
             var marginBrush = new SolidColorBrush(Color.FromArgb(40, 255, 100, 100));
             var marginStroke = new SolidColorBrush(Color.FromArgb(80, 200, 50, 50));
-
             var docLeft = RULER_THICKNESS;
             var docTop = RULER_THICKNESS;
             var docWidth = doc.WidthMm;
@@ -928,9 +927,9 @@ namespace NVSPlotter.Services
         {
             return new Rectangle
             {
-                Stroke = Brushes.DeepSkyBlue,
+                Stroke = new SolidColorBrush(Color.FromRgb(0, 122, 204)),
                 StrokeThickness = 1.5,
-                StrokeDashArray = [4, 2],
+                StrokeDashArray = new DoubleCollection { 4, 2 },
                 Fill = new SolidColorBrush(Color.FromArgb(32, 0, 122, 204)),
                 IsHitTestVisible = false,
                 SnapsToDevicePixels = true

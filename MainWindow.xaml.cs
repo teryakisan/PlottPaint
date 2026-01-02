@@ -167,6 +167,37 @@ namespace NVSPlotter
             w.Activate();
         }
 
+        private void GcodeVisualizerBtn_Click(object sender, RoutedEventArgs e)
+        {
+            // Generate current G-code
+            var gcode = BuildGcode();
+            
+            if (string.IsNullOrWhiteSpace(gcode))
+            {
+                AppendLog("No strokes to visualize. Draw something first!");
+                return;
+            }
+            
+            // Create or show the visualizer window
+            if (_gcodeVisualizerWindow == null || !_gcodeVisualizerWindow.IsLoaded)
+            {
+                _gcodeVisualizerWindow = new GcodePathVisualizerWindow(AppendLog)
+                {
+                    Owner = this
+                };
+                _gcodeVisualizerWindow.Closed += (s, args) => _gcodeVisualizerWindow = null;
+            }
+            
+            // Load the G-code
+            _gcodeVisualizerWindow.LoadGcode(gcode);
+            
+            // Show and activate
+            _gcodeVisualizerWindow.Show();
+            _gcodeVisualizerWindow.Activate();
+            
+            AppendLog($"Opened G-code Path Visualizer with {gcode.Split('\n').Length} lines");
+        }
+
         // G-code cache
         private string _lastGcode = "";
 
@@ -209,6 +240,8 @@ namespace NVSPlotter
         private readonly DispatcherTimer _filterThrottle;
         private ConsoleWindow? _consoleWindow;
         private ToolsWindow? _toolsWindow;
+        private GcodePathVisualizerWindow? _gcodeVisualizerWindow;
+    
 
         // Project file state
         private string? _currentProjectPath;
@@ -894,12 +927,13 @@ namespace NVSPlotter
             
             // Clear any existing selection and select the new shape
             _selectionController.ClearSelection();
-            _selectionController.SelectStrokes(indices);
+            //_selectionController.SelectStrokes(indices);
 
             // Switch to Select tool so user can immediately manipulate the shape
+            //no. this breaks the flow. 
             if (_toolsWindow != null)
             {
-                _toolsWindow.SelectTool(ToolMode.Select);
+                //_toolsWindow.SelectTool(ToolMode.Select);
             }
 
             RenderAll();

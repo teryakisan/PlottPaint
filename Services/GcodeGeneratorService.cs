@@ -167,44 +167,44 @@ namespace NVSPlotter.Services
             double joinTol,
             bool autoWashWipeEnabled)
         {
-            // Process strokes in DRAWING ORDER (not grouped by color)
-            // This allows wash/wipe between color changes
+            // STEP 1: Pre-transform ALL stroke endpoints to work coordinates
+            // This eliminates any floating-point issues from repeated transformations
+            var transformedStrokes = new List<(PointMm A, PointMm B, Guid? PaintWellId)>();
+            foreach (var stroke in strokes)
+            {
+                var aWork = _coordTransform.BedToWork(_coordTransform.DocToBed(stroke.A, fit));
+                var bWork = _coordTransform.BedToWork(_coordTransform.DocToBed(stroke.B, fit));
+                transformedStrokes.Add((aWork, bWork, stroke.PaintWellId));
+            }
 
             Guid? currentWellId = null;
             PaintWell? currentWell = null;
             double distanceTraveled = 0;
-            double currentRefreshTarget = 0; // Randomized target for next refresh
-            var random = new Random(); // For natural-looking refresh intervals
+            double currentRefreshTarget = 0;
+            var random = new Random();
 
-            // Helper to get a random refresh distance within the well's range
             double GetRandomRefreshDistance(PaintWell well)
             {
                 var min = well.RefreshDistanceMinMm;
                 var max = well.RefreshDistanceMaxMm;
-                if (max <= min || max <= 0) return max; // No range, use max
+                if (max <= min || max <= 0) return max;
                 return min + random.NextDouble() * (max - min);
             }
 
-            // Find wash and wipe wells by name (case-insensitive)
+            // Find wash and wipe wells
             var washWell = paintWells.FirstOrDefault(w =>
-                w.Name.Equals("Wash", StringComparison.OrdinalIgnoreCase) ||
                 w.Name.Contains("wash", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("rinse", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("clean", StringComparison.OrdinalIgnoreCase));
+                w.Name.Contains("rinse", StringComparison.OrdinalIgnoreCase));
 
             var wipeWell = paintWells.FirstOrDefault(w =>
-                w.Name.Equals("Wipe", StringComparison.OrdinalIgnoreCase) ||
                 w.Name.Contains("wipe", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("dry", StringComparison.OrdinalIgnoreCase) ||
-                w.Name.Contains("towel", StringComparison.OrdinalIgnoreCase));
+                w.Name.Contains("dry", StringComparison.OrdinalIgnoreCase));
 
-            sb.AppendLine("; Processing strokes in drawing order with color change sequences");
+            sb.AppendLine("; Processing strokes in drawing order");
             sb.AppendLine($"; Auto wash/wipe: {(autoWashWipeEnabled ? "ENABLED" : "DISABLED")}");
-            if (washWell != null) sb.AppendLine($"; Wash well: {washWell.Name} (swirl pattern)");
-            if (wipeWell != null) sb.AppendLine($"; Wipe well: {wipeWell.Name} (zig-zag pattern)");
 
-            // Build continuous paths from strokes while respecting color boundaries
-            var paths = BuildPathsWithColorBoundaries(strokes, joinTol);
+            // STEP 2: Build paths from pre-transformed strokes
+            var paths = BuildTransformedPaths(transformedStrokes, joinTol);
 
             foreach (var path in paths)
             {
@@ -213,45 +213,24 @@ namespace NVSPlotter.Services
                 var pathWellId = path[0].PaintWellId;
                 var pathWell = pathWellId.HasValue ? paintWells.FirstOrDefault(w => w.Id == pathWellId) : null;
 
-                // Check if color changed - need to do wash/wipe/dip sequence
+                // Handle color change
                 if (pathWellId != currentWellId)
                 {
-                    // Color is changing!
                     if (currentWell != null && autoWashWipeEnabled)
                     {
                         sb.AppendLine($"; === Color change: {currentWell.Name} -> {pathWell?.Name ?? "Black"} ===");
-
-                        // Wash sequence with swirl pattern (if wash well exists and we had a previous color)
-                        if (washWell != null)
-                        {
-                            sb.AppendLine("; Wash brush with swirl pattern");
-                            GenerateWashSwirlPattern(sb, washWell, fit, zUpCmd, feedXY);
-                        }
-
-                        // Wipe sequence with zig-zag pattern (if wipe well exists)
-                        if (wipeWell != null)
-                        {
-                            sb.AppendLine("; Wipe brush with zig-zag pattern");
-                            GenerateWipeZigZagPattern(sb, wipeWell, fit, zUpCmd, zDownCmd, feedXY);
-                        }
-                    }
-                    else if (currentWell != null)
-                    {
-                        sb.AppendLine($"; === Color change: {currentWell.Name} -> {pathWell?.Name ?? "Black"} (auto wash/wipe disabled) ===");
+                        if (washWell != null) GenerateWashSwirlPattern(sb, washWell, fit, zUpCmd, feedXY);
+                        if (wipeWell != null) GenerateWipeZigZagPattern(sb, wipeWell, fit, zUpCmd, zDownCmd, feedXY);
                     }
 
-                    // Dip in new color (if it's a paint well, not black)
                     if (pathWell != null)
                     {
                         sb.AppendLine($"; === Paint Well: {pathWell.Name} ===");
                         GeneratePaintDipSequence(sb, pathWell, fit, zUpCmd, feedXY);
-                        // Set randomized refresh target for this color
                         currentRefreshTarget = GetRandomRefreshDistance(pathWell);
-                        sb.AppendLine($"; Next refresh at ~{currentRefreshTarget:F0}mm (range: {pathWell.RefreshDistanceMinMm:F0}-{pathWell.RefreshDistanceMaxMm:F0}mm)");
                     }
                     else
                     {
-                        sb.AppendLine("; === No Paint Well (black) ===");
                         currentRefreshTarget = 0;
                     }
 
@@ -260,135 +239,150 @@ namespace NVSPlotter.Services
                     distanceTraveled = 0;
                 }
 
-                // Draw this path
-                var first = path[0];
-                var startWork = _coordTransform.BedToWork(_coordTransform.DocToBed(first.A, fit));
-
-                sb.AppendLine($"G0 X{Fmt(startWork.X)} Y{Fmt(startWork.Y)}");
+                // STEP 3: Draw the path - SIMPLE AND DIRECT
+                // Move to start of path and lower
+                var pathStart = path[0].A;
+                sb.AppendLine($"G0 X{Fmt(pathStart.X)} Y{Fmt(pathStart.Y)}");
                 sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
 
                 bool firstMove = true;
-                PointMm lastPosition = startWork;
 
+                // Draw each segment - just go from A to B
                 foreach (var seg in path)
                 {
-                    var endWork = _coordTransform.BedToWork(_coordTransform.DocToBed(seg.B, fit));
+                    // Calculate segment length (from A to B, NOT from "last position")
+                    var segLength = Math.Sqrt(
+                        Math.Pow(seg.B.X - seg.A.X, 2) + 
+                        Math.Pow(seg.B.Y - seg.A.Y, 2));
 
-                    // Calculate stroke length
-                    var strokeLength = Math.Sqrt(
-                        Math.Pow(endWork.X - lastPosition.X, 2) +
-                        Math.Pow(endWork.Y - lastPosition.Y, 2));
-
-                    // Check for paint refresh (within same color) - use randomized target
-                    if (currentWell != null && currentRefreshTarget > 0 && strokeLength > 0.1)
+                    // Check if we need paint refresh during this segment
+                    if (currentWell != null && currentRefreshTarget > 0 && segLength > 0.1)
                     {
-                        var segmentStart = lastPosition;
-                        var segmentEnd = endWork;
-                        var remainingLength = strokeLength;
+                        // Calculate unit vector for THIS segment (A to B)
+                        var dx = seg.B.X - seg.A.X;
+                        var dy = seg.B.Y - seg.A.Y;
+                        var unitX = segLength > 0.001 ? dx / segLength : 0;
+                        var unitY = segLength > 0.001 ? dy / segLength : 0;
 
-                        while (remainingLength > 0.1)
+                        var distanceAlongSegment = 0.0;
+
+                        while (distanceAlongSegment < segLength - 0.01)
                         {
                             var distanceUntilRefresh = currentRefreshTarget - distanceTraveled;
+                            var remainingInSegment = segLength - distanceAlongSegment;
 
-                            if (remainingLength <= distanceUntilRefresh)
+                            if (remainingInSegment <= distanceUntilRefresh)
                             {
-                                // Complete this segment without refresh
+                                // Draw to segment end
                                 if (firstMove)
                                 {
-                                    sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} F{Fmt(feedXY)}");
+                                    sb.AppendLine($"G1 X{Fmt(seg.B.X)} Y{Fmt(seg.B.Y)} F{Fmt(feedXY)}");
                                     firstMove = false;
                                 }
                                 else
                                 {
-                                    sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)}");
+                                    sb.AppendLine($"G1 X{Fmt(seg.B.X)} Y{Fmt(seg.B.Y)}");
                                 }
-                                distanceTraveled += remainingLength;
-                                lastPosition = segmentEnd;
-                                remainingLength = 0;
+                                distanceTraveled += remainingInSegment;
+                                break; // Done with this segment
                             }
                             else
                             {
-                                // Need to stop partway for refresh
-                                // But if remaining distance after this refresh would be less than half the max,
-                                // skip the refresh and continue (avoids robotic appearance)
-                                var remainingAfterRefresh = remainingLength - distanceUntilRefresh;
-                                var skipThreshold = currentWell.RefreshDistanceMaxMm / 2.0;
-
-                                if (remainingAfterRefresh < skipThreshold && remainingAfterRefresh > 0.1)
-                                {
-                                    // Skip this refresh, just complete the segment
-                                    if (firstMove)
-                                    {
-                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} F{Fmt(feedXY)} ; Skip refresh, only {remainingAfterRefresh:F0}mm left");
-                                        firstMove = false;
-                                    }
-                                    else
-                                    {
-                                        sb.AppendLine($"G1 X{Fmt(segmentEnd.X)} Y{Fmt(segmentEnd.Y)} ; Skip refresh, only {remainingAfterRefresh:F0}mm left");
-                                    }
-                                    distanceTraveled += remainingLength;
-                                    lastPosition = segmentEnd;
-                                    remainingLength = 0;
-                                    continue;
-                                }
-
-                                var ratio = distanceUntilRefresh / remainingLength;
-                                var breakPoint = new PointMm(
-                                    segmentStart.X + (segmentEnd.X - segmentStart.X) * ratio,
-                                    segmentStart.Y + (segmentEnd.Y - segmentStart.Y) * ratio);
+                                // Need to stop for refresh
+                                var breakX = seg.A.X + unitX * (distanceAlongSegment + distanceUntilRefresh);
+                                var breakY = seg.A.Y + unitY * (distanceAlongSegment + distanceUntilRefresh);
 
                                 if (firstMove)
                                 {
-                                    sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} F{Fmt(feedXY)}");
+                                    sb.AppendLine($"G1 X{Fmt(breakX)} Y{Fmt(breakY)} F{Fmt(feedXY)}");
                                     firstMove = false;
                                 }
                                 else
                                 {
-                                    sb.AppendLine($"G1 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)}");
+                                    sb.AppendLine($"G1 X{Fmt(breakX)} Y{Fmt(breakY)}");
                                 }
 
-                                distanceTraveled += distanceUntilRefresh;
-
-                                // Refresh paint (same color, no wash/wipe needed)
-                                sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Lift for paint refresh (traveled {distanceTraveled:F1}mm)");
+                                // Refresh paint
+                                sb.AppendLine($"G0 Z{Fmt(zUpCmd)} ; Paint refresh");
                                 GeneratePaintDipSequence(sb, currentWell, fit, zUpCmd, feedXY);
-                                sb.AppendLine($"G0 X{Fmt(breakPoint.X)} Y{Fmt(breakPoint.Y)} ; Return to position");
-                                sb.AppendLine($"G0 Z{Fmt(zDownCmd)} ; Lower to continue");
+                                sb.AppendLine($"G0 X{Fmt(breakX)} Y{Fmt(breakY)} ; Return");
+                                sb.AppendLine($"G0 Z{Fmt(zDownCmd)} ; Lower");
 
-                                // Reset distance and get NEW random target for natural variation
+                                distanceAlongSegment += distanceUntilRefresh;
                                 distanceTraveled = 0;
                                 currentRefreshTarget = GetRandomRefreshDistance(currentWell);
-                                sb.AppendLine($"; Next refresh at ~{currentRefreshTarget:F0}mm");
-
-                                remainingLength -= distanceUntilRefresh;
-                                segmentStart = breakPoint;
-                                lastPosition = breakPoint;
                             }
                         }
                     }
                     else
                     {
-                        // No refresh tracking - just draw
+                        // No paint refresh - just draw directly to B
                         if (firstMove)
                         {
-                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)} F{Fmt(feedXY)}");
+                            sb.AppendLine($"G1 X{Fmt(seg.B.X)} Y{Fmt(seg.B.Y)} F{Fmt(feedXY)}");
                             firstMove = false;
                         }
                         else
                         {
-                            sb.AppendLine($"G1 X{Fmt(endWork.X)} Y{Fmt(endWork.Y)}");
+                            sb.AppendLine($"G1 X{Fmt(seg.B.X)} Y{Fmt(seg.B.Y)}");
                         }
 
                         if (currentWell != null && currentRefreshTarget > 0)
                         {
-                            distanceTraveled += strokeLength;
+                            distanceTraveled += segLength;
                         }
-                        lastPosition = endWork;
                     }
                 }
 
                 sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
             }
+        }
+
+        /// <summary>
+        /// Builds paths from pre-transformed strokes, grouping connected strokes with same color.
+        /// </summary>
+        private static List<List<(PointMm A, PointMm B, Guid? PaintWellId)>> BuildTransformedPaths(
+            List<(PointMm A, PointMm B, Guid? PaintWellId)> strokes, 
+            double tol)
+        {
+            var result = new List<List<(PointMm A, PointMm B, Guid? PaintWellId)>>();
+            List<(PointMm A, PointMm B, Guid? PaintWellId)>? current = null;
+            Guid? currentColorId = null;
+
+            foreach (var stroke in strokes)
+            {
+                if (current == null)
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId)> { stroke };
+                    currentColorId = stroke.PaintWellId;
+                    result.Add(current);
+                    continue;
+                }
+
+                // Color changed?
+                if (stroke.PaintWellId != currentColorId)
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId)> { stroke };
+                    currentColorId = stroke.PaintWellId;
+                    result.Add(current);
+                    continue;
+                }
+
+                // Same color - check if connected
+                var prev = current[^1];
+                var dist = Math.Sqrt(Math.Pow(prev.B.X - stroke.A.X, 2) + Math.Pow(prev.B.Y - stroke.A.Y, 2));
+                if (dist <= tol)
+                {
+                    current.Add(stroke);
+                }
+                else
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId)> { stroke };
+                    result.Add(current);
+                }
+            }
+
+            return result;
         }
 
         #endregion

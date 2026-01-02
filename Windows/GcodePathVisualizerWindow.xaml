@@ -1,0 +1,219 @@
+<Window x:Class="NVSPlotter.Windows.GcodePathVisualizerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        mc:Ignorable="d"
+        Title="G-code Path Visualizer" 
+        Width="1200" Height="800"
+        WindowStartupLocation="CenterOwner"
+        Style="{DynamicResource ThemedWindow}">
+    
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        
+        <!-- Toolbar -->
+        <Border Grid.Row="0" Background="{DynamicResource TertiaryBackgroundBrush}" 
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+            <WrapPanel Margin="5">
+                <!-- View controls -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,15,0">
+                    <TextBlock Text="View:" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <Button x:Name="FitToViewBtn" Content="Fit" Padding="8,4" Margin="2" MinWidth="60"
+                            Click="FitToViewBtn_Click" ToolTip="Fit paths to view"/>
+                    <Button x:Name="ZoomInBtn" Content="+" Padding="8,4" Margin="2" Width="30"
+                            Click="ZoomInBtn_Click"/>
+                    <Button x:Name="ZoomOutBtn" Content="-" Padding="8,4" Margin="2" Width="30"
+                            Click="ZoomOutBtn_Click"/>
+                    <TextBlock x:Name="ZoomLabel" Text="100%" VerticalAlignment="Center" Margin="5,0,0,0" Width="50"/>
+                </StackPanel>
+                
+                <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="5,2"/>
+                
+                <!-- Display toggles -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,15,0">
+                    <TextBlock Text="Show:" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <ToggleButton x:Name="ShowRapidsToggle" Content="Rapids" IsChecked="True" 
+                                  Padding="8,4" Margin="2" MinWidth="60" Click="DisplayToggle_Click"
+                                  ToolTip="Show rapid (G0) movements"/>
+                    <ToggleButton x:Name="ShowFeedsToggle" Content="Feeds" IsChecked="True" 
+                                  Padding="8,4" Margin="2" MinWidth="60" Click="DisplayToggle_Click"
+                                  ToolTip="Show feed (G1) movements"/>
+                    <ToggleButton x:Name="ShowPointsToggle" Content="Points" IsChecked="True" 
+                                  Padding="8,4" Margin="2" MinWidth="60" Click="DisplayToggle_Click"
+                                  ToolTip="Show waypoints"/>
+                    <ToggleButton x:Name="ShowDirectionToggle" Content="Direction" IsChecked="False" 
+                                  Padding="8,4" Margin="2" MinWidth="60" Click="DisplayToggle_Click"
+                                  ToolTip="Show direction arrows"/>
+                    <ToggleButton x:Name="ShowLineNumbersToggle" Content="Line #" IsChecked="False" 
+                                  Padding="8,4" Margin="2" MinWidth="60" Click="DisplayToggle_Click"
+                                  ToolTip="Show G-code line numbers"/>
+                </StackPanel>
+                
+                <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="5,2"/>
+                
+                <!-- Selection/marking tools -->
+                <StackPanel Orientation="Horizontal" Margin="0,0,15,0">
+                    <TextBlock Text="Mark:" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <Button x:Name="MarkBadBtn" Content="?? Mark Bad" Padding="8,4" Margin="2" MinWidth="60"
+                            Click="MarkBadBtn_Click" ToolTip="Mark selected segment as BAD (sends to console)"/>
+                    <Button x:Name="ClearBadBtn" Content="Clear Bad" Padding="8,4" Margin="2" MinWidth="60"
+                            Click="ClearBadBtn_Click" ToolTip="Clear bad marker from selected segment"/>
+                    <Button x:Name="ClearAllBadBtn" Content="Clear All" Padding="8,4" Margin="2" MinWidth="60"
+                            Click="ClearAllBadBtn_Click" ToolTip="Clear all bad markers"/>
+                </StackPanel>
+                
+                <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="5,2"/>
+                
+                <!-- Analysis tools -->
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="Analyze:" VerticalAlignment="Center" Margin="0,0,5,0"/>
+                    <Button x:Name="FindBacktracksBtn" Content="?? Backtracks" Padding="8,4" Margin="2" MinWidth="60"
+                            Click="FindBacktracksBtn_Click" ToolTip="Find segments that backtrack (reverse direction)"/>
+                    <Button x:Name="FindLongRapidsBtn" Content="?? Long Rapids" Padding="8,4" Margin="2" MinWidth="60"
+                            Click="FindLongRapidsBtn_Click" ToolTip="Find unusually long rapid movements"/>
+                    <Button x:Name="ExportBadBtn" Content="?? Export Bad" Padding="8,4" Margin="2" MinWidth="60"
+                            Click="ExportBadBtn_Click" ToolTip="Copy all marked bad G-code to clipboard"/>
+                </StackPanel>
+            </WrapPanel>
+        </Border>
+        
+        <!-- Main content -->
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="5"/>
+                <ColumnDefinition Width="300"/>
+            </Grid.ColumnDefinitions>
+            
+            <!-- Canvas area -->
+            <Border Grid.Column="0" Background="{DynamicResource CanvasBackgroundBrush}" 
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0">
+                <ScrollViewer x:Name="PathScroll" 
+                              HorizontalScrollBarVisibility="Auto" 
+                              VerticalScrollBarVisibility="Auto"
+                              Background="Transparent">
+                    <Canvas x:Name="PathCanvas" 
+                            Background="Transparent"
+                            MouseLeftButtonDown="PathCanvas_MouseLeftButtonDown"
+                            MouseLeftButtonUp="PathCanvas_MouseLeftButtonUp"
+                            MouseMove="PathCanvas_MouseMove"
+                            MouseWheel="PathCanvas_MouseWheel"
+                            MouseRightButtonDown="PathCanvas_MouseRightButtonDown">
+                        <Canvas.RenderTransform>
+                            <TransformGroup>
+                                <ScaleTransform x:Name="CanvasScale" ScaleX="1" ScaleY="1"/>
+                                <TranslateTransform x:Name="CanvasTranslate" X="0" Y="0"/>
+                            </TransformGroup>
+                        </Canvas.RenderTransform>
+                    </Canvas>
+                </ScrollViewer>
+            </Border>
+            
+            <!-- Splitter -->
+            <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" 
+                          Background="{DynamicResource BorderBrush}"/>
+            
+            <!-- Side panel -->
+            <Border Grid.Column="2" Background="{DynamicResource SecondaryBackgroundBrush}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="150"/>
+                    </Grid.RowDefinitions>
+                    
+                    <!-- Segment info header -->
+                    <Border Grid.Row="0" Background="{DynamicResource TertiaryBackgroundBrush}" 
+                            Padding="10,5" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,0,1">
+                        <TextBlock Text="Segments" FontWeight="SemiBold" FontSize="14"/>
+                    </Border>
+                    
+                    <!-- Segment list -->
+                    <ListBox x:Name="SegmentList" Grid.Row="1" 
+                             SelectionChanged="SegmentList_SelectionChanged"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             VirtualizingPanel.IsVirtualizing="True"
+                             VirtualizingPanel.VirtualizationMode="Recycling">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <Grid Margin="2">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="Auto"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="Auto"/>
+                                    </Grid.ColumnDefinitions>
+                                    
+                                    <!-- Line number -->
+                                    <TextBlock Grid.Column="0" 
+                                               Text="{Binding LineNumber, StringFormat='#{0}'}" 
+                                               Width="40" Foreground="{DynamicResource SecondaryTextBrush}" FontFamily="Consolas"/>
+                                    
+                                    <!-- Command preview -->
+                                    <TextBlock Grid.Column="1" Text="{Binding CommandPreview}" 
+                                               FontFamily="Consolas" FontSize="11"
+                                               TextTrimming="CharacterEllipsis"/>
+                                    
+                                    <!-- Bad marker -->
+                                    <Border Grid.Column="2" Background="#FF4444" CornerRadius="3" 
+                                            Padding="4,1" Margin="4,0,0,0"
+                                            Visibility="{Binding IsBad, Converter={StaticResource BoolToVisibilityConverter}}">
+                                        <TextBlock Text="BAD" Foreground="White" FontSize="10" FontWeight="Bold"/>
+                                    </Border>
+                                </Grid>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                    
+                    <!-- Selected segment details header -->
+                    <Border Grid.Row="2" Background="{DynamicResource TertiaryBackgroundBrush}" 
+                            Padding="10,5" BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,1">
+                        <TextBlock Text="Selected Segment" FontWeight="SemiBold"/>
+                    </Border>
+                    
+                    <!-- Selected segment details -->
+                    <ScrollViewer Grid.Row="3" VerticalScrollBarVisibility="Auto">
+                        <StackPanel x:Name="SegmentDetailsPanel" Margin="10,5">
+                            <TextBlock x:Name="SegmentTypeLabel" Text="Type: -" Margin="0,2"/>
+                            <TextBlock x:Name="SegmentFromLabel" Text="From: -" Margin="0,2" FontFamily="Consolas" FontSize="11"/>
+                            <TextBlock x:Name="SegmentToLabel" Text="To: -" Margin="0,2" FontFamily="Consolas" FontSize="11"/>
+                            <TextBlock x:Name="SegmentLengthLabel" Text="Length: -" Margin="0,2"/>
+                            <TextBlock x:Name="SegmentLineLabel" Text="Line: -" Margin="0,2"/>
+                            <TextBox x:Name="SegmentGcodeBox" IsReadOnly="True" 
+                                     FontFamily="Consolas" FontSize="11"
+                                     TextWrapping="Wrap" Margin="0,5,0,0"
+                                     MaxHeight="60" VerticalScrollBarVisibility="Auto"/>
+                        </StackPanel>
+                    </ScrollViewer>
+                </Grid>
+            </Border>
+        </Grid>
+        
+        <!-- Status bar -->
+        <Border Grid.Row="2" Background="{DynamicResource TertiaryBackgroundBrush}" 
+                BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,1,0,0" Padding="10,5">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                
+                <TextBlock x:Name="StatusLabel" Grid.Column="0" Text="Ready" VerticalAlignment="Center"/>
+                <TextBlock x:Name="SegmentCountLabel" Grid.Column="1" Text="Segments: 0" 
+                           VerticalAlignment="Center" Margin="20,0"/>
+                <TextBlock x:Name="BadCountLabel" Grid.Column="2" Text="Bad: 0" 
+                           VerticalAlignment="Center" Foreground="#FF4444" Margin="20,0"/>
+                <TextBlock x:Name="MousePosLabel" Grid.Column="3" Text="X: - Y: -" 
+                           VerticalAlignment="Center" FontFamily="Consolas" Width="150"/>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

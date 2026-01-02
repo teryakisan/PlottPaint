@@ -470,12 +470,12 @@ behaviors:DragValueBehavior.Step="1"/>
                             <StackPanel Margin="10">
                                 <StackPanel x:Name="XYFeed" Orientation="Horizontal" Margin="0,0,0,8">
                                     <TextBlock Text="XY Feed:" Width="90" VerticalAlignment="Center"/>
-                                    <TextBox x:Name="FeedXYBox" Width="148" Text="500&#xD;&#xA;" Height="22"
+                                    <TextBox x:Name="FeedXYBox" Width="148" Text="3000&#xA;" Height="22"
                                              TextChanged="MarginTopBox_TextChanged" Margin="0,0,0,4"
                                             behaviors:DragValueBehavior.IsEnabled="True"
-                                            behaviors:DragValueBehavior.Minimum="0"
-                                            behaviors:DragValueBehavior.Maximum="500"
-                                            behaviors:DragValueBehavior.Sensitivity="3"
+                                            behaviors:DragValueBehavior.Minimum="10"
+                                            behaviors:DragValueBehavior.Maximum="20000"
+                                            behaviors:DragValueBehavior.Sensitivity="10"
                                             behaviors:DragValueBehavior.Step="1"    />
                                     <TextBlock Text="mm/min" Margin="8,0,0,0" VerticalAlignment="Center"/>
                                 </StackPanel>
@@ -485,7 +485,7 @@ behaviors:DragValueBehavior.Step="1"/>
                                     <TextBox x:Name="ZUpBox" Width="173" Text="10" TextChanged="MarginTopBox_TextChanged" Margin="0,0,0,4"
 behaviors:DragValueBehavior.IsEnabled="True"
 behaviors:DragValueBehavior.Minimum="0"
-behaviors:DragValueBehavior.Maximum="500"
+behaviors:DragValueBehavior.Maximum="10"
 behaviors:DragValueBehavior.Sensitivity="3"
 behaviors:DragValueBehavior.Step="1"/>
                                     <TextBlock Text="mm" Margin="8,0,0,0" VerticalAlignment="Center"/>
@@ -496,7 +496,7 @@ behaviors:DragValueBehavior.Step="1"/>
                                     <TextBox x:Name="ZDownBox" Width="173" Text="2" TextChanged="MarginTopBox_TextChanged" Margin="0,0,0,4"
 behaviors:DragValueBehavior.IsEnabled="True"
 behaviors:DragValueBehavior.Minimum="0"
-behaviors:DragValueBehavior.Maximum="500"
+behaviors:DragValueBehavior.Maximum="10"
 behaviors:DragValueBehavior.Sensitivity="3"
 behaviors:DragValueBehavior.Step="1"/>
                                     <TextBlock Text="mm" Margin="8,0,0,0" VerticalAlignment="Center"/>
@@ -606,6 +606,7 @@ behaviors:DragValueBehavior.Step="1"/>
                         <Button x:Name="ShowConsoleBtn" DockPanel.Dock="Left" Content="📋 Console" Width="87" Margin="5,2" Click="ShowConsoleBtn_Click" ToolTip="Show/Hide Console Window"/>
                         <Button x:Name="ReferenceImageBtn" DockPanel.Dock="Left" Content="🖼 Reference" Width="95" Margin="5,2" Click="ReferenceImageBtn_Click" ToolTip="Open Reference Image Window"/>
                         <Button x:Name="BrushProfilesBtn" DockPanel.Dock="Left" Content="🖌 Profiles" Width="95" Margin="5,2" Click="BrushProfilesBtn_Click" ToolTip="Open Brush Stroke Profiles"/>
+                        <Button x:Name="GcodeVisualizerBtn" DockPanel.Dock="Left" Content="🔍 Path Debug" Width="95" Margin="5,2" Click="GcodeVisualizerBtn_Click" ToolTip="Open G-code Path Visualizer for debugging"/>
 
                         <!-- Theme Toggle Switch - docked to the right -->
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0,10,0">
