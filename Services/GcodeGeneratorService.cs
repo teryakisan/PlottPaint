@@ -1,5 +1,6 @@
 using NVSPlotter.Models;
 using NVSPlotter.Util;
+using NVSPlotter.Windows;
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -22,6 +23,12 @@ namespace NVSPlotter.Services
         public bool Optimize { get; set; } = false;
         public bool PaintModeEnabled { get; set; } = false;
         public bool AutoWashWipeEnabled { get; set; } = true;
+        
+        /// <summary>
+        /// Collection of available brush profiles that can be applied to strokes.
+        /// When a stroke has enabled profiles, one is randomly selected to apply Z curves.
+        /// </summary>
+        public IReadOnlyList<BrushProfile> AvailableBrushProfiles { get; set; } = Array.Empty<BrushProfile>();
     }
 
     /// <summary>
@@ -48,6 +55,9 @@ namespace NVSPlotter.Services
             _getDocument = getDocument ?? throw new ArgumentNullException(nameof(getDocument));
             _log = log ?? throw new ArgumentNullException(nameof(log));
         }
+        
+        // Random instance for selecting brush profiles
+        private readonly Random _profileRandom = new();
 
         /// <summary>
         /// Builds complete G-code from the current document with the given settings.
@@ -63,9 +73,34 @@ namespace NVSPlotter.Services
             var zDownCmd = -settings.ZDown;
 
             var strokes = doc.Strokes.ToList();
+            
+            // In paint mode, sort strokes by paint order to respect the sequence in which colors were assigned
+            // Strokes with PaintOrder=0 (no order assigned) are processed in their original position
+            if (settings.PaintModeEnabled && doc.PaintWells.Count > 0)
+            {
+                // Stable sort: strokes with the same PaintOrder maintain their relative order
+                // PaintOrder=0 means "use original position", so we treat it as infinite (process last in original order)
+                strokes = strokes
+                    .Select((s, i) => (Stroke: s, OriginalIndex: i))
+                    .OrderBy(x => x.Stroke.PaintOrder == 0 ? long.MaxValue : x.Stroke.PaintOrder)
+                    .ThenBy(x => x.OriginalIndex) // Preserve original order for same PaintOrder
+                    .Select(x => x.Stroke)
+                    .ToList();
+            }
+            
             if (settings.Optimize)
             {
-                strokes = StrokeOptimizer.OptimizeNearest(strokes);
+                if (settings.PaintModeEnabled && doc.PaintWells.Count > 0)
+                {
+                    // In paint mode, only optimize stroke direction (start/end point)
+                    // but preserve the paint order sequence
+                    strokes = StrokeOptimizer.OptimizeDirectionOnly(strokes);
+                }
+                else
+                {
+                    // In normal mode, full optimization reorders strokes for shortest travel
+                    strokes = StrokeOptimizer.OptimizeNearest(strokes);
+                }
             }
 
             // Fit doc into bed (with margin), possibly rotating CW to better fit.
@@ -101,8 +136,8 @@ namespace NVSPlotter.Services
 
             if (settings.PaintModeEnabled && doc.PaintWells.Count > 0)
             {
-                // PAINTING MODE: Group strokes by paint well, insert paint refresh sequences
-                BuildPaintingModeGcode(sb, strokes, doc.PaintWells, fit, zUpCmd, zDownCmd, settings.FeedXY, joinTol, settings.AutoWashWipeEnabled);
+                // PAINTING MODE: Process strokes in creation order, inserting wash/wipe/dip sequences on color changes
+                BuildPaintingModeGcode(sb, strokes, doc.PaintWells, fit, zUpCmd, zDownCmd, settings.FeedXY, joinTol, settings.AutoWashWipeEnabled, settings.AvailableBrushProfiles);
             }
             else
             {
@@ -165,16 +200,19 @@ namespace NVSPlotter.Services
             double zDownCmd,
             double feedXY,
             double joinTol,
-            bool autoWashWipeEnabled)
+            bool autoWashWipeEnabled,
+            IReadOnlyList<BrushProfile> availableProfiles)
         {
             // STEP 1: Pre-transform ALL stroke endpoints to work coordinates
             // This eliminates any floating-point issues from repeated transformations
-            var transformedStrokes = new List<(PointMm A, PointMm B, Guid? PaintWellId)>();
+            // We also preserve PaintOrder to ensure strokes with same color but different paint orders are not grouped
+            // And we preserve EnabledBrushProfiles for applying Z curves
+            var transformedStrokes = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)>();
             foreach (var stroke in strokes)
             {
                 var aWork = _coordTransform.BedToWork(_coordTransform.DocToBed(stroke.A, fit));
                 var bWork = _coordTransform.BedToWork(_coordTransform.DocToBed(stroke.B, fit));
-                transformedStrokes.Add((aWork, bWork, stroke.PaintWellId));
+                transformedStrokes.Add((aWork, bWork, stroke.PaintWellId, stroke.PaintOrder, stroke.EnabledBrushProfiles));
             }
 
             Guid? currentWellId = null;
@@ -200,22 +238,41 @@ namespace NVSPlotter.Services
                 w.Name.Contains("wipe", StringComparison.OrdinalIgnoreCase) ||
                 w.Name.Contains("dry", StringComparison.OrdinalIgnoreCase));
 
-            sb.AppendLine("; Processing strokes in drawing order");
+            sb.AppendLine("; Processing strokes in paint order");
             sb.AppendLine($"; Auto wash/wipe: {(autoWashWipeEnabled ? "ENABLED" : "DISABLED")}");
 
             // STEP 2: Build paths from pre-transformed strokes
-            var paths = BuildTransformedPaths(transformedStrokes, joinTol);
+            // Check if any strokes have PaintOrder set (> 0). If not, fall back to color-based grouping.
+            var hasPaintOrders = transformedStrokes.Any(s => s.PaintOrder > 0);
+            
+            List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)>> paths;
+            if (hasPaintOrders)
+            {
+                // Paths are broken when PaintOrder changes (even for same color) to respect painting sequence
+                paths = BuildTransformedPathsByPaintOrderWithProfiles(transformedStrokes, joinTol);
+            }
+            else
+            {
+                // Fallback: group by color (old behavior for projects without PaintOrder)
+                paths = BuildTransformedPathsByColorWithProfiles(transformedStrokes, joinTol);
+            }
+
+            // Build a lookup for available profiles by name
+            var profileLookup = availableProfiles.ToDictionary(p => p.Name, StringComparer.OrdinalIgnoreCase);
 
             foreach (var path in paths)
             {
                 if (path.Count == 0) continue;
 
                 var pathWellId = path[0].PaintWellId;
+                var pathPaintOrder = path[0].PaintOrder;
                 var pathWell = pathWellId.HasValue ? paintWells.FirstOrDefault(w => w.Id == pathWellId) : null;
 
-                // Handle color change
+                // Handle color change - this happens when either the paint well changes OR the paint order changes
+                // (same color but assigned at different time = different painting action)
                 if (pathWellId != currentWellId)
                 {
+                    // Actual color change - need wash/wipe
                     if (currentWell != null && autoWashWipeEnabled)
                     {
                         sb.AppendLine($"; === Color change: {currentWell.Name} -> {pathWell?.Name ?? "Black"} ===");
@@ -225,12 +282,13 @@ namespace NVSPlotter.Services
 
                     if (pathWell != null)
                     {
-                        sb.AppendLine($"; === Paint Well: {pathWell.Name} ===");
+                        sb.AppendLine($"; === Paint Well: {pathWell.Name} (Order: {pathPaintOrder}) ===");
                         GeneratePaintDipSequence(sb, pathWell, fit, zUpCmd, feedXY);
                         currentRefreshTarget = GetRandomRefreshDistance(pathWell);
                     }
                     else
                     {
+                        sb.AppendLine($"; === No Paint Well (Order: {pathPaintOrder}) ===");
                         currentRefreshTarget = 0;
                     }
 
@@ -238,14 +296,53 @@ namespace NVSPlotter.Services
                     currentWell = pathWell;
                     distanceTraveled = 0;
                 }
+                else if (pathWell != null)
+                {
+                    // Same color but new paint order - just re-dip without wash/wipe
+                    // This handles the case where multiple objects have the same color assigned at different times
+                    sb.AppendLine($"; === Paint Well: {pathWell.Name} (Order: {pathPaintOrder}, continuing) ===");
+                    // Re-dip to ensure fresh paint for this stroke group
+                    GeneratePaintDipSequence(sb, pathWell, fit, zUpCmd, feedXY);
+                    currentRefreshTarget = GetRandomRefreshDistance(pathWell);
+                    distanceTraveled = 0;
+                }
 
-                // STEP 3: Draw the path - SIMPLE AND DIRECT
-                // Move to start of path and lower
+                // STEP 3: Draw the path - with brush profile support
+                // Check if any stroke in this path has brush profiles enabled
+                var firstStrokeWithProfiles = path.FirstOrDefault(s => s.EnabledBrushProfiles != null && s.EnabledBrushProfiles.Count > 0);
+                BrushProfile? selectedProfile = null;
+                
+                if (firstStrokeWithProfiles.EnabledBrushProfiles != null)
+                {
+                    // Find matching profiles from available profiles
+                    var matchingProfiles = firstStrokeWithProfiles.EnabledBrushProfiles
+                        .Where(name => profileLookup.ContainsKey(name))
+                        .Select(name => profileLookup[name])
+                        .ToList();
+                    
+                    if (matchingProfiles.Count > 0)
+                    {
+                        // Randomly select one of the enabled profiles
+                        selectedProfile = matchingProfiles[_profileRandom.Next(matchingProfiles.Count)];
+                        sb.AppendLine($"; Using brush profile: {selectedProfile.Name}");
+                    }
+                }
+                
+                // Move to start of path
                 var pathStart = path[0].A;
                 sb.AppendLine($"G0 X{Fmt(pathStart.X)} Y{Fmt(pathStart.Y)}");
-                sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
+                
+                if (selectedProfile != null)
+                {
+                    // Draw path with brush profile Z curve
+                    DrawPathWithBrushProfile(sb, path, selectedProfile, zUpCmd, zDownCmd, feedXY, currentWell, ref distanceTraveled, ref currentRefreshTarget, GetRandomRefreshDistance, fit);
+                }
+                else
+                {
+                    // Normal drawing - simple pen down/up
+                    sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
 
-                bool firstMove = true;
+                    bool firstMove = true;
 
                 // Draw each segment - just go from A to B
                 foreach (var seg in path)
@@ -265,6 +362,7 @@ namespace NVSPlotter.Services
                         var unitY = segLength > 0.001 ? dy / segLength : 0;
 
                         var distanceAlongSegment = 0.0;
+                        var reachedSegmentEnd = false;
 
                         while (distanceAlongSegment < segLength - 0.01)
                         {
@@ -284,6 +382,7 @@ namespace NVSPlotter.Services
                                     sb.AppendLine($"G1 X{Fmt(seg.B.X)} Y{Fmt(seg.B.Y)}");
                                 }
                                 distanceTraveled += remainingInSegment;
+                                reachedSegmentEnd = true;
                                 break; // Done with this segment
                             }
                             else
@@ -313,6 +412,29 @@ namespace NVSPlotter.Services
                                 currentRefreshTarget = GetRandomRefreshDistance(currentWell);
                             }
                         }
+
+                        // CRITICAL: Ensure we always complete the move to seg.B
+                        // The while loop can exit without drawing to seg.B if distanceAlongSegment >= segLength - 0.01
+                        // after a paint refresh. This would leave the brush short of the endpoint, causing
+                        // tangent lines when the next segment starts from its actual A point.
+                        if (!reachedSegmentEnd)
+                        {
+                            if (firstMove)
+                            {
+                                sb.AppendLine($"G1 X{Fmt(seg.B.X)} Y{Fmt(seg.B.Y)} F{Fmt(feedXY)}");
+                                firstMove = false;
+                            }
+                            else
+                            {
+                                sb.AppendLine($"G1 X{Fmt(seg.B.X)} Y{Fmt(seg.B.Y)}");
+                            }
+                            // Add the remaining tiny distance to distanceTraveled
+                            var remainingDistance = segLength - distanceAlongSegment;
+                            if (remainingDistance > 0)
+                            {
+                                distanceTraveled += remainingDistance;
+                            }
+                        }
                     }
                     else
                     {
@@ -335,7 +457,298 @@ namespace NVSPlotter.Services
                 }
 
                 sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
+                        } // End of normal drawing (no brush profile)
+                    }
+                }
+        
+                /// <summary>
+                /// Draws a path using a brush profile's Z curve instead of simple pen up/down.
+                /// The brush profile defines how Z varies along the stroke (pressure curve).
+                /// </summary>
+                private void DrawPathWithBrushProfile(
+                    StringBuilder sb,
+                    List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> path,
+                    BrushProfile profile,
+                    double zUpCmd,
+                    double zDownCmd,
+                    double feedXY,
+                    PaintWell? currentWell,
+                    ref double distanceTraveled,
+                    ref double currentRefreshTarget,
+                    Func<PaintWell, double> getRandomRefreshDistance,
+                    CoordinateTransformService.FitSpec fit)
+                {
+                    // Calculate total path length for normalizing the profile curve
+                    double totalPathLength = 0;
+                    foreach (var seg in path)
+                    {
+                        var segLen = Math.Sqrt(Math.Pow(seg.B.X - seg.A.X, 2) + Math.Pow(seg.B.Y - seg.A.Y, 2));
+                        totalPathLength += segLen;
+                    }
+            
+                    if (totalPathLength < 0.001)
+                    {
+                        // Path too short, just do a simple pen down/up
+                        sb.AppendLine($"; Path too short for brush profile, using simple pen");
+                        sb.AppendLine($"G0 Z{Fmt(zDownCmd)}");
+                        sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
+                        return;
+                    }
+            
+                    // Use profile's feed rate if specified, otherwise use default
+                    var strokeSpeed = profile.StrokeSpeed > 0 ? profile.StrokeSpeed : feedXY;
+            
+                    // Generate Z samples along the path
+                    var sampleCount = Math.Max(20, Math.Min(profile.SampleCount, 200)); // Reasonable range
+            
+                    sb.AppendLine($"; Brush profile: {profile.Name}, {sampleCount} samples over {totalPathLength:F1}mm");
+            
+                    bool firstMove = true;
+            
+                    for (int sample = 0; sample <= sampleCount; sample++)
+                    {
+                        // Calculate normalized position (0 to 1) along the path
+                        var t = (double)sample / sampleCount;
+                
+                        // Get Z value from profile curve (0=top/up, 1=bottom/down)
+                        var profileY = profile.InterpolateY(t);
+                
+                        // Map profile Y to actual Z command
+                        // profileY=0 should give us zUpCmd (pen up), profileY=1 should give us zDownCmd (pen down)
+                        var zCmd = zUpCmd + profileY * (zDownCmd - zUpCmd);
+                
+                        // Calculate XY position at this sample point
+                        var targetDistance = t * totalPathLength;
+                
+                        // Find which segment this distance falls into
+                        double accumulatedLength = 0;
+                        PointMm pos = path[0].A;
+                
+                        for (int i = 0; i < path.Count; i++)
+                        {
+                            var seg = path[i];
+                            var segLen = Math.Sqrt(Math.Pow(seg.B.X - seg.A.X, 2) + Math.Pow(seg.B.Y - seg.A.Y, 2));
+                    
+                            if (accumulatedLength + segLen >= targetDistance || i == path.Count - 1)
+                            {
+                                // This segment contains our target point
+                                var distIntoSeg = targetDistance - accumulatedLength;
+                                var segT = segLen > 0.001 ? Math.Min(1.0, distIntoSeg / segLen) : 0;
+                        
+                                pos = new PointMm(
+                                    seg.A.X + segT * (seg.B.X - seg.A.X),
+                                    seg.A.Y + segT * (seg.B.Y - seg.A.Y)
+                                );
+                                break;
+                            }
+                            accumulatedLength += segLen;
+                        }
+                
+                        // Output the G-code move
+                        if (firstMove)
+                        {
+                            sb.AppendLine($"G1 X{Fmt(pos.X)} Y{Fmt(pos.Y)} Z{Fmt(zCmd)} F{Fmt(strokeSpeed)} ; t={t:F3}");
+                            firstMove = false;
+                        }
+                        else
+                        {
+                            sb.AppendLine($"G1 X{Fmt(pos.X)} Y{Fmt(pos.Y)} Z{Fmt(zCmd)} ; t={t:F3}");
+                        }
+                    }
+            
+                    // Ensure we end at the path endpoint with pen up
+                    var lastSeg = path[^1];
+                    sb.AppendLine($"G0 X{Fmt(lastSeg.B.X)} Y{Fmt(lastSeg.B.Y)} ; Ensure endpoint");
+                    sb.AppendLine($"G0 Z{Fmt(zUpCmd)}");
+            
+                    // Update distance traveled for paint refresh logic
+                    distanceTraveled += totalPathLength;
+                }
+
+                /// <summary>
+                /// Builds paths from pre-transformed strokes with brush profiles, grouping by PaintOrder.
+                /// </summary>
+                private static List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)>> BuildTransformedPathsByPaintOrderWithProfiles(
+                    List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> strokes, 
+                    double tol)
+                {
+                    var result = new List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)>>();
+                    List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)>? current = null;
+                    long currentPaintOrder = -1;
+
+                    foreach (var stroke in strokes)
+                    {
+                        if (current == null)
+                        {
+                            current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> { stroke };
+                            currentPaintOrder = stroke.PaintOrder;
+                            result.Add(current);
+                            continue;
+                        }
+
+                        if (stroke.PaintOrder != currentPaintOrder)
+                        {
+                            current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> { stroke };
+                            currentPaintOrder = stroke.PaintOrder;
+                            result.Add(current);
+                            continue;
+                        }
+
+                        var prev = current[^1];
+                        var dist = Math.Sqrt(Math.Pow(prev.B.X - stroke.A.X, 2) + Math.Pow(prev.B.Y - stroke.A.Y, 2));
+                        if (dist <= tol)
+                        {
+                            current.Add(stroke);
+                        }
+                        else
+                        {
+                            current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> { stroke };
+                            result.Add(current);
+                        }
+                    }
+
+                    return result;
+                }
+
+                /// <summary>
+                /// Builds paths from pre-transformed strokes with brush profiles, grouping by color.
+                /// </summary>
+                private static List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)>> BuildTransformedPathsByColorWithProfiles(
+                    List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> strokes, 
+                    double tol)
+                {
+                    var result = new List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)>>();
+                    List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)>? current = null;
+                    Guid? currentColorId = null;
+
+                    foreach (var stroke in strokes)
+                    {
+                        if (current == null)
+                        {
+                            current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> { stroke };
+                            currentColorId = stroke.PaintWellId;
+                            result.Add(current);
+                            continue;
+                        }
+
+                        if (stroke.PaintWellId != currentColorId)
+                        {
+                            current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> { stroke };
+                            currentColorId = stroke.PaintWellId;
+                            result.Add(current);
+                            continue;
+                        }
+
+                        var prev = current[^1];
+                        var dist = Math.Sqrt(Math.Pow(prev.B.X - stroke.A.X, 2) + Math.Pow(prev.B.Y - stroke.A.Y, 2));
+                        if (dist <= tol)
+                        {
+                            current.Add(stroke);
+                        }
+                        else
+                        {
+                            current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder, HashSet<string>? EnabledBrushProfiles)> { stroke };
+                            result.Add(current);
+                        }
+                    }
+
+                    return result;
+                }
+
+                /// <summary>
+                /// Builds paths from pre-transformed strokes, grouping connected strokes with same PaintOrder.
+                /// This ensures that strokes painted at different times are kept separate even if they have the same color.
+                /// </summary>
+                private static List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)>> BuildTransformedPathsByPaintOrder(
+            List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)> strokes, 
+            double tol)
+        {
+            var result = new List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)>>();
+            List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)>? current = null;
+            long currentPaintOrder = -1;
+
+            foreach (var stroke in strokes)
+            {
+                if (current == null)
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)> { stroke };
+                    currentPaintOrder = stroke.PaintOrder;
+                    result.Add(current);
+                    continue;
+                }
+
+                // PaintOrder changed? This means a different color assignment action
+                if (stroke.PaintOrder != currentPaintOrder)
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)> { stroke };
+                    currentPaintOrder = stroke.PaintOrder;
+                    result.Add(current);
+                    continue;
+                }
+
+                // Same PaintOrder - check if connected
+                var prev = current[^1];
+                var dist = Math.Sqrt(Math.Pow(prev.B.X - stroke.A.X, 2) + Math.Pow(prev.B.Y - stroke.A.Y, 2));
+                if (dist <= tol)
+                {
+                    current.Add(stroke);
+                }
+                else
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)> { stroke };
+                    result.Add(current);
+                }
             }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Builds paths from pre-transformed strokes, grouping connected strokes with same color.
+        /// This is the fallback for old projects that don't have PaintOrder set.
+        /// </summary>
+        private static List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)>> BuildTransformedPathsByColor(
+            List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)> strokes, 
+            double tol)
+        {
+            var result = new List<List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)>>();
+            List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)>? current = null;
+            Guid? currentColorId = null;
+
+            foreach (var stroke in strokes)
+            {
+                if (current == null)
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)> { stroke };
+                    currentColorId = stroke.PaintWellId;
+                    result.Add(current);
+                    continue;
+                }
+
+                // Color changed?
+                if (stroke.PaintWellId != currentColorId)
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)> { stroke };
+                    currentColorId = stroke.PaintWellId;
+                    result.Add(current);
+                    continue;
+                }
+
+                // Same color - check if connected
+                var prev = current[^1];
+                var dist = Math.Sqrt(Math.Pow(prev.B.X - stroke.A.X, 2) + Math.Pow(prev.B.Y - stroke.A.Y, 2));
+                if (dist <= tol)
+                {
+                    current.Add(stroke);
+                }
+                else
+                {
+                    current = new List<(PointMm A, PointMm B, Guid? PaintWellId, long PaintOrder)> { stroke };
+                    result.Add(current);
+                }
+            }
+
+            return result;
         }
 
         /// <summary>

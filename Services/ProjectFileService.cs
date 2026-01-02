@@ -76,6 +76,7 @@ namespace NVSPlotter.Services
                     By = stroke.B.Y,
                     PaintWellId = stroke.PaintWellId,
                     GroupId = stroke.GroupId,
+                    PaintOrder = stroke.PaintOrder,
                     IsGroupStart = stroke.IsGroupStart,
                     IsGroupEnd = stroke.IsGroupEnd
                 });
@@ -168,11 +169,11 @@ namespace NVSPlotter.Services
                     new PointMm(strokeData.Ax, strokeData.Ay),
                     new PointMm(strokeData.Bx, strokeData.By),
                     strokeData.PaintWellId,
-                    strokeData.GroupId)
-                {
-                    IsGroupStart = strokeData.IsGroupStart,
-                    IsGroupEnd = strokeData.IsGroupEnd
-                };
+                    strokeData.GroupId,
+                    strokeData.IsGroupStart,
+                    strokeData.IsGroupEnd,
+                    parentGroupId: null,
+                    paintOrder: strokeData.PaintOrder);
                 document.Strokes.Add(stroke);
             }
 

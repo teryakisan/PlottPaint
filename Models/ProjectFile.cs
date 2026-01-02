@@ -91,6 +91,12 @@ public sealed class StrokeData
     public Guid? PaintWellId { get; set; }
     public Guid? GroupId { get; set; }
     
+    /// <summary>
+    /// Order in which paint was assigned to this stroke.
+    /// Used to determine painting sequence in paint mode.
+    /// </summary>
+    public long PaintOrder { get; set; }
+    
     /// <summary>Indicates this stroke contains the START point of a grouped object</summary>
     public bool IsGroupStart { get; set; }
     

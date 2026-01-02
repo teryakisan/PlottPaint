@@ -174,17 +174,23 @@ public sealed class PaintWellController
 
     /// <summary>
     /// Applies the active color to the currently selected strokes.
+    /// Each stroke gets a new paint order to track the sequence in which colors were assigned.
     /// </summary>
     public void ApplyColorToSelection(SelectionController selection)
     {
         var doc = _getDocument();
         var paintWellId = _activeColorWell?.Id;
 
+        // Get next paint order once for all strokes in this selection batch
+        // All strokes selected together get the same paint order (they're painted as a group)
+        var paintOrder = doc.GetNextPaintOrder();
+
         foreach (var idx in selection.SelectedIndices)
         {
             if (idx >= 0 && idx < doc.Strokes.Count)
             {
                 doc.Strokes[idx].PaintWellId = paintWellId;
+                doc.Strokes[idx].PaintOrder = paintOrder;
             }
         }
         _requestRender();

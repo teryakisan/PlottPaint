@@ -11,6 +11,7 @@ using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Shapes;
+using NVSPlotter.Services;
 
 // Avoid ambiguity with System.Drawing and System.Windows.Forms types
 using Brush = System.Windows.Media.Brush;
@@ -36,7 +37,12 @@ public partial class GcodePathVisualizerWindow : Window
     private readonly List<UIElement> _pointElements = new();
     private readonly List<UIElement> _labelElements = new();
     
+    // Paint well information parsed from G-code
+    private readonly Dictionary<string, ParsedPaintWell> _paintWells = new();
+    private bool _isPaintingModeGcode;
+    
     private double _zoom = 1.0;
+    private double _canvasRotationAngle = 0;
     private Point _panStart;
     private Point _panOrigin;
     private bool _isPanning;
@@ -64,6 +70,27 @@ public partial class GcodePathVisualizerWindow : Window
         // Set up keyboard shortcuts
         KeyDown += GcodePathVisualizerWindow_KeyDown;
     }
+    
+    /// <summary>
+    /// Sets the canvas rotation angle (0, 90, 180, 270 degrees).
+    /// This syncs the visualizer view with the main canvas rotation.
+    /// </summary>
+    public void SetCanvasRotation(double angleDegrees)
+    {
+        _canvasRotationAngle = angleDegrees % 360;
+        CanvasRotation.Angle = _canvasRotationAngle;
+        
+        // Update status to show rotation
+        if (_canvasRotationAngle != 0)
+        {
+            StatusLabel.Text = $"Canvas rotated {_canvasRotationAngle}°";
+        }
+    }
+    
+    /// <summary>
+    /// Gets the current canvas rotation angle.
+    /// </summary>
+    public double CanvasRotationAngle => _canvasRotationAngle;
     
     /// <summary>
     /// Loads and parses G-code for visualization.
@@ -94,6 +121,20 @@ public partial class GcodePathVisualizerWindow : Window
         FitToView();
         
         UpdateStatusBar();
+        
+        // Log painting mode info for debugging
+        if (_isPaintingModeGcode)
+        {
+            _log($"[VISUALIZER] Paint Mode G-code detected. Paint wells: {_paintWells.Count}");
+            foreach (var well in _paintWells)
+            {
+                _log($"  - {well.Key}: {well.Value.Name}");
+            }
+            var strokeCount = _segments.Count(s => s.PaintingStrokeNumber > 0);
+            var maxStroke = _segments.Max(s => s.PaintingStrokeNumber);
+            _log($"[VISUALIZER] Segments with stroke numbers: {strokeCount}, max stroke: {maxStroke}");
+        }
+        
         StatusLabel.Text = $"Loaded {_segments.Count} segments";
     }
     
@@ -105,17 +146,167 @@ public partial class GcodePathVisualizerWindow : Window
         bool isRapid = true; // G0 is rapid, G1 is feed
         int lineNumber = 0;
         
+        // Paint well tracking
+        _paintWells.Clear();
+        _isPaintingModeGcode = false;
+        string? currentPaintWellName = null;
+        int paintingStrokeNumber = 0;
+        bool penIsDown = false; // Track pen state based on Z movement patterns
+        double zUpValue = 0;    // Will be determined from G-code
+        double zDownValue = 0;  // Will be determined from G-code
+        bool zValuesDetected = false;
+        
         // Regex patterns for parsing
         var xPattern = new Regex(@"X(-?\d+\.?\d*)", RegexOptions.IgnoreCase);
         var yPattern = new Regex(@"Y(-?\d+\.?\d*)", RegexOptions.IgnoreCase);
         var zPattern = new Regex(@"Z(-?\d+\.?\d*)", RegexOptions.IgnoreCase);
         
+        // Regex for parsing paint well comments: "; Paint Well: Red at (x, y), dip=5mm, dwell=500ms"
+        var paintWellPattern = new Regex(@";\s*Paint\s*Well:\s*(\w+)\s+at\s*\((-?\d+\.?\d*),\s*(-?\d+\.?\d*)\)", RegexOptions.IgnoreCase);
+        // Regex for paint well switch comments: 
+        // "; === Paint Well: Red ===" or "; === Paint Well: Red (Order: 1) ===" or "; === Paint Well: Red (Order: 1, continuing) ==="
+        var paintWellSwitchPattern = new Regex(@";\s*===\s*Paint\s*Well:\s*(\w+)(?:\s*\([^)]*\))?\s*===", RegexOptions.IgnoreCase);
+        // Regex for color change: "; === Color change: Red -> Blue ===" or with order info
+        var colorChangePattern = new Regex(@";\s*===\s*Color\s*change:.*->\s*(\w+)(?:\s*\([^)]*\))?\s*===", RegexOptions.IgnoreCase);
+        // Regex for "No Paint Well" comments: "; === No Paint Well (Order: 1) ==="
+        var noPaintWellPattern = new Regex(@";\s*===\s*No\s*Paint\s*Well", RegexOptions.IgnoreCase);
+        
+        // First pass: scan for paint wells, painting mode, and detect Z values
+        var zValues = new List<double>();
+        string? pendingWellName = null; // Track when we're about to get paint well coordinates
+        
+        for (int i = 0; i < lines.Length; i++)
+        {
+            var line = lines[i].Trim();
+            
+            // Check for painting mode header
+            if (line.Contains("PAINTING MODE ENABLED", StringComparison.OrdinalIgnoreCase))
+            {
+                _isPaintingModeGcode = true;
+            }
+            
+            // Parse paint well definitions - just register the name and color
+            var wellMatch = paintWellPattern.Match(line);
+            if (wellMatch.Success)
+            {
+                var wellName = wellMatch.Groups[1].Value;
+                if (!_paintWells.ContainsKey(wellName))
+                {
+                    _paintWells[wellName] = new ParsedPaintWell
+                    {
+                        Name = wellName,
+                        Color = GetColorForPaintWellName(wellName)
+                    };
+                }
+            }
+            
+            // Check for "Dip in paint well: Name" comment - this tells us which well the next move goes to
+            if (line.Contains("; Dip in paint well:", StringComparison.OrdinalIgnoreCase))
+            {
+                var dipMatch = Regex.Match(line, @";\s*Dip\s+in\s+paint\s+well:\s*(\w+)", RegexOptions.IgnoreCase);
+                if (dipMatch.Success)
+                {
+                    pendingWellName = dipMatch.Groups[1].Value;
+                }
+            }
+            
+            // Check for "Move to paint well" comment followed by G0 X Y - capture work coordinates
+            if (line.Contains("; Move to paint well", StringComparison.OrdinalIgnoreCase) && pendingWellName != null)
+            {
+                // Look at the command part before the comment
+                var commandPart = line.Split(';')[0].Trim();
+                if (!string.IsNullOrEmpty(commandPart))
+                {
+                    var xMatch = xPattern.Match(commandPart);
+                    var yMatch = yPattern.Match(commandPart);
+                    if (xMatch.Success && yMatch.Success)
+                    {
+                        if (double.TryParse(xMatch.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var wx) &&
+                            double.TryParse(yMatch.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var wy))
+                        {
+                            // Update the paint well with actual work coordinates
+                            if (_paintWells.TryGetValue(pendingWellName, out var well))
+                            {
+                                well.X = wx;
+                                well.Y = wy;
+                            }
+                        }
+                    }
+                }
+                pendingWellName = null;
+            }
+            
+            // Collect Z values to determine up/down thresholds
+            if (!line.StartsWith(";"))
+            {
+                var zMatch = zPattern.Match(line);
+                if (zMatch.Success && double.TryParse(zMatch.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z))
+                {
+                    if (!zValues.Contains(z))
+                        zValues.Add(z);
+                }
+            }
+        }
+        
+        // Determine Z up/down values (typically two main values used)
+        // In this G-code: Z-10 is pen UP (most negative), Z-2 is pen DOWN (less negative)
+        // So pen is DOWN when Z is GREATER than the minimum (closer to 0)
+        if (zValues.Count >= 2)
+        {
+            zValues.Sort();
+            // Most negative value is pen UP (travel height), e.g., -10
+            // The drawing happens at values closer to 0, e.g., -2
+            zUpValue = zValues.First();    // Most negative = pen up/travel (e.g., -10)
+            zDownValue = zValues.Last();   // Least negative = pen down/draw (e.g., -2)
+            zValuesDetected = true;
+        }
+        
+        // Second pass: parse segments with paint well associations
         foreach (var rawLine in lines)
         {
             lineNumber++;
             var line = rawLine.Trim();
             
-            // Skip empty lines and comments
+            // Check for paint well switch comments (even in comment-only lines)
+            var wellSwitchMatch = paintWellSwitchPattern.Match(line);
+            if (wellSwitchMatch.Success)
+            {
+                currentPaintWellName = wellSwitchMatch.Groups[1].Value;
+                // Ensure this paint well is registered
+                if (!_paintWells.ContainsKey(currentPaintWellName))
+                {
+                    _paintWells[currentPaintWellName] = new ParsedPaintWell
+                    {
+                        Name = currentPaintWellName,
+                        Color = GetColorForPaintWellName(currentPaintWellName)
+                    };
+                }
+                continue;
+            }
+            
+            var colorChangeMatch = colorChangePattern.Match(line);
+            if (colorChangeMatch.Success)
+            {
+                currentPaintWellName = colorChangeMatch.Groups[1].Value;
+                if (!_paintWells.ContainsKey(currentPaintWellName))
+                {
+                    _paintWells[currentPaintWellName] = new ParsedPaintWell
+                    {
+                        Name = currentPaintWellName,
+                        Color = GetColorForPaintWellName(currentPaintWellName)
+                    };
+                }
+                continue;
+            }
+            
+            // Check for "No Paint Well" which means strokes without a color assigned
+            if (noPaintWellPattern.IsMatch(line))
+            {
+                currentPaintWellName = null;
+                continue;
+            }
+            
+            // Skip empty lines and pure comments
             if (string.IsNullOrWhiteSpace(line) || line.StartsWith(";"))
                 continue;
             
@@ -142,16 +333,32 @@ public partial class GcodePathVisualizerWindow : Window
             double? newX = null, newY = null, newZ = null;
             
             var xMatch = xPattern.Match(command);
-            if (xMatch.Success && double.TryParse(xMatch.Groups[1].Value, out var x))
+            if (xMatch.Success && double.TryParse(xMatch.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var x))
                 newX = x;
             
             var yMatch = yPattern.Match(command);
-            if (yMatch.Success && double.TryParse(yMatch.Groups[1].Value, out var y))
+            if (yMatch.Success && double.TryParse(yMatch.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var y))
                 newY = y;
             
             var zMatch = zPattern.Match(command);
-            if (zMatch.Success && double.TryParse(zMatch.Groups[1].Value, out var z))
+            if (zMatch.Success && double.TryParse(zMatch.Groups[1].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var z))
                 newZ = z;
+            
+            // Track pen up/down state for stroke numbering
+            // Pen is DOWN when Z is greater than zUpValue (closer to 0)
+            // e.g., Z=-2 (drawing) > Z=-10 (travel), so -2 > -10 means pen is down
+            if (newZ.HasValue && zValuesDetected)
+            {
+                var wasPenDown = penIsDown;
+                // Pen is down when Z is greater than the up value (closer to 0 than travel height)
+                penIsDown = newZ.Value > zUpValue + 0.5;
+                
+                // Starting a new painting stroke (pen going down)
+                if (!wasPenDown && penIsDown)
+                {
+                    paintingStrokeNumber++;
+                }
+            }
             
             // If we have X or Y movement, create a segment
             if (newX.HasValue || newY.HasValue)
@@ -164,6 +371,20 @@ public partial class GcodePathVisualizerWindow : Window
                 if (newY.HasValue) currentY = newY.Value;
                 if (newZ.HasValue) currentZ = newZ.Value;
                 
+                // Determine paint well color
+                Color? paintWellColor = null;
+                if (currentPaintWellName != null && _paintWells.TryGetValue(currentPaintWellName, out var well))
+                {
+                    paintWellColor = well.Color;
+                }
+                
+                // For painting mode, assign stroke number to feed movements when pen is down
+                var strokeNum = 0;
+                if (_isPaintingModeGcode && !isRapid && penIsDown)
+                {
+                    strokeNum = paintingStrokeNumber;
+                }
+                
                 var segment = new GcodeSegment
                 {
                     LineNumber = lineNumber,
@@ -174,7 +395,10 @@ public partial class GcodePathVisualizerWindow : Window
                     ToX = currentX,
                     ToY = currentY,
                     ToZ = currentZ,
-                    IsRapid = isRapid
+                    IsRapid = isRapid,
+                    PaintWellName = currentPaintWellName,
+                    PaintWellColor = paintWellColor,
+                    PaintingStrokeNumber = strokeNum
                 };
                 
                 _segments.Add(segment);
@@ -185,6 +409,58 @@ public partial class GcodePathVisualizerWindow : Window
                 currentZ = newZ.Value;
             }
         }
+    }
+    
+    /// <summary>
+    /// Gets a color for a paint well based on its name.
+    /// </summary>
+    private static Color GetColorForPaintWellName(string name)
+    {
+        return name.ToLowerInvariant() switch
+        {
+            "red" => Colors.Red,
+            "blue" => Colors.Blue,
+            "green" => Colors.Green,
+            "orange" => Colors.Orange,
+            "purple" => Colors.Purple,
+            "cyan" => Colors.Cyan,
+            "magenta" => Colors.Magenta,
+            "yellow" => Colors.Yellow,
+            "brown" => Colors.Brown,
+            "pink" => Colors.HotPink,
+            "black" => Colors.Black,
+            "white" => Colors.White,
+            "gray" or "grey" => Colors.Gray,
+            "wash" => Colors.DarkBlue,
+            "wipe" => Colors.DarkGray,
+            _ => Colors.Black
+        };
+    }
+    
+    /// <summary>
+    /// Lightens a color for better visibility in dark mode.
+    /// </summary>
+    private static Color LightenColorForDarkMode(Color color)
+    {
+        // Lighten the color by blending with white
+        const double lightenFactor = 0.4; // 40% towards white
+        return Color.FromArgb(
+            color.A,
+            (byte)Math.Min(255, color.R + (255 - color.R) * lightenFactor),
+            (byte)Math.Min(255, color.G + (255 - color.G) * lightenFactor),
+            (byte)Math.Min(255, color.B + (255 - color.B) * lightenFactor));
+    }
+    
+    /// <summary>
+    /// Gets the display color for a paint well, adjusted for dark mode if needed.
+    /// </summary>
+    private static Color GetDisplayColor(Color baseColor)
+    {
+        if (ThemeManager.Instance.IsDarkMode)
+        {
+            return LightenColorForDarkMode(baseColor);
+        }
+        return baseColor;
     }
     
     private void CalculateBounds()
@@ -226,9 +502,82 @@ public partial class GcodePathVisualizerWindow : Window
         _labelElements.Clear();
     }
     
+    /// <summary>
+    /// Renders paint wells as transparent circles with wide colored borders.
+    /// </summary>
+    private void RenderPaintWells()
+    {
+        const double wellRadius = 40; // Visual radius in mm
+        const double borderThickness = 8;
+        
+        foreach (var well in _paintWells.Values)
+        {
+            if (!well.HasPosition) continue;
+            
+            // Get display color (lightened for dark mode)
+            var wellColor = GetDisplayColor(well.Color);
+            var transparentFill = Color.FromArgb(40, wellColor.R, wellColor.G, wellColor.B);
+            var borderColor = Color.FromArgb(150, wellColor.R, wellColor.G, wellColor.B);
+            
+            var ellipse = new Ellipse
+            {
+                Width = wellRadius * 2,
+                Height = wellRadius * 2,
+                Fill = new SolidColorBrush(transparentFill),
+                Stroke = new SolidColorBrush(borderColor),
+                StrokeThickness = borderThickness,
+                IsHitTestVisible = false
+            };
+            
+            // Position the ellipse (Y is inverted in visualization)
+            Canvas.SetLeft(ellipse, well.X - wellRadius);
+            Canvas.SetTop(ellipse, -well.Y - wellRadius);
+            
+            PathCanvas.Children.Add(ellipse);
+            
+            // Add label with paint well name
+            var label = new TextBlock
+            {
+                Text = well.Name,
+                FontSize = 12,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(wellColor),
+                IsHitTestVisible = false
+            };
+            
+            // Apply counter-rotation so text stays readable when canvas is rotated
+            if (_canvasRotationAngle != 0)
+            {
+                label.RenderTransformOrigin = new Point(0.5, 0.5);
+                label.RenderTransform = new RotateTransform(-_canvasRotationAngle);
+            }
+            
+            // Center the label in the well
+            Canvas.SetLeft(label, well.X - 15);
+            Canvas.SetTop(label, -well.Y - 6);
+            
+            PathCanvas.Children.Add(label);
+        }
+    }
+    
     private void RenderPaths()
     {
         ClearCanvas();
+        
+        // Render paint wells first (behind everything else)
+        if (_isPaintingModeGcode)
+        {
+            RenderPaintWells();
+        }
+        
+        var showPaintingOnly = ShowPaintingOnlyToggle.IsChecked == true;
+        
+        // If painting only mode is selected, use special rendering
+        if (showPaintingOnly)
+        {
+            RenderPaintingStrokesOnly();
+            return;
+        }
         
         var showRapids = ShowRapidsToggle.IsChecked == true;
         var showFeeds = ShowFeedsToggle.IsChecked == true;
@@ -300,6 +649,290 @@ public partial class GcodePathVisualizerWindow : Window
         }
     }
     
+    /// <summary>
+    /// Renders only the painting strokes with stroke numbers and paint well colors.
+    /// A "painting stroke" is a continuous sequence of G1 feed moves between pen-down and pen-up.
+    /// Other toggles (Rapids, Points, Direction, Line #) still apply.
+    /// </summary>
+    private void RenderPaintingStrokesOnly()
+    {
+        if (!_isPaintingModeGcode)
+        {
+            StatusLabel.Text = "Not a Paint Mode G-code file - no painting strokes to display";
+            return;
+        }
+        
+        // Render paint wells first (behind everything else)
+        RenderPaintWells();
+        
+        // Read other toggle states
+        var showRapids = ShowRapidsToggle.IsChecked == true;
+        var showPoints = ShowPointsToggle.IsChecked == true;
+        var showDirection = ShowDirectionToggle.IsChecked == true;
+        var showLineNumbers = ShowLineNumbersToggle.IsChecked == true;
+        
+        // Draw rapids if enabled (these are the travel moves between strokes)
+        // Color them based on the paint well they're associated with
+        if (showRapids)
+        {
+            foreach (var segment in _segments.Where(s => s.IsRapid))
+            {
+                var fromY = -segment.FromY;
+                var toY = -segment.ToY;
+                
+                // Use paint well color (lighter/transparent) or default rapid color
+                Brush rapidBrush;
+                if (segment.PaintWellColor.HasValue)
+                {
+                    var color = GetDisplayColor(segment.PaintWellColor.Value);
+                    rapidBrush = new SolidColorBrush(Color.FromArgb(80, color.R, color.G, color.B));
+                }
+                else
+                {
+                    rapidBrush = new SolidColorBrush(Color.FromArgb(80, 100, 100, 255));
+                }
+                
+                var line = new Line
+                {
+                    X1 = segment.FromX,
+                    Y1 = fromY,
+                    X2 = segment.ToX,
+                    Y2 = toY,
+                    StrokeThickness = 1.5,
+                    Stroke = rapidBrush,
+                    StrokeDashArray = new DoubleCollection { 4, 2 },
+                    Tag = segment,
+                    Cursor = Cursors.Hand
+                };
+                
+                line.MouseEnter += SegmentLine_MouseEnter;
+                line.MouseLeave += SegmentLine_MouseLeave;
+                line.MouseLeftButtonDown += SegmentLine_MouseLeftButtonDown;
+                
+                PathCanvas.Children.Add(line);
+                _pathElements.Add(line);
+                segment.Visual = line;
+            }
+        }
+        
+        // Group consecutive feed segments into strokes based on stroke number
+        // A stroke is all segments with the same PaintingStrokeNumber > 0
+        var strokeNumbers = _segments
+            .Where(s => s.PaintingStrokeNumber > 0)
+            .Select(s => s.PaintingStrokeNumber)
+            .Distinct()
+            .OrderBy(n => n)
+            .ToList();
+        
+        if (strokeNumbers.Count == 0)
+        {
+            StatusLabel.Text = "No painting strokes found in G-code";
+            return;
+        }
+        
+        var strokeStartPoints = new List<(double X, double Y, int StrokeNum, string? WellName, Color Color)>();
+        var drawnPoints = new HashSet<(double, double)>();
+        
+        foreach (var strokeNum in strokeNumbers)
+        {
+            var segments = _segments
+                .Where(s => s.PaintingStrokeNumber == strokeNum)
+                .OrderBy(s => s.LineNumber)
+                .ToList();
+            
+            if (segments.Count == 0) continue;
+            
+            // Get color for this stroke - use paint well color or default, adjusted for dark mode
+            var firstSeg = segments[0];
+            var strokeColor = firstSeg.PaintWellColor.HasValue 
+                ? GetDisplayColor(firstSeg.PaintWellColor.Value) 
+                : Colors.DarkGray;
+            var strokeBrush = new SolidColorBrush(strokeColor);
+            
+            // Draw all segments in this stroke
+            foreach (var segment in segments)
+            {
+                var fromY = -segment.FromY;
+                var toY = -segment.ToY;
+                
+                var line = new Line
+                {
+                    X1 = segment.FromX,
+                    Y1 = fromY,
+                    X2 = segment.ToX,
+                    Y2 = toY,
+                    StrokeThickness = 3,
+                    Stroke = strokeBrush,
+                    Tag = segment,
+                    Cursor = Cursors.Hand
+                };
+                
+                line.MouseEnter += SegmentLine_MouseEnter;
+                line.MouseLeave += SegmentLine_MouseLeave;
+                line.MouseLeftButtonDown += SegmentLine_MouseLeftButtonDown;
+                
+                PathCanvas.Children.Add(line);
+                _pathElements.Add(line);
+                segment.Visual = line;
+                
+                // Direction arrow
+                if (showDirection)
+                {
+                    var arrow = CreateDirectionArrowWithColor(segment, strokeBrush);
+                    if (arrow != null)
+                    {
+                        PathCanvas.Children.Add(arrow);
+                        _pathElements.Add(arrow);
+                    }
+                }
+                
+                // Line number label
+                if (showLineNumbers)
+                {
+                    var label = CreateLineNumberLabel(segment);
+                    PathCanvas.Children.Add(label);
+                    _labelElements.Add(label);
+                }
+                
+                // Collect points for later rendering
+                if (showPoints)
+                {
+                    var fromKey = (Math.Round(segment.FromX, 3), Math.Round(segment.FromY, 3));
+                    if (!drawnPoints.Contains(fromKey))
+                        drawnPoints.Add(fromKey);
+                    
+                    var toKey = (Math.Round(segment.ToX, 3), Math.Round(segment.ToY, 3));
+                    if (!drawnPoints.Contains(toKey))
+                        drawnPoints.Add(toKey);
+                }
+            }
+            
+            // Record stroke start point for label (use adjusted color)
+            strokeStartPoints.Add((
+                firstSeg.FromX, 
+                firstSeg.FromY, 
+                strokeNum, 
+                firstSeg.PaintWellName,
+                strokeColor));
+        }
+        
+        // Draw waypoints on top
+        if (showPoints)
+        {
+            foreach (var (x, y) in drawnPoints)
+            {
+                var point = CreateWaypoint(x, y);
+                PathCanvas.Children.Add(point);
+                _pointElements.Add(point);
+            }
+        }
+        
+        // Draw stroke number labels at start of each stroke
+        foreach (var (x, y, strokeNum, wellName, color) in strokeStartPoints)
+        {
+            var label = CreatePaintingStrokeLabel(x, y, strokeNum, wellName, color);
+            PathCanvas.Children.Add(label);
+            _labelElements.Add(label);
+        }
+        
+        // Update status
+        var totalStrokes = strokeStartPoints.Count;
+        var wellCounts = strokeStartPoints
+            .GroupBy(s => s.WellName ?? "No Color")
+            .Select(g => $"{g.Key}: {g.Count()}")
+            .ToList();
+        
+        StatusLabel.Text = $"Showing {totalStrokes} painting strokes ({string.Join(", ", wellCounts)})";
+    }
+    
+    /// <summary>
+    /// Creates a direction arrow with a specific brush color.
+    /// </summary>
+    private Polygon? CreateDirectionArrowWithColor(GcodeSegment segment, Brush brush)
+    {
+        var dx = segment.ToX - segment.FromX;
+        var dy = segment.ToY - segment.FromY;
+        var length = Math.Sqrt(dx * dx + dy * dy);
+        
+        if (length < 1) return null; // Too short for arrow
+        
+        // Arrow at midpoint
+        var midX = (segment.FromX + segment.ToX) / 2;
+        var midY = -(segment.FromY + segment.ToY) / 2; // Inverted Y
+        
+        // Normalize direction
+        var dirX = dx / length;
+        var dirY = -dy / length; // Inverted Y
+        
+        // Perpendicular
+        var perpX = -dirY;
+        var perpY = dirX;
+        
+        var arrowSize = 4.0;
+        
+        var arrow = new Polygon
+        {
+            Points = new PointCollection
+            {
+                new Point(midX + dirX * arrowSize, midY + dirY * arrowSize),
+                new Point(midX - dirX * arrowSize + perpX * arrowSize * 0.5, midY - dirY * arrowSize + perpY * arrowSize * 0.5),
+                new Point(midX - dirX * arrowSize - perpX * arrowSize * 0.5, midY - dirY * arrowSize - perpY * arrowSize * 0.5)
+            },
+            Fill = brush,
+            IsHitTestVisible = false
+        };
+        
+        return arrow;
+    }
+    
+    /// <summary>
+    /// Creates a label for a painting stroke showing its number and paint well name.
+    /// </summary>
+    private Border CreatePaintingStrokeLabel(double x, double y, int strokeNumber, string? wellName, Color color)
+    {
+        var displayText = wellName != null 
+            ? $"{strokeNumber} ({wellName})"
+            : strokeNumber.ToString();
+        
+        // Create contrasting text color
+        var brightness = (color.R * 0.299 + color.G * 0.587 + color.B * 0.114) / 255;
+        var textColor = brightness > 0.5 ? Colors.Black : Colors.White;
+        
+        var textBlock = new TextBlock
+        {
+            Text = displayText,
+            FontSize = 10,
+            FontWeight = FontWeights.Bold,
+            Foreground = new SolidColorBrush(textColor),
+            VerticalAlignment = System.Windows.VerticalAlignment.Center,
+            HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+        };
+        
+        var border = new Border
+        {
+            Background = new SolidColorBrush(color),
+            BorderBrush = new SolidColorBrush(Color.FromArgb(180, 0, 0, 0)),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(3),
+            Padding = new Thickness(4, 2, 4, 2),
+            Child = textBlock,
+            IsHitTestVisible = false
+        };
+        
+        // Apply counter-rotation so text stays readable when canvas is rotated
+        if (_canvasRotationAngle != 0)
+        {
+            border.RenderTransformOrigin = new Point(0, 0.5);
+            border.RenderTransform = new RotateTransform(-_canvasRotationAngle);
+        }
+        
+        // Position at start point with small offset
+        Canvas.SetLeft(border, x + 5);
+        Canvas.SetTop(border, -y - 15); // Inverted Y with offset above the point
+        
+        return border;
+    }
+    
     private Line CreateSegmentLine(GcodeSegment segment)
     {
         // Transform Y coordinate (G-code Y is typically inverted for display)
@@ -331,6 +964,15 @@ public partial class GcodePathVisualizerWindow : Window
         if (segment == _selectedSegment) return SelectedBrush;
         if (segment == _hoveredSegment) return HoverBrush;
         if (segment.IsBad) return BadBrush;
+        
+        // For rapid moves in paint mode, use a lighter/transparent version of the paint well color
+        if (segment.IsRapid && segment.PaintWellColor.HasValue)
+        {
+            var color = GetDisplayColor(segment.PaintWellColor.Value);
+            // Create a lighter, more transparent color for rapids
+            return new SolidColorBrush(Color.FromArgb(100, color.R, color.G, color.B));
+        }
+        
         return segment.IsRapid ? RapidBrush : FeedBrush;
     }
     
@@ -384,6 +1026,13 @@ public partial class GcodePathVisualizerWindow : Window
             IsHitTestVisible = false
         };
         
+        // Apply counter-rotation so text stays readable when canvas is rotated
+        if (_canvasRotationAngle != 0)
+        {
+            label.RenderTransformOrigin = new Point(0, 0.5);
+            label.RenderTransform = new RotateTransform(-_canvasRotationAngle);
+        }
+        
         Canvas.SetLeft(label, midX + 3);
         Canvas.SetTop(label, midY - 10);
         
@@ -411,8 +1060,8 @@ public partial class GcodePathVisualizerWindow : Window
     {
         if (_segments.Count == 0) return;
         
-        var viewWidth = PathScroll.ActualWidth - 40;
-        var viewHeight = PathScroll.ActualHeight - 40;
+        var viewWidth = CanvasContainer.ActualWidth - 40;
+        var viewHeight = CanvasContainer.ActualHeight - 40;
         
         if (viewWidth <= 0 || viewHeight <= 0) return;
         
@@ -429,12 +1078,17 @@ public partial class GcodePathVisualizerWindow : Window
         CanvasScale.ScaleX = _zoom;
         CanvasScale.ScaleY = _zoom;
         
-        // Center the view
-        var centerX = (_minX + _maxX) / 2;
-        var centerY = -(_minY + _maxY) / 2; // Inverted
+        // The paths are drawn with Y inverted (-Y), so the visual bounds are:
+        // Visual minY = -_maxY, Visual maxY = -_minY
+        // Center in visual space
+        var visualCenterX = (_minX + _maxX) / 2;
+        var visualCenterY = (-_maxY + -_minY) / 2; // Center of inverted Y range
         
-        CanvasTranslate.X = viewWidth / 2 - centerX * _zoom;
-        CanvasTranslate.Y = viewHeight / 2 - centerY * _zoom;
+        // Calculate translation to center the content
+        // We want: visualCenter * scale + translate = viewCenter
+        // So: translate = viewCenter - visualCenter * scale
+        CanvasTranslate.X = (viewWidth / 2 + 20) - visualCenterX * _zoom;
+        CanvasTranslate.Y = (viewHeight / 2 + 20) - visualCenterY * _zoom;
         
         UpdateZoomLabel();
     }
@@ -580,22 +1234,46 @@ public partial class GcodePathVisualizerWindow : Window
         }
     }
     
-    private void PathCanvas_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    // Container-level mouse handlers for pan and zoom (work without selection)
+    private Border? _canvasContainerBorder;
+    private Border CanvasContainer => _canvasContainerBorder ??= (Border)this.FindName("CanvasContainerBorder")!;
+    
+    private void CanvasContainer_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
-        _isPanning = false;
-        PathCanvas.ReleaseMouseCapture();
+        // Start panning with right mouse button
+        StartPanning(e.GetPosition(CanvasContainer));
+        e.Handled = true;
     }
     
-    private void PathCanvas_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    private void CanvasContainer_MouseMiddleButtonDown(object sender, MouseButtonEventArgs e)
     {
-        // Start panning
+        // Start panning with middle mouse button
+        if (e.ChangedButton == MouseButton.Middle)
+        {
+            StartPanning(e.GetPosition(CanvasContainer));
+            e.Handled = true;
+        }
+    }
+    
+    private void CanvasContainer_MouseButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (_isPanning && (e.ChangedButton == MouseButton.Right || e.ChangedButton == MouseButton.Middle))
+        {
+            _isPanning = false;
+            CanvasContainer.ReleaseMouseCapture();
+            e.Handled = true;
+        }
+    }
+    
+    private void StartPanning(Point startPosition)
+    {
         _isPanning = true;
-        _panStart = e.GetPosition(PathScroll);
+        _panStart = startPosition;
         _panOrigin = new Point(CanvasTranslate.X, CanvasTranslate.Y);
-        PathCanvas.CaptureMouse();
+        CanvasContainer.CaptureMouse();
     }
     
-    private void PathCanvas_MouseMove(object sender, MouseEventArgs e)
+    private void CanvasContainer_MouseMove(object sender, MouseEventArgs e)
     {
         // Update mouse position display
         var pos = e.GetPosition(PathCanvas);
@@ -603,39 +1281,52 @@ public partial class GcodePathVisualizerWindow : Window
         var worldY = -pos.Y; // Inverted Y
         MousePosLabel.Text = $"X: {worldX:F1} Y: {worldY:F1}";
         
-        // Handle panning
-        if (_isPanning && e.RightButton == MouseButtonState.Pressed)
+        // Handle panning (right button or middle button)
+        if (_isPanning && (e.RightButton == MouseButtonState.Pressed || e.MiddleButton == MouseButtonState.Pressed))
         {
-            var currentPos = e.GetPosition(PathScroll);
+            var currentPos = e.GetPosition(CanvasContainer);
             var delta = currentPos - _panStart;
             
             CanvasTranslate.X = _panOrigin.X + delta.X;
             CanvasTranslate.Y = _panOrigin.Y + delta.Y;
         }
+        else if (_isPanning)
+        {
+            // Mouse button was released without triggering the up event
+            _isPanning = false;
+            CanvasContainer.ReleaseMouseCapture();
+        }
     }
     
-    private void PathCanvas_MouseWheel(object sender, MouseWheelEventArgs e)
+    private void CanvasContainer_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
     {
-        var pos = e.GetPosition(PathCanvas);
-        var delta = e.Delta > 0 ? 1.1 : 0.9;
+        // Get mouse position relative to the container (screen space)
+        var mousePos = e.GetPosition(CanvasContainer);
         
-        _zoom *= delta;
-        _zoom = Math.Max(0.1, Math.Min(50, _zoom));
+        // Calculate the zoom factor
+        var zoomFactor = e.Delta > 0 ? 1.1 : 1.0 / 1.1;
+        var newZoom = _zoom * zoomFactor;
+        newZoom = Math.Max(0.1, Math.Min(50, newZoom));
         
-        // Zoom toward mouse position
-        var oldX = pos.X * CanvasScale.ScaleX + CanvasTranslate.X;
-        var oldY = pos.Y * CanvasScale.ScaleY + CanvasTranslate.Y;
+        // Calculate what point in canvas space is currently under the mouse
+        // screenPos = canvasPos * scale + translate
+        // canvasPos = (screenPos - translate) / scale
+        var canvasX = (mousePos.X - CanvasTranslate.X) / _zoom;
+        var canvasY = (mousePos.Y - CanvasTranslate.Y) / _zoom;
         
+        // Apply new zoom
+        _zoom = newZoom;
         CanvasScale.ScaleX = _zoom;
         CanvasScale.ScaleY = _zoom;
         
-        var newX = pos.X * CanvasScale.ScaleX + CanvasTranslate.X;
-        var newY = pos.Y * CanvasScale.ScaleY + CanvasTranslate.Y;
-        
-        CanvasTranslate.X -= newX - oldX;
-        CanvasTranslate.Y -= newY - oldY;
+        // Adjust translation so the same canvas point stays under the mouse
+        // newScreenPos = canvasPos * newScale + newTranslate = mousePos
+        // newTranslate = mousePos - canvasPos * newScale
+        CanvasTranslate.X = mousePos.X - canvasX * _zoom;
+        CanvasTranslate.Y = mousePos.Y - canvasY * _zoom;
         
         UpdateZoomLabel();
+        e.Handled = true;
     }
     
     private void SegmentList_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -689,6 +1380,32 @@ public partial class GcodePathVisualizerWindow : Window
     
     private void DisplayToggle_Click(object sender, RoutedEventArgs e) => RenderPaths();
     
+    private void PaintingOnlyToggle_Click(object sender, RoutedEventArgs e)
+    {
+        // When Painting Only is toggled ON, set default toggle states for painting view
+        if (ShowPaintingOnlyToggle.IsChecked == true)
+        {
+            // Turn off Points, Feeds, Direction, Line # by default in painting mode
+            // Keep Rapids on so user can see travel moves
+            ShowPointsToggle.IsChecked = false;
+            ShowFeedsToggle.IsChecked = false;  // Feeds toggle doesn't apply in painting mode
+            ShowDirectionToggle.IsChecked = false;
+            ShowLineNumbersToggle.IsChecked = false;
+            ShowRapidsToggle.IsChecked = true;
+        }
+        else
+        {
+            // When turning off Painting Only, restore normal defaults
+            ShowRapidsToggle.IsChecked = true;
+            ShowFeedsToggle.IsChecked = true;
+            ShowPointsToggle.IsChecked = true;
+            ShowDirectionToggle.IsChecked = false;
+            ShowLineNumbersToggle.IsChecked = false;
+        }
+        
+        RenderPaths();
+    }
+    
     private void MarkBadBtn_Click(object sender, RoutedEventArgs e)
     {
         if (_selectedSegment != null)
@@ -718,10 +1435,14 @@ public partial class GcodePathVisualizerWindow : Window
         // Find segments that reverse direction compared to previous segment
         _log("[ANALYSIS] Finding backtrack segments...");
         
-        int found = 0;
+        // Materialize the list first to avoid collection modification during iteration
+        var feedSegments = _segments.Where(s => !s.IsRapid).ToList();
+        var backtrackSegments = new List<GcodeSegment>();
+        
         GcodeSegment? prev = null;
         
-        foreach (var segment in _segments.Where(s => !s.IsRapid))
+        // First pass: identify backtrack segments without modifying collection
+        foreach (var segment in feedSegments)
         {
             if (prev != null)
             {
@@ -734,11 +1455,18 @@ public partial class GcodePathVisualizerWindow : Window
                 var dot = prevDx * dx + prevDy * dy;
                 if (dot < -0.01) // Some tolerance for perpendicular
                 {
-                    MarkSegmentBad(segment, true);
-                    found++;
+                    backtrackSegments.Add(segment);
                 }
             }
             prev = segment;
+        }
+        
+        // Second pass: mark backtrack segments as bad
+        int found = 0;
+        foreach (var segment in backtrackSegments)
+        {
+            MarkSegmentBad(segment, true);
+            found++;
         }
         
         _log($"[ANALYSIS] Found {found} backtrack segments");
@@ -760,8 +1488,11 @@ public partial class GcodePathVisualizerWindow : Window
         
         _log($"[ANALYSIS] Finding long rapids (threshold: {threshold:F1}mm, avg: {avgLength:F1}mm)...");
         
+        // Find long rapids first, then mark them (to avoid collection modification during iteration)
+        var longRapids = rapids.Where(s => s.Length > threshold).ToList();
+        
         int found = 0;
-        foreach (var segment in rapids.Where(s => s.Length > threshold))
+        foreach (var segment in longRapids)
         {
             MarkSegmentBad(segment, true);
             found++;
@@ -769,6 +1500,52 @@ public partial class GcodePathVisualizerWindow : Window
         
         _log($"[ANALYSIS] Found {found} long rapid segments");
         StatusLabel.Text = $"Found {found} long rapid segments (>{threshold:F1}mm)";
+    }
+    
+    private void FindDisconnectsBtn_Click(object sender, RoutedEventArgs e)
+    {
+        // Find feed segments that don't start where the previous feed segment ended
+        // This helps diagnose paint mode issues where segments don't connect properly
+        _log("[ANALYSIS] Finding disconnected feed segments...");
+        
+        const double tolerance = 0.1; // 0.1mm tolerance for connection
+        int found = 0;
+        GcodeSegment? prevFeed = null;
+        
+        // Materialize the list first to avoid collection modification during iteration
+        var feedSegments = _segments.Where(s => !s.IsRapid).ToList();
+        var disconnectedSegments = new List<(GcodeSegment segment, double gap, GcodeSegment prev)>();
+        
+        // First pass: identify disconnected segments without modifying collection
+        foreach (var segment in feedSegments)
+        {
+            if (prevFeed != null)
+            {
+                // Check if this segment starts where the previous one ended
+                var gapX = Math.Abs(segment.FromX - prevFeed.ToX);
+                var gapY = Math.Abs(segment.FromY - prevFeed.ToY);
+                var gap = Math.Sqrt(gapX * gapX + gapY * gapY);
+                
+                if (gap > tolerance)
+                {
+                    disconnectedSegments.Add((segment, gap, prevFeed));
+                }
+            }
+            prevFeed = segment;
+        }
+        
+        // Second pass: mark disconnected segments as bad
+        foreach (var (segment, gap, prev) in disconnectedSegments)
+        {
+            MarkSegmentBad(segment, true);
+            _log($"[DISCONNECT] Line {segment.LineNumber}: Gap of {gap:F3}mm from previous endpoint");
+            _log($"  Previous ended at: ({prev.ToX:F3}, {prev.ToY:F3})");
+            _log($"  This starts at: ({segment.FromX:F3}, {segment.FromY:F3})");
+            found++;
+        }
+        
+        _log($"[ANALYSIS] Found {found} disconnected feed segments");
+        StatusLabel.Text = $"Found {found} disconnected segments (gap > {tolerance}mm)";
     }
     
     private void ExportBadBtn_Click(object sender, RoutedEventArgs e)
@@ -833,6 +1610,15 @@ public class GcodeSegment : INotifyPropertyChanged
         }
     }
     
+    /// <summary>Paint well name this segment belongs to (null if none)</summary>
+    public string? PaintWellName { get; set; }
+    
+    /// <summary>Paint well color (parsed from G-code comments)</summary>
+    public Color? PaintWellColor { get; set; }
+    
+    /// <summary>Painting stroke number within the paint well sequence (1-based)</summary>
+    public int PaintingStrokeNumber { get; set; }
+    
     /// <summary>Visual element on the canvas (for updating appearance)</summary>
     public UIElement? Visual { get; set; }
     
@@ -855,4 +1641,16 @@ public class GcodeSegment : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
+}
+
+/// <summary>
+/// Represents a paint well parsed from G-code comments.
+/// </summary>
+public class ParsedPaintWell
+{
+    public string Name { get; set; } = "";
+    public Color Color { get; set; } = Colors.Black;
+    public double X { get; set; }
+    public double Y { get; set; }
+    public bool HasPosition => X != 0 || Y != 0;
 }

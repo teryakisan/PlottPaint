@@ -52,6 +52,9 @@
                     <ToggleButton x:Name="ShowLineNumbersToggle" Content="Line #" IsChecked="False" 
                                   Padding="8,4" Margin="2" MinWidth="60" Click="DisplayToggle_Click"
                                   ToolTip="Show G-code line numbers"/>
+                    <ToggleButton x:Name="ShowPaintingOnlyToggle" Content="?? Painting Only" IsChecked="False" 
+                                  Padding="8,4" Margin="2" MinWidth="90" Click="PaintingOnlyToggle_Click"
+                                  ToolTip="Show only painting strokes with numbers and paint well colors (requires Paint Mode G-code)"/>
                 </StackPanel>
                 
                 <Separator Style="{StaticResource {x:Static ToolBar.SeparatorStyleKey}}" Margin="5,2"/>
@@ -76,6 +79,8 @@
                             Click="FindBacktracksBtn_Click" ToolTip="Find segments that backtrack (reverse direction)"/>
                     <Button x:Name="FindLongRapidsBtn" Content="?? Long Rapids" Padding="8,4" Margin="2" MinWidth="60"
                             Click="FindLongRapidsBtn_Click" ToolTip="Find unusually long rapid movements"/>
+                    <Button x:Name="FindDisconnectsBtn" Content="?? Disconnects" Padding="8,4" Margin="2" MinWidth="60"
+                            Click="FindDisconnectsBtn_Click" ToolTip="Find feed segments that don't connect to the previous segment endpoint"/>
                     <Button x:Name="ExportBadBtn" Content="?? Export Bad" Padding="8,4" Margin="2" MinWidth="60"
                             Click="ExportBadBtn_Click" ToolTip="Copy all marked bad G-code to clipboard"/>
                 </StackPanel>
@@ -91,28 +96,27 @@
             </Grid.ColumnDefinitions>
             
             <!-- Canvas area -->
-            <Border Grid.Column="0" Background="{DynamicResource CanvasBackgroundBrush}" 
-                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0">
-                <ScrollViewer x:Name="PathScroll" 
-                              HorizontalScrollBarVisibility="Auto" 
-                              VerticalScrollBarVisibility="Auto"
-                              Background="Transparent">
-                    <Canvas x:Name="PathCanvas" 
-                            Background="Transparent"
-                            MouseLeftButtonDown="PathCanvas_MouseLeftButtonDown"
-                            MouseLeftButtonUp="PathCanvas_MouseLeftButtonUp"
-                            MouseMove="PathCanvas_MouseMove"
-                            MouseWheel="PathCanvas_MouseWheel"
-                            MouseRightButtonDown="PathCanvas_MouseRightButtonDown">
+            <Border x:Name="CanvasContainerBorder" Grid.Column="0" Background="{DynamicResource CanvasBackgroundBrush}" 
+                    BorderBrush="{DynamicResource BorderBrush}" BorderThickness="0,0,1,0"
+                    ClipToBounds="True"
+                    MouseRightButtonDown="CanvasContainer_MouseRightButtonDown"
+                    MouseDown="CanvasContainer_MouseMiddleButtonDown"
+                    MouseUp="CanvasContainer_MouseButtonUp"
+                    MouseMove="CanvasContainer_MouseMove"
+                    PreviewMouseWheel="CanvasContainer_PreviewMouseWheel">
+                <Canvas x:Name="PathCanvas" 
+                        Background="Transparent"
+                        MouseLeftButtonDown="PathCanvas_MouseLeftButtonDown"
+                        RenderTransformOrigin="0,0">
                         <Canvas.RenderTransform>
                             <TransformGroup>
+                                <RotateTransform x:Name="CanvasRotation" Angle="0"/>
                                 <ScaleTransform x:Name="CanvasScale" ScaleX="1" ScaleY="1"/>
                                 <TranslateTransform x:Name="CanvasTranslate" X="0" Y="0"/>
                             </TransformGroup>
                         </Canvas.RenderTransform>
                     </Canvas>
-                </ScrollViewer>
-            </Border>
+                </Border>
             
             <!-- Splitter -->
             <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" 

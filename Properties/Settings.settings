@@ -3,10 +3,10 @@
   <Profiles />
   <Settings>
     <Setting Name="bedX" Type="System.Int32" Scope="User">
-      <Value Profile="(Default)">841</Value>
+      <Value Profile="(Default)">1189</Value>
     </Setting>
     <Setting Name="bedY" Type="System.Int32" Scope="User">
-      <Value Profile="(Default)">1189</Value>
+      <Value Profile="(Default)">841</Value>
     </Setting>
     <Setting Name="circleSegments" Type="System.Int32" Scope="User">
       <Value Profile="(Default)">128</Value>

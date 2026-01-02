@@ -653,9 +653,14 @@ behaviors:DragValueBehavior.Step="1"/>
                                         <MenuItem x:Name="SeparateFromGroupMenuItem" Header="Se_parate from Group" Click="SeparateFromGroupMenuItem_Click"/>
                                         <Separator/>
                                         <MenuItem x:Name="SubdivideMenuItem" Header="Su_bdivide..." Click="SubdivideMenuItem_Click" 
-                                                  ToolTip="Drag up/down to add or remove intermediate points along the stroke"/>
-                                        <MenuItem x:Name="ToggleIntermediatePointsMenuItem" Header="Show _Intermediate Points" IsCheckable="True" Click="ToggleIntermediatePointsMenuItem_Click"/>
-                                    </ContextMenu>
+                                                      ToolTip="Drag up/down to add or remove intermediate points along the stroke"/>
+                                            <MenuItem x:Name="ToggleIntermediatePointsMenuItem" Header="Show _Intermediate Points" IsCheckable="True" Click="ToggleIntermediatePointsMenuItem_Click"/>
+                                            <Separator x:Name="BrushProfileSeparator"/>
+                                            <MenuItem x:Name="BrushProfilesMenuItem" Header="🖌 Brush _Profiles" 
+                                                      ToolTip="Select brush profiles to apply to selected strokes. When plotting, one profile is randomly selected from enabled profiles.">
+                                                <!-- Dynamic items added in code-behind -->
+                                            </MenuItem>
+                                        </ContextMenu>
                                 </Canvas.ContextMenu>
                             </Canvas>
                             <Canvas x:Name="RulerCanvas" IsHitTestVisible="False"  Panel.ZIndex="10"/>

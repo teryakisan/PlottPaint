@@ -162,9 +162,40 @@ namespace NVSPlotter
 
         private void BrushProfilesBtn_Click(object sender, RoutedEventArgs e)
         {
-            var w = new Windows.BrushStrokeProfilesWindow { Owner = this };
-            w.Show();
-            w.Activate();
+            // Reuse existing window if still open
+            if (_brushStrokeProfilesWindow != null && _brushStrokeProfilesWindow.IsLoaded)
+            {
+                _brushStrokeProfilesWindow.Activate();
+                return;
+            }
+            
+            _brushStrokeProfilesWindow = new Windows.BrushStrokeProfilesWindow(_grblManager, AppendLog) { Owner = this };
+            
+            // Subscribe to profile changes
+            _brushStrokeProfilesWindow.ActiveProfilesChanged += OnBrushProfilesChanged;
+            _brushStrokeProfilesWindow.Closed += (s, args) =>
+            {
+                if (_brushStrokeProfilesWindow != null)
+                {
+                    _brushStrokeProfilesWindow.ActiveProfilesChanged -= OnBrushProfilesChanged;
+                }
+                _brushStrokeProfilesWindow = null;
+            };
+            
+            // Initialize cached profiles from current state
+            _activeBrushProfiles = _brushStrokeProfilesWindow.ActiveProfiles;
+            
+            _brushStrokeProfilesWindow.Show();
+            _brushStrokeProfilesWindow.Activate();
+        }
+        
+        /// <summary>
+        /// Called when the BrushStrokeProfilesWindow's active profiles list changes.
+        /// </summary>
+        private void OnBrushProfilesChanged(object? sender, IReadOnlyList<Windows.BrushProfile> profiles)
+        {
+            _activeBrushProfiles = profiles;
+            AppendLog($"Active brush profiles updated: {profiles.Count} profile(s) in use group.");
         }
 
         private void GcodeVisualizerBtn_Click(object sender, RoutedEventArgs e)
@@ -190,6 +221,9 @@ namespace NVSPlotter
             
             // Load the G-code
             _gcodeVisualizerWindow.LoadGcode(gcode);
+            
+            // Sync the canvas rotation with the visualizer
+            _gcodeVisualizerWindow.SetCanvasRotation(_canvasRotation.Angle);
             
             // Show and activate
             _gcodeVisualizerWindow.Show();
@@ -241,6 +275,13 @@ namespace NVSPlotter
         private ConsoleWindow? _consoleWindow;
         private ToolsWindow? _toolsWindow;
         private GcodePathVisualizerWindow? _gcodeVisualizerWindow;
+        private Windows.BrushStrokeProfilesWindow? _brushStrokeProfilesWindow;
+        
+        /// <summary>
+        /// Cached list of active brush profiles (profiles with IsInGroup enabled).
+        /// Updated when the BrushStrokeProfilesWindow raises ActiveProfilesChanged event.
+        /// </summary>
+        private IReadOnlyList<Windows.BrushProfile> _activeBrushProfiles = Array.Empty<Windows.BrushProfile>();
     
 
         // Project file state
@@ -592,6 +633,10 @@ namespace NVSPlotter
         {
             var next = (_canvasRotation.Angle + 90) % 360;
             _canvasRotation.Angle = next;
+            
+            // Sync rotation to the G-code visualizer if it's open
+            _gcodeVisualizerWindow?.SetCanvasRotation(next);
+            
             UpdateZoomHost();
         }
 
@@ -1092,6 +1137,9 @@ namespace NVSPlotter
 
             if (sender is not ContextMenu menu) return;
 
+            // Determine if brush profiles menu should be shown
+            var showBrushProfiles = IsPaintModeEnabled && hasSelection && _selectionController.SelectedIndices.Count > 0;
+
             foreach (var item in menu.Items.OfType<MenuItem>())
             {
                 switch (item.Name)
@@ -1127,8 +1175,229 @@ namespace NVSPlotter
                         item.IsEnabled = hasGroupedStrokes;
                         item.IsChecked = anyGroupShowingIntermediate;
                         break;
+                    case "BrushProfilesMenuItem":
+                        item.Visibility = showBrushProfiles ? Visibility.Visible : Visibility.Collapsed;
+                        if (showBrushProfiles)
+                        {
+                            PopulateBrushProfilesMenu(item);
+                        }
+                        break;
                 }
             }
+            
+            // Show/hide the separator before brush profiles
+            foreach (var item in menu.Items.OfType<Separator>())
+            {
+                if (item.Name == "BrushProfileSeparator")
+                {
+                    item.Visibility = showBrushProfiles ? Visibility.Visible : Visibility.Collapsed;
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Populates the Brush Profiles submenu with checkable items for each active profile.
+        /// </summary>
+        private void PopulateBrushProfilesMenu(MenuItem parentMenu)
+        {
+            parentMenu.Items.Clear();
+            
+            // If no active profiles, show a disabled message
+            if (_activeBrushProfiles.Count == 0)
+            {
+                var noProfilesItem = new MenuItem
+                {
+                    Header = "(No profiles in use group)",
+                    IsEnabled = false,
+                    FontStyle = FontStyles.Italic
+                };
+                parentMenu.Items.Add(noProfilesItem);
+                
+                var openProfilesItem = new MenuItem
+                {
+                    Header = "Open Brush Profiles Window..."
+                };
+                openProfilesItem.Click += (s, e) => BrushProfilesBtn_Click(s, e);
+                parentMenu.Items.Add(new Separator());
+                parentMenu.Items.Add(openProfilesItem);
+                return;
+            }
+            
+            // Get the common enabled profiles across all selected strokes
+            var selectedIndices = _selectionController.SelectedIndices.ToList();
+            var commonEnabledProfiles = GetCommonEnabledProfiles(selectedIndices);
+            var partiallyEnabledProfiles = GetPartiallyEnabledProfiles(selectedIndices);
+            
+            // Add a menu item for each active profile
+            foreach (var profile in _activeBrushProfiles)
+            {
+                var profileName = string.IsNullOrWhiteSpace(profile.Name) ? "Unnamed Profile" : profile.Name;
+                var isFullyEnabled = commonEnabledProfiles.Contains(profileName);
+                var isPartiallyEnabled = partiallyEnabledProfiles.Contains(profileName);
+                
+                var menuItem = new MenuItem
+                {
+                    Header = profileName,
+                    IsCheckable = true,
+                    IsChecked = isFullyEnabled,
+                    Tag = profileName,
+                    ToolTip = $"Min Z: {profile.MinZ:F1}mm, Max Z: {profile.MaxZ:F1}mm, Speed: {profile.StrokeSpeed:F0}mm/min"
+                };
+                
+                // Show indeterminate state for partially enabled profiles
+                if (!isFullyEnabled && isPartiallyEnabled)
+                {
+                    menuItem.Header = $"{profileName} (partial)";
+                }
+                
+                menuItem.Click += BrushProfileMenuItem_Click;
+                parentMenu.Items.Add(menuItem);
+            }
+            
+            // Add separator and helper items
+            parentMenu.Items.Add(new Separator());
+            
+            // "Clear All Profiles" option
+            var clearAllItem = new MenuItem
+            {
+                Header = "Clear All Profiles from Selection"
+            };
+            clearAllItem.Click += (s, e) => ClearAllBrushProfilesFromSelection();
+            parentMenu.Items.Add(clearAllItem);
+            
+            // "Open Profiles Window" option
+            var openWindowItem = new MenuItem
+            {
+                Header = "Open Brush Profiles Window..."
+            };
+            openWindowItem.Click += (s, e) => BrushProfilesBtn_Click(s, e);
+            parentMenu.Items.Add(openWindowItem);
+        }
+        
+        /// <summary>
+        /// Gets the set of profile names that are enabled on ALL selected strokes.
+        /// </summary>
+        private HashSet<string> GetCommonEnabledProfiles(List<int> indices)
+        {
+            if (indices.Count == 0) return new HashSet<string>();
+            
+            HashSet<string>? result = null;
+            
+            foreach (var idx in indices)
+            {
+                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
+                
+                var stroke = _doc.Strokes[idx];
+                var enabledProfiles = stroke.EnabledBrushProfiles ?? new HashSet<string>();
+                
+                if (result == null)
+                {
+                    result = new HashSet<string>(enabledProfiles);
+                }
+                else
+                {
+                    result.IntersectWith(enabledProfiles);
+                }
+            }
+            
+            return result ?? new HashSet<string>();
+        }
+        
+        /// <summary>
+        /// Gets the set of profile names that are enabled on SOME (but not all) selected strokes.
+        /// </summary>
+        private HashSet<string> GetPartiallyEnabledProfiles(List<int> indices)
+        {
+            if (indices.Count <= 1) return new HashSet<string>();
+            
+            var allEnabled = new HashSet<string>();
+            var counts = new Dictionary<string, int>();
+            
+            foreach (var idx in indices)
+            {
+                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
+                
+                var stroke = _doc.Strokes[idx];
+                var enabledProfiles = stroke.EnabledBrushProfiles ?? new HashSet<string>();
+                
+                foreach (var profile in enabledProfiles)
+                {
+                    allEnabled.Add(profile);
+                    counts[profile] = counts.GetValueOrDefault(profile, 0) + 1;
+                }
+            }
+            
+            var commonProfiles = GetCommonEnabledProfiles(indices);
+            
+            // Return profiles that are enabled on some but not all strokes
+            return new HashSet<string>(allEnabled.Where(p => !commonProfiles.Contains(p)));
+        }
+        
+        /// <summary>
+        /// Handles clicking on a brush profile menu item to toggle it on/off for selected strokes.
+        /// </summary>
+        private void BrushProfileMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem menuItem) return;
+            if (menuItem.Tag is not string profileName) return;
+            
+            var selectedIndices = _selectionController.SelectedIndices.ToList();
+            if (selectedIndices.Count == 0) return;
+            
+            var isChecked = menuItem.IsChecked;
+            
+            foreach (var idx in selectedIndices)
+            {
+                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
+                
+                var stroke = _doc.Strokes[idx];
+                var enabledProfiles = stroke.EnabledBrushProfiles ?? new HashSet<string>();
+                
+                // Create a new set (don't modify the original directly)
+                var newProfiles = new HashSet<string>(enabledProfiles);
+                
+                if (isChecked)
+                {
+                    newProfiles.Add(profileName);
+                }
+                else
+                {
+                    newProfiles.Remove(profileName);
+                }
+                
+                // Update the stroke with new profile set
+                _doc.Strokes[idx] = stroke.WithBrushProfiles(newProfiles.Count > 0 ? newProfiles : null);
+            }
+            
+            _lastGcode = ""; // Invalidate G-code cache
+            RenderAll();
+            
+            var action = isChecked ? "enabled" : "disabled";
+            AppendLog($"Brush profile '{profileName}' {action} for {selectedIndices.Count} stroke(s).");
+        }
+        
+        /// <summary>
+        /// Clears all brush profile assignments from selected strokes.
+        /// </summary>
+        private void ClearAllBrushProfilesFromSelection()
+        {
+            var selectedIndices = _selectionController.SelectedIndices.ToList();
+            if (selectedIndices.Count == 0) return;
+            
+            foreach (var idx in selectedIndices)
+            {
+                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
+                
+                var stroke = _doc.Strokes[idx];
+                if (stroke.EnabledBrushProfiles != null && stroke.EnabledBrushProfiles.Count > 0)
+                {
+                    _doc.Strokes[idx] = stroke.WithBrushProfiles(null);
+                }
+            }
+            
+            _lastGcode = ""; // Invalidate G-code cache
+            RenderAll();
+            AppendLog($"Cleared brush profiles from {selectedIndices.Count} stroke(s).");
         }
 
         private void CutMenuItem_Click(object sender, RoutedEventArgs e)
@@ -3879,7 +4148,8 @@ namespace NVSPlotter
                 BedY = _grblManager.BedY,
                 Optimize = OptimizeCheck.IsChecked == true,
                 PaintModeEnabled = IsPaintModeEnabled,
-                AutoWashWipeEnabled = FindName("AutoWashWipeCheck") is CheckBox cb && cb.IsChecked == true
+                AutoWashWipeEnabled = FindName("AutoWashWipeCheck") is CheckBox cb && cb.IsChecked == true,
+                AvailableBrushProfiles = _activeBrushProfiles
             };
 
             _lastGcode = _gcodeGenerator.BuildGcode(settings);

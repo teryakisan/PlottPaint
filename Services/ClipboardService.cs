@@ -46,6 +46,7 @@ public sealed class ClipboardService
         public double By { get; set; }
         public Guid? PaintWellId { get; set; }
         public Guid? GroupId { get; set; }
+        public long PaintOrder { get; set; }
         public bool IsGroupStart { get; set; }
         public bool IsGroupEnd { get; set; }
     }
@@ -97,6 +98,7 @@ public sealed class ClipboardService
                 By = stroke.B.Y,
                 PaintWellId = stroke.PaintWellId,
                 GroupId = stroke.GroupId,
+                PaintOrder = stroke.PaintOrder,
                 IsGroupStart = stroke.IsGroupStart,
                 IsGroupEnd = stroke.IsGroupEnd
             });
@@ -198,6 +200,7 @@ public sealed class ClipboardService
                     new PointMm(strokeData.Bx + offset, strokeData.By + offset))
                 {
                     PaintWellId = strokeData.PaintWellId,
+                    PaintOrder = strokeData.PaintOrder,
                     GroupId = newGroupId,
                     IsGroupStart = strokeData.IsGroupStart,
                     IsGroupEnd = strokeData.IsGroupEnd
