@@ -4324,7 +4324,10 @@ namespace NVSPlotter
                 {
                     if (idx >= 0 && idx < _doc.Strokes.Count)
                     {
-                        _doc.Strokes[idx].PaintWellId = well.Id;
+                        var originalStroke = _doc.Strokes[idx];
+                        // Use WithPaintWell to create a new stroke with the paint well and paint order
+                        var paintOrder = _doc.GetNextPaintOrder();
+                        _doc.Strokes[idx] = originalStroke.WithPaintWell(well.Id, paintOrder);
                     }
                 }
                 _lastGcode = ""; // Invalidate G-code cache
