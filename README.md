@@ -1,6 +1,6 @@
 # PlotPaint 🎨
 
-A powerful WPF application for creating and controlling painting plotters with GRBL-based CNC machines. PlotPaint transforms your CNC plotter into an automated painting machine with intelligent brush stroke profiles, color management, and advanced path optimization.
+PlotPaint transforms your gantry-style plotter into an automated painting machine with intelligent brush stroke profiles, color management, and advanced path optimization.
 
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/8.0)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
