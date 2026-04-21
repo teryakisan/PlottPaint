@@ -7,6 +7,26 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+
+    <!-- Application metadata -->
+    <AssemblyName>PlotPaint</AssemblyName>
+    <Product>PlotPaint</Product>
+    <Version>1.0.0</Version>
+    <Authors>teryakisan</Authors>
+    <Company>PlotPaint</Company>
+    <Copyright>Copyright © 2026</Copyright>
+    <Description>Painting plotter control software with brush stroke profiles</Description>
+  </PropertyGroup>
+
+  <!-- Single-file publish configuration (optional - can be overridden via command line) -->
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <PublishSingleFile>true</PublishSingleFile>
+    <SelfContained>false</SelfContained>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <PublishReadyToRun>true</PublishReadyToRun>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <IncludeAllContentForSelfExtract>true</IncludeAllContentForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
   </PropertyGroup>
 
   <ItemGroup>
@@ -29,6 +49,18 @@
       <Generator>PublicSettingsSingleFileGenerator</Generator>
       <LastGenOutput>Settings.Designer.cs</LastGenOutput>
     </None>
+
+    <!-- Exclude App.config from publish output -->
+    <None Update="App.config">
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <!-- Ensure configuration files are embedded in single-file publish -->
+  <ItemGroup>
+    <EmbeddedResource Include="App.config" Condition="'$(PublishSingleFile)' == 'true'">
+      <LogicalName>$(AssemblyName).dll.config</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>
