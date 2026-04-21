@@ -1,20 +1,19 @@
-# PlotPaint ??
+# PlottPaint 
 
-A powerful WPF application for creating and controlling painting plotters with GRBL-based CNC machines. PlotPaint transforms your CNC plotter into an automated painting machine with intelligent brush stroke profiles, color management, and advanced path optimization.
+PlottPaint transforms your CNC plotter into an automated painting machine with intelligent brush stroke profiles, color management, and advanced path optimization.
 
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/8.0)
-[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 
-## ? Features
+## Features
 
-### ?? Painting Mode
+### Painting Mode
 - **Multi-Color Painting**: Define multiple paint wells with custom colors and positions
 - **Intelligent Paint Management**: Automatic wash/wipe sequences on color changes
 - **Paint Refresh Control**: Configurable paint refresh intervals to maintain consistent brush loading
 - **Paint Order Tracking**: Respects the sequence in which colors were assigned to strokes
 
-### ??? Brush Stroke Profiles
+### Brush Stroke Profiles
 - **Dynamic Z-Axis Control**: Apply pressure curves to strokes for realistic brush effects
 - **Custom Profiles**: Create and manage reusable brush stroke profiles with pressure curves
 - **Visual Profile Editor**: Interactive Bézier curve editor for designing brush behaviors
@@ -24,7 +23,7 @@ A powerful WPF application for creating and controlling painting plotters with G
   - Min/Max Z depth control
 - **Paint Only Mode Integration**: Assign brush profiles to painting strokes after G-code generation
 
-### ?? Drawing Tools
+### Drawing Tools
 - **Vector Drawing**: Lines, rectangles, circles, polylines, and Bézier curves
 - **Object Grouping**: Group/ungroup strokes, hierarchical parent groups
 - **Subdivision**: Add intermediate points to strokes for finer control
@@ -32,7 +31,7 @@ A powerful WPF application for creating and controlling painting plotters with G
 - **Snap Features**: Snap to endpoints, grid snapping with customizable spacing
 - **Reference Images**: Load reference images for tracing and alignment
 
-### ??? Advanced Canvas Features
+### Advanced Canvas Features
 - **Paint Canvas Definition**: Define working area within the plotter bed
 - **Popular Canvas Presets**: Quick selection of A-series, US Letter/Legal, and common art canvas sizes
 - **Individual Margins**: Set different safe margins for each side
@@ -47,21 +46,21 @@ A powerful WPF application for creating and controlling painting plotters with G
 - **Custom G-code**: Configurable start/end G-code sequences
 - **GRBL Integration**: Direct serial communication with GRBL controllers
 
-### ?? Debugging & Visualization
+### Debugging & Visualization
 - **G-code Path Visualizer**: Visual debugging of generated tool paths
 - **Segment Analysis**: Find backtracks, long rapids, and disconnected segments
 - **Paint Mode Visualization**: Color-coded painting strokes with sequence numbers
 - **Brush Profile Indicators**: Visual markers for segments using brush profiles
 - **Mark Bad Segments**: Flag problematic G-code segments for analysis
 
-### ?? Paint Only View Mode
+### Paint Only View Mode
 - **Post-Generation Editing**: Assign brush profiles to painting strokes after G-code generation
 - **Stroke Selection**: Select individual or multiple painting strokes
 - **Visual Feedback**: Color-coded strokes with stroke numbers and paint well indicators
 - **Context Menu Actions**: Right-click to assign profiles or select all strokes
 - **Live G-code Regeneration**: Automatically regenerates G-code when profiles are assigned
 
-### ?? Modern UI
+### Modern UI
 - **Dark/Light Theme**: Toggle between dark and light modes
 - **Themed Components**: Consistent theming across all windows and controls
 - **Drag Value Controls**: Drag numeric fields up/down to adjust values
@@ -93,7 +92,7 @@ start NVSPlotter.sln
    - Press F5 in Visual Studio, or
    - `dotnet build` followed by `dotnet run`
 
-## ?? Usage Guide
+## Usage Guide
 
 ### Basic Workflow
 
@@ -160,7 +159,7 @@ A special view mode that shows the actual painting sequence from generated G-cod
 - See stroke boundaries clearly (where pen goes up/down)
 - Changes automatically regenerate G-code
 
-## ?? Paint Wells
+## Paint Wells
 
 ### Well Types
 - **Paint Wells**: Colored paint sources
@@ -174,7 +173,7 @@ Each paint well has:
 - **Dwell Time**: How long to wait while dipped
 - **Refresh Distance**: Random range (min-max) for paint reload
 
-## ??? Brush Profiles
+## Brush Profiles
 
 ### Profile Editor
 - **Interactive Curve**: Click to add control points, drag to adjust
@@ -198,7 +197,7 @@ Profiles are applied at the **G-code level**:
 - `Y=1` ? `Z=ZDown` (maximum depth)
 - Samples are distributed evenly along the stroke's physical length
 
-## ?? Advanced Features
+## Advanced Features
 
 ### Stroke Optimization
 - **Normal Mode**: Full nearest-neighbor optimization (reorders all strokes)
@@ -218,7 +217,7 @@ Save and load complete projects including:
 - Machine settings
 - Canvas size and margins
 
-## ?? Keyboard Shortcuts
+## Keyboard Shortcuts
 
 ### General
 - `Ctrl+N` - New Project
@@ -249,7 +248,7 @@ Save and load complete projects including:
 - `F` - Fit to view
 - `Esc` - Deselect segment
 
-## ??? Architecture
+## Architecture
 
 ### Core Services
 - **GcodeGeneratorService**: Generates G-code from document strokes
@@ -278,7 +277,7 @@ Save and load complete projects including:
 - **ToolsWindow**: Floating tool palette
 - **ConsoleWindow**: GRBL console for manual commands
 
-## ?? Contributing
+## Contributing
 
 Contributions are welcome! Please feel free to submit issues and pull requests.
 
@@ -294,23 +293,20 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 - Add XML documentation for public APIs
 - Keep methods focused and single-purpose
 
-## ?? License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## ?? Acknowledgments
+## Acknowledgments
 
 - Built with WPF and .NET 8
 - GRBL firmware compatibility
 - Uses WpfAnimatedGif for loading indicators
 - Emoji.Wpf for emoji rendering support
 
-## ?? Contact
+## Contact
 
 - GitHub: [@teryakisan](https://github.com/teryakisan)
 - Project: [PlotPaint](https://github.com/teryakisan/PlotPaint)
 
-## ??? Roadmap
+## Roadmap
 
 ### Planned Features
 - [ ] SVG import/export
@@ -322,10 +318,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - [ ] Job queue management
 - [ ] Machine calibration wizard
 
-## ?? Screenshots
-
-*TODO: Add screenshots of the main interface, paint only mode, brush profile editor, and G-code visualizer*
+## Screenshots
 
 ---
 
-**Made with ?? for the plotter art community**
+**Made with love for the plotter art community by NVSInk Art Studio**
