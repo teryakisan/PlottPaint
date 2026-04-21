@@ -131,8 +131,20 @@ public partial class GcodePathVisualizerWindow : Window
                 _log($"  - {well.Key}: {well.Value.Name}");
             }
             var strokeCount = _segments.Count(s => s.PaintingStrokeNumber > 0);
-            var maxStroke = _segments.Max(s => s.PaintingStrokeNumber);
+            var maxStroke = _segments.Any() ? _segments.Max(s => s.PaintingStrokeNumber) : 0;
             _log($"[VISUALIZER] Segments with stroke numbers: {strokeCount}, max stroke: {maxStroke}");
+            
+            // Log brush profile info
+            var brushProfileSegments = _segments.Where(s => s.HasBrushProfile).ToList();
+            if (brushProfileSegments.Count > 0)
+            {
+                var profileNames = brushProfileSegments
+                    .Select(s => s.BrushProfileName)
+                    .Where(n => n != null)
+                    .Distinct()
+                    .ToList();
+                _log($"[VISUALIZER] Brush profiles detected: {brushProfileSegments.Count} segments using profiles: {string.Join(", ", profileNames)}");
+            }
         }
         
         StatusLabel.Text = $"Loaded {_segments.Count} segments";
@@ -261,6 +273,16 @@ public partial class GcodePathVisualizerWindow : Window
             zValuesDetected = true;
         }
         
+        // Regex patterns for brush profile markers
+        var brushProfileBeginPattern = new Regex(@";\s*=+\s*BRUSH\s+PROFILE\s+BEGIN\s*=+", RegexOptions.IgnoreCase);
+        var brushProfileEndPattern = new Regex(@";\s*=+\s*BRUSH\s+PROFILE\s+END:\s*(\w+)\s*=+", RegexOptions.IgnoreCase);
+        var brushProfileNamePattern = new Regex(@";\s*Profile\s+Name:\s*(.+)", RegexOptions.IgnoreCase);
+        var brushProfileTPattern = new Regex(@";\s*(\w+)\s+t=(\d+\.?\d*)\s+z=(\d+\.?\d*)", RegexOptions.IgnoreCase);
+        
+        // Brush profile tracking
+        bool inBrushProfile = false;
+        string? currentBrushProfileName = null;
+        
         // Second pass: parse segments with paint well associations
         foreach (var rawLine in lines)
         {
@@ -306,12 +328,41 @@ public partial class GcodePathVisualizerWindow : Window
                 continue;
             }
             
-            // Skip empty lines and pure comments
+            // Check for brush profile BEGIN marker
+            if (brushProfileBeginPattern.IsMatch(line))
+            {
+                inBrushProfile = true;
+                continue;
+            }
+            
+            // Check for brush profile name (comes after BEGIN)
+            var profileNameMatch = brushProfileNamePattern.Match(line);
+            if (profileNameMatch.Success && inBrushProfile)
+            {
+                currentBrushProfileName = profileNameMatch.Groups[1].Value.Trim();
+                continue;
+            }
+            
+            // Check for brush profile END marker
+            var profileEndMatch = brushProfileEndPattern.Match(line);
+            if (profileEndMatch.Success)
+            {
+                inBrushProfile = false;
+                currentBrushProfileName = null;
+                continue;
+            }
+            
+            // Skip empty lines and pure comments (but we already processed special comments above)
             if (string.IsNullOrWhiteSpace(line) || line.StartsWith(";"))
                 continue;
             
-            // Remove inline comments
+            // Extract inline comment for brush profile t/z values
+            string? inlineComment = null;
             var commentIndex = line.IndexOf(';');
+            if (commentIndex >= 0)
+            {
+                inlineComment = line.Substring(commentIndex).Trim();
+            }
             var command = commentIndex >= 0 ? line.Substring(0, commentIndex).Trim() : line;
             
             if (string.IsNullOrWhiteSpace(command))
@@ -385,6 +436,21 @@ public partial class GcodePathVisualizerWindow : Window
                     strokeNum = paintingStrokeNumber;
                 }
                 
+                // Parse brush profile t/z values from inline comment if present
+                double? brushT = null;
+                double? brushZ = null;
+                if (inBrushProfile && inlineComment != null)
+                {
+                    var tMatch = brushProfileTPattern.Match(inlineComment);
+                    if (tMatch.Success)
+                    {
+                        if (double.TryParse(tMatch.Groups[2].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var tVal))
+                            brushT = tVal;
+                        if (double.TryParse(tMatch.Groups[3].Value, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var zVal))
+                            brushZ = zVal;
+                    }
+                }
+                
                 var segment = new GcodeSegment
                 {
                     LineNumber = lineNumber,
@@ -398,7 +464,11 @@ public partial class GcodePathVisualizerWindow : Window
                     IsRapid = isRapid,
                     PaintWellName = currentPaintWellName,
                     PaintWellColor = paintWellColor,
-                    PaintingStrokeNumber = strokeNum
+                    PaintingStrokeNumber = strokeNum,
+                    HasBrushProfile = inBrushProfile,
+                    BrushProfileName = inBrushProfile ? currentBrushProfileName : null,
+                    BrushProfileT = brushT,
+                    BrushProfileZ = brushZ
                 };
                 
                 _segments.Add(segment);
@@ -1146,9 +1216,19 @@ public partial class GcodePathVisualizerWindow : Window
             return;
         }
         
-        SegmentTypeLabel.Text = $"Type: {(segment.IsRapid ? "Rapid (G0)" : "Feed (G1)")}";
-        SegmentFromLabel.Text = $"From: X{segment.FromX:F3} Y{segment.FromY:F3}";
-        SegmentToLabel.Text = $"To: X{segment.ToX:F3} Y{segment.ToY:F3}";
+        var typeText = segment.IsRapid ? "Rapid (G0)" : "Feed (G1)";
+        if (segment.HasBrushProfile && segment.BrushProfileName != null)
+        {
+            typeText += $" ?? {segment.BrushProfileName}";
+            if (segment.BrushProfileT.HasValue)
+            {
+                typeText += $" t={segment.BrushProfileT.Value:F3}";
+            }
+        }
+        
+        SegmentTypeLabel.Text = $"Type: {typeText}";
+        SegmentFromLabel.Text = $"From: X{segment.FromX:F3} Y{segment.FromY:F3} Z{segment.FromZ:F3}";
+        SegmentToLabel.Text = $"To: X{segment.ToX:F3} Y{segment.ToY:F3} Z{segment.ToZ:F3}";
         SegmentLengthLabel.Text = $"Length: {segment.Length:F3} mm";
         SegmentLineLabel.Text = $"Line: {segment.LineNumber}";
         SegmentGcodeBox.Text = segment.GcodeCommand;
@@ -1619,6 +1699,18 @@ public class GcodeSegment : INotifyPropertyChanged
     /// <summary>Painting stroke number within the paint well sequence (1-based)</summary>
     public int PaintingStrokeNumber { get; set; }
     
+    /// <summary>Whether this segment is part of a brush profile stroke</summary>
+    public bool HasBrushProfile { get; set; }
+    
+    /// <summary>Name of the brush profile being applied (null if none)</summary>
+    public string? BrushProfileName { get; set; }
+    
+    /// <summary>Normalized position (t) along the stroke (0-1) when using brush profile</summary>
+    public double? BrushProfileT { get; set; }
+    
+    /// <summary>Profile Z value at this point (0-1 normalized)</summary>
+    public double? BrushProfileZ { get; set; }
+    
     /// <summary>Visual element on the canvas (for updating appearance)</summary>
     public UIElement? Visual { get; set; }
     
@@ -1631,6 +1723,10 @@ public class GcodeSegment : INotifyPropertyChanged
         get
         {
             var cmd = GcodeCommand.Length > 40 ? GcodeCommand[..37] + "..." : GcodeCommand;
+            if (HasBrushProfile && BrushProfileName != null)
+            {
+                cmd = $"?? {cmd}";
+            }
             return cmd;
         }
     }

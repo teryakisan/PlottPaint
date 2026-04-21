@@ -607,6 +607,10 @@ behaviors:DragValueBehavior.Step="1"/>
                         <Button x:Name="ReferenceImageBtn" DockPanel.Dock="Left" Content="🖼 Reference" Width="95" Margin="5,2" Click="ReferenceImageBtn_Click" ToolTip="Open Reference Image Window"/>
                         <Button x:Name="BrushProfilesBtn" DockPanel.Dock="Left" Content="🖌 Profiles" Width="95" Margin="5,2" Click="BrushProfilesBtn_Click" ToolTip="Open Brush Stroke Profiles"/>
                         <Button x:Name="GcodeVisualizerBtn" DockPanel.Dock="Left" Content="🔍 Path Debug" Width="95" Margin="5,2" Click="GcodeVisualizerBtn_Click" ToolTip="Open G-code Path Visualizer for debugging"/>
+                        <Separator DockPanel.Dock="Left" Width="1" Background="{DynamicResource BorderBrush}" Margin="5,4"/>
+                        <ToggleButton x:Name="PaintOnlyViewToggle" DockPanel.Dock="Left" Content="🎨 Paint Only" Width="90" Margin="5,2" 
+                                      Click="PaintOnlyViewToggle_Click" 
+                                      ToolTip="Toggle Paint Only view mode - shows painting strokes as numbered sequences. Right-click strokes to assign brush profiles."/>
 
                         <!-- Theme Toggle Switch - docked to the right -->
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center" Margin="5,0,10,0">
@@ -655,13 +659,20 @@ behaviors:DragValueBehavior.Step="1"/>
                                         <MenuItem x:Name="SubdivideMenuItem" Header="Su_bdivide..." Click="SubdivideMenuItem_Click" 
                                                       ToolTip="Drag up/down to add or remove intermediate points along the stroke"/>
                                             <MenuItem x:Name="ToggleIntermediatePointsMenuItem" Header="Show _Intermediate Points" IsCheckable="True" Click="ToggleIntermediatePointsMenuItem_Click"/>
-                                            <Separator x:Name="BrushProfileSeparator"/>
-                                            <MenuItem x:Name="BrushProfilesMenuItem" Header="🖌 Brush _Profiles" 
-                                                      ToolTip="Select brush profiles to apply to selected strokes. When plotting, one profile is randomly selected from enabled profiles.">
-                                                <!-- Dynamic items added in code-behind -->
-                                            </MenuItem>
                                         </ContextMenu>
                                 </Canvas.ContextMenu>
+                                <Canvas.Resources>
+                                    <!-- Paint Only mode context menu -->
+                                    <ContextMenu x:Key="PaintOnlyContextMenu">
+                                        <MenuItem x:Name="PaintOnlySelectAllMenuItem" Header="Select _All Strokes" Click="PaintOnlySelectAllMenuItem_Click"/>
+                                        <MenuItem x:Name="PaintOnlyDeselectMenuItem" Header="_Deselect" Click="PaintOnlyDeselectMenuItem_Click"/>
+                                        <Separator/>
+                                        <MenuItem x:Name="PaintOnlyBrushProfilesMenuItem" Header="🖌 Assign Brush _Profiles">
+                                            <!-- Dynamic items added in code-behind -->
+                                        </MenuItem>
+                                        <MenuItem x:Name="PaintOnlyClearProfilesMenuItem" Header="Clear Brush Profiles" Click="PaintOnlyClearProfilesMenuItem_Click"/>
+                                    </ContextMenu>
+                                </Canvas.Resources>
                             </Canvas>
                             <Canvas x:Name="RulerCanvas" IsHitTestVisible="False"  Panel.ZIndex="10"/>
                         </Grid>

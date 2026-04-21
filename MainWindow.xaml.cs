@@ -282,6 +282,12 @@ namespace NVSPlotter
         /// Updated when the BrushStrokeProfilesWindow raises ActiveProfilesChanged event.
         /// </summary>
         private IReadOnlyList<Windows.BrushProfile> _activeBrushProfiles = Array.Empty<Windows.BrushProfile>();
+        
+        // Paint Only view mode services and controller
+        private GcodePaintingStrokeService? _gcodePaintingStrokeService;
+        private PaintOnlyModeController? _paintOnlyModeController;
+        private bool _isPaintOnlyViewEnabled;
+        private System.Windows.Shapes.Rectangle? _paintOnlyMarqueeRect;
     
 
         // Project file state
@@ -370,6 +376,11 @@ namespace NVSPlotter
                 _coordTransform,
                 () => _doc,
                 AppendLog);
+            
+            // Load saved brush profiles from disk at startup
+            // This ensures brush profiles are available for G-code generation even if the
+            // BrushStrokeProfilesWindow has never been opened in this session
+            _activeBrushProfiles = Windows.BrushStrokeProfilesWindow.LoadActiveProfilesFromDisk();
 
             DrawCanvas.LayoutTransform = _zoom;
             if (RulerCanvas != null)
@@ -436,6 +447,19 @@ namespace NVSPlotter
 
             // Initialize project file service
             _projectFileService = new ProjectFileService(AppendLog);
+            
+            // Initialize Paint Only view mode services
+            _gcodePaintingStrokeService = new GcodePaintingStrokeService(AppendLog);
+            _canvasRenderer.SetGcodePaintingStrokeService(_gcodePaintingStrokeService);
+            
+            _paintOnlyModeController = new PaintOnlyModeController(
+                () => _gcodePaintingStrokeService,
+                _canvasRenderer,
+                () => _doc,
+                RenderAll,
+                AppendLog);
+            _paintOnlyModeController.ContextMenuRequested += OnPaintOnlyContextMenuRequested;
+            _paintOnlyModeController.MarqueeUpdated += OnPaintOnlyMarqueeUpdated;
 
             // Subscribe to GRBL manager events
             _grblManager.ConnectionStateChanged += (s, e) => UpdateConnStatus();
@@ -1137,9 +1161,6 @@ namespace NVSPlotter
 
             if (sender is not ContextMenu menu) return;
 
-            // Determine if brush profiles menu should be shown
-            var showBrushProfiles = IsPaintModeEnabled && hasSelection && _selectionController.SelectedIndices.Count > 0;
-
             foreach (var item in menu.Items.OfType<MenuItem>())
             {
                 switch (item.Name)
@@ -1175,229 +1196,8 @@ namespace NVSPlotter
                         item.IsEnabled = hasGroupedStrokes;
                         item.IsChecked = anyGroupShowingIntermediate;
                         break;
-                    case "BrushProfilesMenuItem":
-                        item.Visibility = showBrushProfiles ? Visibility.Visible : Visibility.Collapsed;
-                        if (showBrushProfiles)
-                        {
-                            PopulateBrushProfilesMenu(item);
-                        }
-                        break;
                 }
             }
-            
-            // Show/hide the separator before brush profiles
-            foreach (var item in menu.Items.OfType<Separator>())
-            {
-                if (item.Name == "BrushProfileSeparator")
-                {
-                    item.Visibility = showBrushProfiles ? Visibility.Visible : Visibility.Collapsed;
-                }
-            }
-        }
-        
-        /// <summary>
-        /// Populates the Brush Profiles submenu with checkable items for each active profile.
-        /// </summary>
-        private void PopulateBrushProfilesMenu(MenuItem parentMenu)
-        {
-            parentMenu.Items.Clear();
-            
-            // If no active profiles, show a disabled message
-            if (_activeBrushProfiles.Count == 0)
-            {
-                var noProfilesItem = new MenuItem
-                {
-                    Header = "(No profiles in use group)",
-                    IsEnabled = false,
-                    FontStyle = FontStyles.Italic
-                };
-                parentMenu.Items.Add(noProfilesItem);
-                
-                var openProfilesItem = new MenuItem
-                {
-                    Header = "Open Brush Profiles Window..."
-                };
-                openProfilesItem.Click += (s, e) => BrushProfilesBtn_Click(s, e);
-                parentMenu.Items.Add(new Separator());
-                parentMenu.Items.Add(openProfilesItem);
-                return;
-            }
-            
-            // Get the common enabled profiles across all selected strokes
-            var selectedIndices = _selectionController.SelectedIndices.ToList();
-            var commonEnabledProfiles = GetCommonEnabledProfiles(selectedIndices);
-            var partiallyEnabledProfiles = GetPartiallyEnabledProfiles(selectedIndices);
-            
-            // Add a menu item for each active profile
-            foreach (var profile in _activeBrushProfiles)
-            {
-                var profileName = string.IsNullOrWhiteSpace(profile.Name) ? "Unnamed Profile" : profile.Name;
-                var isFullyEnabled = commonEnabledProfiles.Contains(profileName);
-                var isPartiallyEnabled = partiallyEnabledProfiles.Contains(profileName);
-                
-                var menuItem = new MenuItem
-                {
-                    Header = profileName,
-                    IsCheckable = true,
-                    IsChecked = isFullyEnabled,
-                    Tag = profileName,
-                    ToolTip = $"Min Z: {profile.MinZ:F1}mm, Max Z: {profile.MaxZ:F1}mm, Speed: {profile.StrokeSpeed:F0}mm/min"
-                };
-                
-                // Show indeterminate state for partially enabled profiles
-                if (!isFullyEnabled && isPartiallyEnabled)
-                {
-                    menuItem.Header = $"{profileName} (partial)";
-                }
-                
-                menuItem.Click += BrushProfileMenuItem_Click;
-                parentMenu.Items.Add(menuItem);
-            }
-            
-            // Add separator and helper items
-            parentMenu.Items.Add(new Separator());
-            
-            // "Clear All Profiles" option
-            var clearAllItem = new MenuItem
-            {
-                Header = "Clear All Profiles from Selection"
-            };
-            clearAllItem.Click += (s, e) => ClearAllBrushProfilesFromSelection();
-            parentMenu.Items.Add(clearAllItem);
-            
-            // "Open Profiles Window" option
-            var openWindowItem = new MenuItem
-            {
-                Header = "Open Brush Profiles Window..."
-            };
-            openWindowItem.Click += (s, e) => BrushProfilesBtn_Click(s, e);
-            parentMenu.Items.Add(openWindowItem);
-        }
-        
-        /// <summary>
-        /// Gets the set of profile names that are enabled on ALL selected strokes.
-        /// </summary>
-        private HashSet<string> GetCommonEnabledProfiles(List<int> indices)
-        {
-            if (indices.Count == 0) return new HashSet<string>();
-            
-            HashSet<string>? result = null;
-            
-            foreach (var idx in indices)
-            {
-                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
-                
-                var stroke = _doc.Strokes[idx];
-                var enabledProfiles = stroke.EnabledBrushProfiles ?? new HashSet<string>();
-                
-                if (result == null)
-                {
-                    result = new HashSet<string>(enabledProfiles);
-                }
-                else
-                {
-                    result.IntersectWith(enabledProfiles);
-                }
-            }
-            
-            return result ?? new HashSet<string>();
-        }
-        
-        /// <summary>
-        /// Gets the set of profile names that are enabled on SOME (but not all) selected strokes.
-        /// </summary>
-        private HashSet<string> GetPartiallyEnabledProfiles(List<int> indices)
-        {
-            if (indices.Count <= 1) return new HashSet<string>();
-            
-            var allEnabled = new HashSet<string>();
-            var counts = new Dictionary<string, int>();
-            
-            foreach (var idx in indices)
-            {
-                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
-                
-                var stroke = _doc.Strokes[idx];
-                var enabledProfiles = stroke.EnabledBrushProfiles ?? new HashSet<string>();
-                
-                foreach (var profile in enabledProfiles)
-                {
-                    allEnabled.Add(profile);
-                    counts[profile] = counts.GetValueOrDefault(profile, 0) + 1;
-                }
-            }
-            
-            var commonProfiles = GetCommonEnabledProfiles(indices);
-            
-            // Return profiles that are enabled on some but not all strokes
-            return new HashSet<string>(allEnabled.Where(p => !commonProfiles.Contains(p)));
-        }
-        
-        /// <summary>
-        /// Handles clicking on a brush profile menu item to toggle it on/off for selected strokes.
-        /// </summary>
-        private void BrushProfileMenuItem_Click(object sender, RoutedEventArgs e)
-        {
-            if (sender is not MenuItem menuItem) return;
-            if (menuItem.Tag is not string profileName) return;
-            
-            var selectedIndices = _selectionController.SelectedIndices.ToList();
-            if (selectedIndices.Count == 0) return;
-            
-            var isChecked = menuItem.IsChecked;
-            
-            foreach (var idx in selectedIndices)
-            {
-                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
-                
-                var stroke = _doc.Strokes[idx];
-                var enabledProfiles = stroke.EnabledBrushProfiles ?? new HashSet<string>();
-                
-                // Create a new set (don't modify the original directly)
-                var newProfiles = new HashSet<string>(enabledProfiles);
-                
-                if (isChecked)
-                {
-                    newProfiles.Add(profileName);
-                }
-                else
-                {
-                    newProfiles.Remove(profileName);
-                }
-                
-                // Update the stroke with new profile set
-                _doc.Strokes[idx] = stroke.WithBrushProfiles(newProfiles.Count > 0 ? newProfiles : null);
-            }
-            
-            _lastGcode = ""; // Invalidate G-code cache
-            RenderAll();
-            
-            var action = isChecked ? "enabled" : "disabled";
-            AppendLog($"Brush profile '{profileName}' {action} for {selectedIndices.Count} stroke(s).");
-        }
-        
-        /// <summary>
-        /// Clears all brush profile assignments from selected strokes.
-        /// </summary>
-        private void ClearAllBrushProfilesFromSelection()
-        {
-            var selectedIndices = _selectionController.SelectedIndices.ToList();
-            if (selectedIndices.Count == 0) return;
-            
-            foreach (var idx in selectedIndices)
-            {
-                if (idx < 0 || idx >= _doc.Strokes.Count) continue;
-                
-                var stroke = _doc.Strokes[idx];
-                if (stroke.EnabledBrushProfiles != null && stroke.EnabledBrushProfiles.Count > 0)
-                {
-                    _doc.Strokes[idx] = stroke.WithBrushProfiles(null);
-                }
-            }
-            
-            _lastGcode = ""; // Invalidate G-code cache
-            RenderAll();
-            AppendLog($"Cleared brush profiles from {selectedIndices.Count} stroke(s).");
         }
 
         private void CutMenuItem_Click(object sender, RoutedEventArgs e)
@@ -2124,6 +1924,18 @@ namespace NVSPlotter
                 var hover = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
                 UpdateWorkingAreaCrosshair(hover);
             }
+            
+            // Paint Only view mode - handle mouse move through the controller
+            if (_isPaintOnlyViewEnabled && _paintOnlyModeController != null)
+            {
+                var paintOnlyPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                if (_paintOnlyModeController.HandleMouseMove(paintOnlyPoint))
+                {
+                    // Update marquee visual if marquee selecting
+                    e.Handled = true;
+                    return;
+                }
+            }
 
             // Paint well tool handling
             if (_paintWellController.IsCreating || _paintWellController.IsDragging)
@@ -2245,6 +2057,22 @@ namespace NVSPlotter
             var unclampedPoint = MouseToMm(e.GetPosition(CanvasScroll));
             var rawPoint = ClampToPage(unclampedPoint);
             var point = ApplySnapping(rawPoint, out _, out _, out _);
+            
+            // Paint Only view mode - handle mouse events through the controller
+            if (_isPaintOnlyViewEnabled && _paintOnlyModeController != null)
+            {
+                var isShiftHeld = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+                var isRightClick = e.ChangedButton == MouseButton.Right;
+                if (_paintOnlyModeController.HandleMouseDown(point, isShiftHeld, isRightClick))
+                {
+                    if (_paintOnlyModeController.IsMarqueeSelecting)
+                    {
+                        DrawCanvas.CaptureMouse();
+                    }
+                    e.Handled = true;
+                    return;
+                }
+            }
 
             // Check if clicking on a paint well - set it as active color regardless of current tool
             var hitWell = _paintWellController.TryHitTestPaintWell(point);
@@ -2431,6 +2259,21 @@ namespace NVSPlotter
             {
                 CompleteWorkingAreaDrag(e);
                 return;
+            }
+            
+            // Paint Only view mode - handle mouse up through the controller
+            if (_isPaintOnlyViewEnabled && _paintOnlyModeController != null && _paintOnlyModeController.IsMarqueeSelecting)
+            {
+                var paintOnlyPoint = ClampToPage(MouseToMm(e.GetPosition(CanvasScroll)));
+                var isShiftHeld = Keyboard.IsKeyDown(Key.LeftShift) || Keyboard.IsKeyDown(Key.RightShift);
+                if (_paintOnlyModeController.HandleMouseUp(paintOnlyPoint, isShiftHeld))
+                {
+                    DrawCanvas.ReleaseMouseCapture();
+                    // Hide marquee rectangle
+                    HidePaintOnlyMarquee();
+                    e.Handled = true;
+                    return;
+                }
             }
 
             // FreeDraw tool completion
@@ -3168,6 +3011,19 @@ namespace NVSPlotter
 
         private void DrawCanvas_MouseRightButtonDown(object sender, MouseButtonEventArgs e)
         {
+            // Handle Paint Only mode right-click first
+            if (_isPaintOnlyViewEnabled && _paintOnlyModeController != null)
+            {
+                var pos = e.GetPosition(DrawCanvas);
+                var docPoint = new PointMm(pos.X, pos.Y);
+                
+                if (_paintOnlyModeController.HandleMouseDown(docPoint, isShiftHeld: false, isRightClick: true))
+                {
+                    e.Handled = true;
+                    return;
+                }
+            }
+            
             if (_measurementOverlay.IsMeasuring || (GetCurrentTool() == ToolMode.Measure && _measurementOverlay.HasMeasurement))
             {
                 _measurementOverlay.Reset();
@@ -3893,7 +3749,8 @@ namespace NVSPlotter
                 CanvasRotationAngle = _canvasRotation.Angle,
                 BedX = _grblManager.BedX,
                 BedY = _grblManager.BedY,
-                BedFromGrbl = _grblManager.BedFromGrbl
+                BedFromGrbl = _grblManager.BedFromGrbl,
+                IsPaintOnlyViewEnabled = _isPaintOnlyViewEnabled
             };
 
             // Delegate to canvas renderer service
@@ -4138,6 +3995,23 @@ namespace NVSPlotter
 
         private string BuildGcode()
         {
+            // Collect brush profile assignments from Paint Only mode
+            Dictionary<int, HashSet<string>>? paintOnlyBrushProfiles = null;
+            if (_gcodePaintingStrokeService != null)
+            {
+                var strokesWithProfiles = _gcodePaintingStrokeService.PaintingStrokes
+                    .Where(s => s.EnabledBrushProfiles != null && s.EnabledBrushProfiles.Count > 0)
+                    .ToList();
+                
+                if (strokesWithProfiles.Count > 0)
+                {
+                    paintOnlyBrushProfiles = strokesWithProfiles
+                        .ToDictionary(
+                            s => s.StrokeNumber,
+                            s => new HashSet<string>(s.EnabledBrushProfiles!));
+                }
+            }
+            
             var settings = new GcodeSettings
             {
                 FeedXY = ParseDouble(FeedXYBox.Text, 3000),
@@ -4149,7 +4023,8 @@ namespace NVSPlotter
                 Optimize = OptimizeCheck.IsChecked == true,
                 PaintModeEnabled = IsPaintModeEnabled,
                 AutoWashWipeEnabled = FindName("AutoWashWipeCheck") is CheckBox cb && cb.IsChecked == true,
-                AvailableBrushProfiles = _activeBrushProfiles
+                AvailableBrushProfiles = _activeBrushProfiles,
+                PaintOnlyBrushProfiles = paintOnlyBrushProfiles
             };
 
             _lastGcode = _gcodeGenerator.BuildGcode(settings);
@@ -4954,7 +4829,335 @@ namespace NVSPlotter
                 // Silently fail if DWM API is not available (Windows 7/8)
             }
         }
-
+        
+        // ===== PAINT ONLY VIEW MODE =====
+        
+        /// <summary>
+        /// Handles the Paint Only View toggle button click.
+        /// This generates G-code and parses it to extract painting strokes for visualization.
+        /// </summary>
+        private void PaintOnlyViewToggle_Click(object sender, RoutedEventArgs e)
+        {
+            _isPaintOnlyViewEnabled = !_isPaintOnlyViewEnabled;
+            
+            if (_isPaintOnlyViewEnabled)
+            {
+                // Generate G-code and parse it to extract painting strokes
+                var gcode = BuildGcode();
+                if (string.IsNullOrWhiteSpace(gcode))
+                {
+                    _isPaintOnlyViewEnabled = false;
+                    AppendLog("[PAINT ONLY] Cannot enable - no strokes to visualize. Draw something first!");
+                    
+                    if (sender is System.Windows.Controls.Primitives.ToggleButton toggle)
+                    {
+                        toggle.IsChecked = false;
+                    }
+                    return;
+                }
+                
+                // Parse the G-code to extract painting strokes
+                _gcodePaintingStrokeService?.ParseGcode(gcode);
+                
+                if (_gcodePaintingStrokeService?.PaintingStrokes.Count == 0)
+                {
+                    _isPaintOnlyViewEnabled = false;
+                    AppendLog("[PAINT ONLY] Cannot enable - no painting strokes found in G-code. Enable Paint Mode first!");
+                    
+                    if (sender is System.Windows.Controls.Primitives.ToggleButton toggle)
+                    {
+                        toggle.IsChecked = false;
+                    }
+                    return;
+                }
+                
+                _paintOnlyModeController?.Activate();
+                AppendLog($"[PAINT ONLY] View mode enabled - showing {_gcodePaintingStrokeService?.PaintingStrokes.Count} painting strokes from G-code");
+            }
+            else
+            {
+                _paintOnlyModeController?.Deactivate();
+                AppendLog("[PAINT ONLY] View mode disabled");
+            }
+            
+            // Update toggle button visual state
+            if (sender is System.Windows.Controls.Primitives.ToggleButton toggleBtn)
+            {
+                toggleBtn.IsChecked = _isPaintOnlyViewEnabled;
+            }
+            
+            // Update RenderSettings to include Paint Only view state
+            RenderAll();
+        }
+        
+        /// <summary>
+        /// Handles context menu request from Paint Only mode controller.
+        /// </summary>
+        private void OnPaintOnlyContextMenuRequested(object? sender, PaintOnlyContextMenuEventArgs e)
+        {
+            // Get the Paint Only context menu from DrawCanvas resources
+            if (DrawCanvas.TryFindResource("PaintOnlyContextMenu") is ContextMenu contextMenu)
+            {
+                // Populate brush profiles menu
+                PopulatePaintOnlyBrushProfilesMenu(e.SelectedStrokes);
+                
+                // Position and show the context menu
+                contextMenu.PlacementTarget = DrawCanvas;
+                contextMenu.Placement = System.Windows.Controls.Primitives.PlacementMode.MousePoint;
+                contextMenu.IsOpen = true;
+            }
+        }
+        
+        /// <summary>
+        /// Populates the Paint Only brush profiles menu with checkable items.
+        /// </summary>
+        private void PopulatePaintOnlyBrushProfilesMenu(IReadOnlyList<GcodePaintingStroke> selectedStrokes)
+        {
+            // Find the menu item in the context menu
+            if (DrawCanvas.TryFindResource("PaintOnlyContextMenu") is not ContextMenu contextMenu) return;
+            
+            var profilesMenuItem = contextMenu.Items.OfType<MenuItem>()
+                .FirstOrDefault(m => m.Name == "PaintOnlyBrushProfilesMenuItem");
+            if (profilesMenuItem == null) return;
+            
+            profilesMenuItem.Items.Clear();
+            
+            // If no active profiles, show a disabled message
+            if (_activeBrushProfiles.Count == 0)
+            {
+                var noProfilesItem = new MenuItem
+                {
+                    Header = "(No profiles in use group)",
+                    IsEnabled = false,
+                    FontStyle = FontStyles.Italic
+                };
+                profilesMenuItem.Items.Add(noProfilesItem);
+                return;
+            }
+            
+            // Get common enabled profiles across selected strokes
+            var commonEnabled = new HashSet<string>();
+            var allEnabled = new HashSet<string>();
+            var first = true;
+            
+            foreach (var stroke in selectedStrokes)
+            {
+                var profiles = stroke.EnabledBrushProfiles ?? new HashSet<string>();
+                if (first)
+                {
+                    commonEnabled = new HashSet<string>(profiles);
+                    first = false;
+                }
+                else
+                {
+                    commonEnabled.IntersectWith(profiles);
+                }
+                allEnabled.UnionWith(profiles);
+            }
+            
+            // Add menu items for each profile
+            foreach (var profile in _activeBrushProfiles)
+            {
+                var profileName = string.IsNullOrWhiteSpace(profile.Name) ? "Unnamed Profile" : profile.Name;
+                var isFullyEnabled = commonEnabled.Contains(profileName);
+                var isPartiallyEnabled = allEnabled.Contains(profileName) && !isFullyEnabled;
+                
+                var menuItem = new MenuItem
+                {
+                    Header = isPartiallyEnabled ? $"{profileName} (partial)" : profileName,
+                    IsCheckable = true,
+                    IsChecked = isFullyEnabled,
+                    Tag = profileName,
+                    ToolTip = $"Min Z: {profile.MinZ:F1}mm, Max Z: {profile.MaxZ:F1}mm"
+                };
+                
+                menuItem.Click += PaintOnlyBrushProfileMenuItem_Click;
+                profilesMenuItem.Items.Add(menuItem);
+            }
+        }
+        
+        /// <summary>
+        /// Handles clicking on a brush profile menu item in Paint Only mode.
+        /// Note: In G-code based Paint Only mode, brush profiles are stored on the GcodePaintingStroke objects,
+        /// not directly on the document strokes. This is because Paint Only view shows G-code output,
+        /// not document input.
+        /// </summary>
+        private void PaintOnlyBrushProfileMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem menuItem) return;
+            if (menuItem.Tag is not string profileName) return;
+            if (_paintOnlyModeController == null) return;
+            
+            var selectedStrokes = _paintOnlyModeController.GetSelectedStrokes();
+            if (selectedStrokes.Count == 0) return;
+            
+            var isChecked = menuItem.IsChecked;
+            
+            // Update brush profiles on the G-code painting strokes
+            foreach (var stroke in selectedStrokes)
+            {
+                var enabledProfiles = stroke.EnabledBrushProfiles ?? new HashSet<string>();
+                var newProfiles = new HashSet<string>(enabledProfiles);
+                
+                if (isChecked)
+                {
+                    newProfiles.Add(profileName);
+                }
+                else
+                {
+                    newProfiles.Remove(profileName);
+                }
+                
+                stroke.HasBrushProfiles = newProfiles.Count > 0;
+                stroke.EnabledBrushProfiles = newProfiles.Count > 0 ? newProfiles : null;
+            }
+            
+            // Regenerate G-code with the new brush profiles applied
+            RegenerateGcodeWithBrushProfiles();
+            
+            var action = isChecked ? "enabled" : "disabled";
+            AppendLog($"[PAINT ONLY] Brush profile '{profileName}' {action} for {selectedStrokes.Count} painting stroke(s). G-code regenerated.");
+        }
+        
+        /// <summary>
+        /// Regenerates G-code with brush profiles applied, then re-parses and restores profile assignments.
+        /// </summary>
+        private void RegenerateGcodeWithBrushProfiles()
+        {
+            if (_gcodePaintingStrokeService == null) return;
+            
+            // Save current brush profile assignments by stroke number
+            var profileAssignments = new Dictionary<int, HashSet<string>>();
+            foreach (var stroke in _gcodePaintingStrokeService.PaintingStrokes)
+            {
+                if (stroke.EnabledBrushProfiles != null && stroke.EnabledBrushProfiles.Count > 0)
+                {
+                    profileAssignments[stroke.StrokeNumber] = new HashSet<string>(stroke.EnabledBrushProfiles);
+                }
+            }
+            
+            // Regenerate G-code (this will use the current profile assignments)
+            _lastGcode = BuildGcode();
+            
+            // Re-parse the new G-code
+            _gcodePaintingStrokeService.ParseGcode(_lastGcode);
+            
+            // Restore brush profile assignments to the new strokes
+            foreach (var stroke in _gcodePaintingStrokeService.PaintingStrokes)
+            {
+                if (profileAssignments.TryGetValue(stroke.StrokeNumber, out var profiles))
+                {
+                    stroke.HasBrushProfiles = true;
+                    stroke.EnabledBrushProfiles = profiles;
+                }
+            }
+            
+            // Refresh the Paint Only mode controller
+            _paintOnlyModeController?.RefreshPaintingStrokes();
+            
+            RenderAll();
+        }
+        
+        /// <summary>
+        /// Handles Select All in Paint Only mode.
+        /// </summary>
+        private void PaintOnlySelectAllMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            _paintOnlyModeController?.SelectAll();
+        }
+        
+        /// <summary>
+        /// Handles Deselect in Paint Only mode.
+        /// </summary>
+        private void PaintOnlyDeselectMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            _paintOnlyModeController?.ClearSelection();
+            RenderAll();
+        }
+        
+        /// <summary>
+        /// Handles Clear Brush Profiles in Paint Only mode.
+        /// </summary>
+        private void PaintOnlyClearProfilesMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            if (_paintOnlyModeController == null) return;
+            
+            var selectedStrokes = _paintOnlyModeController.GetSelectedStrokes();
+            if (selectedStrokes.Count == 0)
+            {
+                AppendLog("[PAINT ONLY] No strokes selected to clear profiles from.");
+                return;
+            }
+            
+            foreach (var stroke in selectedStrokes)
+            {
+                stroke.HasBrushProfiles = false;
+                stroke.EnabledBrushProfiles = null;
+            }
+            
+            // Regenerate G-code with the profiles cleared
+            RegenerateGcodeWithBrushProfiles();
+            
+            AppendLog($"[PAINT ONLY] Cleared brush profiles from {selectedStrokes.Count} painting stroke(s). G-code regenerated.");
+        }
+        
+        /// <summary>
+        /// Handles marquee selection updates from Paint Only mode controller.
+        /// </summary>
+        private void OnPaintOnlyMarqueeUpdated(object? sender, PaintOnlyMarqueeEventArgs e)
+        {
+            if (e.IsVisible)
+            {
+                ShowPaintOnlyMarquee(e.Start, e.End);
+            }
+            else
+            {
+                HidePaintOnlyMarquee();
+            }
+        }
+        
+        /// <summary>
+        /// Shows or updates the Paint Only mode marquee selection rectangle.
+        /// </summary>
+        private void ShowPaintOnlyMarquee(PointMm start, PointMm end)
+        {
+            if (_paintOnlyMarqueeRect == null)
+            {
+                _paintOnlyMarqueeRect = new System.Windows.Shapes.Rectangle
+                {
+                    Stroke = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromRgb(255, 200, 0)),
+                    StrokeThickness = 1.5,
+                    StrokeDashArray = new System.Windows.Media.DoubleCollection { 4, 2 },
+                    Fill = new System.Windows.Media.SolidColorBrush(
+                        System.Windows.Media.Color.FromArgb(30, 255, 200, 0)),
+                    IsHitTestVisible = false
+                };
+                DrawCanvas.Children.Add(_paintOnlyMarqueeRect);
+                System.Windows.Controls.Panel.SetZIndex(_paintOnlyMarqueeRect, 100);
+            }
+            
+            var left = Math.Min(start.X, end.X);
+            var top = Math.Min(start.Y, end.Y);
+            var width = Math.Abs(end.X - start.X);
+            var height = Math.Abs(end.Y - start.Y);
+            
+            _paintOnlyMarqueeRect.Width = width;
+            _paintOnlyMarqueeRect.Height = height;
+            System.Windows.Controls.Canvas.SetLeft(_paintOnlyMarqueeRect, left);
+            System.Windows.Controls.Canvas.SetTop(_paintOnlyMarqueeRect, top);
+        }
+        
+        /// <summary>
+        /// Hides the Paint Only mode marquee selection rectangle.
+        /// </summary>
+        private void HidePaintOnlyMarquee()
+        {
+            if (_paintOnlyMarqueeRect != null)
+            {
+                DrawCanvas.Children.Remove(_paintOnlyMarqueeRect);
+                _paintOnlyMarqueeRect = null;
+            }
+        }
     }
-
- }
+}

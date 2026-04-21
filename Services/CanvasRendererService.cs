@@ -5,6 +5,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Shapes;
@@ -77,6 +78,12 @@ namespace NVSPlotter.Services
         public double BedX { get; set; }
         public double BedY { get; set; }
         public bool BedFromGrbl { get; set; }
+        
+        /// <summary>
+        /// When true, renders the canvas in "Paint Only" view mode which shows
+        /// painting strokes as numbered sequences with colors and allows selection.
+        /// </summary>
+        public bool IsPaintOnlyViewEnabled { get; set; }
     }
 
     /// <summary>
@@ -93,6 +100,19 @@ namespace NVSPlotter.Services
         private readonly WorkingAreaManager _workingAreaManager;
         private readonly Action<string> _log;
         private readonly Func<HashSet<Guid>> _getShowIntermediatePointsForGroups;
+        
+        // Paint Only view mode support - uses G-code based painting strokes
+        private GcodePaintingStrokeService? _gcodePaintingStrokeService;
+        
+        /// <summary>
+        /// Selected painting strokes in Paint Only view mode.
+        /// </summary>
+        public HashSet<int> SelectedPaintingStrokeNumbers { get; } = new();
+        
+        /// <summary>
+        /// Currently hovered painting stroke number in Paint Only view mode (-1 if none).
+        /// </summary>
+        public int HoveredPaintingStrokeNumber { get; set; } = -1;
 
         private const double RULER_THICKNESS = 18.0;
         private const double HANDLE_MARGIN = 100.0;
@@ -120,6 +140,14 @@ namespace NVSPlotter.Services
             _workingAreaManager = workingAreaManager ?? throw new ArgumentNullException(nameof(workingAreaManager));
             _log = log ?? throw new ArgumentNullException(nameof(log));
             _getShowIntermediatePointsForGroups = getShowIntermediatePointsForGroups ?? throw new ArgumentNullException(nameof(getShowIntermediatePointsForGroups));
+        }
+        
+        /// <summary>
+        /// Sets the GcodePaintingStrokeService for Paint Only view mode rendering.
+        /// </summary>
+        public void SetGcodePaintingStrokeService(GcodePaintingStrokeService service)
+        {
+            _gcodePaintingStrokeService = service;
         }
 
         /// <summary>
@@ -170,16 +198,28 @@ namespace NVSPlotter.Services
             }
 
             // Paint wells (render before strokes so strokes appear on top)
-            _paintWellController.RenderPaintWells(settings.CanvasRotationAngle, settings.IsPaintModeEnabled);
+            // Hide paint wells in Paint Only view mode - we show strokes directly
+            if (!settings.IsPaintOnlyViewEnabled)
+            {
+                _paintWellController.RenderPaintWells(settings.CanvasRotationAngle, settings.IsPaintModeEnabled);
+            }
 
-            // Render strokes
-            RenderStrokes(settings);
+            // Render strokes - use Paint Only view if enabled
+            if (settings.IsPaintOnlyViewEnabled && _gcodePaintingStrokeService != null && _gcodePaintingStrokeService.PaintingStrokes.Count > 0)
+            {
+                RenderGcodePaintOnlyView(settings);
+            }
+            else
+            {
+                // Normal stroke rendering
+                RenderStrokes(settings);
 
-            // Selection indicators
-            DrawSelectionIndicators();
+                // Selection indicators (only in normal mode)
+                DrawSelectionIndicators();
 
-            // Selection visuals (bounding box, handles)
-            _selectionController.RenderSelectionVisuals();
+                // Selection visuals (bounding box, handles)
+                _selectionController.RenderSelectionVisuals();
+            }
 
             _log($"Doc: {doc.WidthMm:0} x {doc.HeightMm:0} mm, strokes={doc.Strokes.Count}, paintWells={doc.PaintWells.Count}");
             _log($"Bed: X={settings.BedX:0.###} Y={settings.BedY:0.###} {(settings.BedFromGrbl ? "(from $$)" : "(default)")}, margin={settings.SafeMarginMm:0.###}mm");
@@ -211,6 +251,8 @@ namespace NVSPlotter.Services
                     strokeBrush = Brushes.Black;
                 }
 
+                var strokeThickness = adaptiveThickness;
+
                 var ln = new Line
                 {
                     X1 = s.A.X,
@@ -218,13 +260,324 @@ namespace NVSPlotter.Services
                     X2 = s.B.X,
                     Y2 = s.B.Y,
                     Stroke = strokeBrush,
-                    StrokeThickness = adaptiveThickness,
+                    StrokeThickness = strokeThickness,
                     IsHitTestVisible = false
                 };
                 Panel.SetZIndex(ln, 4);
                 _drawCanvas.Children.Add(ln);
             }
         }
+
+        #endregion
+
+        #region Paint Only View Rendering (G-code Based)
+
+        /// <summary>
+        /// Renders the canvas in "Paint Only" view mode using G-code derived painting strokes.
+        /// Shows painting strokes as numbered sequences with colors and selection support.
+        /// G-code coordinates (work space) are transformed to document space for display.
+        /// </summary>
+        private void RenderGcodePaintOnlyView(RenderSettings settings)
+        {
+            if (_gcodePaintingStrokeService == null) return;
+            
+            var paintingStrokes = _gcodePaintingStrokeService.PaintingStrokes;
+            if (paintingStrokes.Count == 0)
+            {
+                _log("[PAINT ONLY] No G-code painting strokes to display");
+                return;
+            }
+            
+            var doc = _getDocument();
+            var currentZoom = settings.ZoomScale;
+            const double baseThickness = 3.0;
+            var adaptiveThickness = Math.Max(baseThickness, 4.0 / currentZoom);
+            
+            // Colors for selection/hover states
+            var selectedColor = Color.FromRgb(255, 200, 0);
+            var hoveredColor = Color.FromRgb(0, 200, 255);
+            
+            foreach (var paintingStroke in paintingStrokes)
+            {
+                // Determine stroke appearance based on selection/hover state
+                var isSelected = SelectedPaintingStrokeNumbers.Contains(paintingStroke.StrokeNumber);
+                var isHovered = HoveredPaintingStrokeNumber == paintingStroke.StrokeNumber;
+                
+                Color strokeColor;
+                double thickness;
+                
+                if (isSelected)
+                {
+                    strokeColor = selectedColor;
+                    thickness = adaptiveThickness * 1.5;
+                }
+                else if (isHovered)
+                {
+                    strokeColor = hoveredColor;
+                    thickness = adaptiveThickness * 1.3;
+                }
+                else
+                {
+                    strokeColor = paintingStroke.Color;
+                    thickness = adaptiveThickness;
+                }
+                
+                var strokeBrush = new SolidColorBrush(strokeColor);
+                
+                // Draw glow effect behind strokes with brush profiles
+                if (paintingStroke.HasBrushProfiles)
+                {
+                    foreach (var segment in paintingStroke.Segments)
+                    {
+                        // Transform G-code coords (X, -Y) to document coords
+                        var (x1, y1) = TransformGcodeToDocument(segment.FromX, segment.FromY, doc.HeightMm);
+                        var (x2, y2) = TransformGcodeToDocument(segment.ToX, segment.ToY, doc.HeightMm);
+                        
+                        var glowLine = new Line
+                        {
+                            X1 = x1,
+                            Y1 = y1,
+                            X2 = x2,
+                            Y2 = y2,
+                            Stroke = new SolidColorBrush(Color.FromArgb(100, 255, 255, 255)),
+                            StrokeThickness = thickness + 6.0 / currentZoom,
+                            IsHitTestVisible = false
+                        };
+                        Panel.SetZIndex(glowLine, 3);
+                        _drawCanvas.Children.Add(glowLine);
+                    }
+                }
+                
+                // Draw all segments in this painting stroke
+                foreach (var segment in paintingStroke.Segments)
+                {
+                    // Transform G-code coords (X, -Y) to document coords
+                    var (x1, y1) = TransformGcodeToDocument(segment.FromX, segment.FromY, doc.HeightMm);
+                    var (x2, y2) = TransformGcodeToDocument(segment.ToX, segment.ToY, doc.HeightMm);
+                    
+                    var line = new Line
+                    {
+                        X1 = x1,
+                        Y1 = y1,
+                        X2 = x2,
+                        Y2 = y2,
+                        Stroke = strokeBrush,
+                        StrokeThickness = thickness,
+                        Tag = paintingStroke.StrokeNumber,
+                        IsHitTestVisible = true,
+                        Cursor = System.Windows.Input.Cursors.Hand
+                    };
+                    Panel.SetZIndex(line, 4);
+                    _drawCanvas.Children.Add(line);
+                }
+                
+                // Transform start/end points for indicators and labels
+                var startPt = paintingStroke.StartPoint;
+                var endPt = paintingStroke.EndPoint;
+                var (startX, startY) = TransformGcodeToDocument(startPt.X, startPt.Y, doc.HeightMm);
+                var (endX, endY) = TransformGcodeToDocument(endPt.X, endPt.Y, doc.HeightMm);
+                var startDocPoint = new PointMm(startX, startY);
+                var endDocPoint = new PointMm(endX, endY);
+                
+                // Draw stroke number label at start of each painting stroke
+                var label = CreateGcodePaintingStrokeLabel(
+                    startDocPoint,
+                    paintingStroke.StrokeNumber,
+                    paintingStroke.PaintWellName,
+                    strokeColor,
+                    paintingStroke.HasBrushProfiles,
+                    settings.CanvasRotationAngle);
+                Panel.SetZIndex(label, 6);
+                _drawCanvas.Children.Add(label);
+                
+                // Draw selection indicator (dashed box) around selected strokes
+                if (isSelected)
+                {
+                    DrawPaintOnlySelectionIndicator(paintingStroke, doc.HeightMm, settings.ZoomScale);
+                }
+            }
+            
+            // Log status
+            var totalStrokes = paintingStrokes.Count;
+            var withProfiles = paintingStrokes.Count(s => s.HasBrushProfiles);
+            _log($"[PAINT ONLY] Showing {totalStrokes} G-code painting strokes ({withProfiles} with brush profiles)");
+        }
+        
+        /// <summary>
+        /// Draws a dashed selection indicator box around a G-code painting stroke.
+        /// </summary>
+        private void DrawPaintOnlySelectionIndicator(GcodePaintingStroke stroke, double docHeight, double zoomScale)
+        {
+            // Calculate bounding box of all segments in the stroke
+            double minX = double.MaxValue, maxX = double.MinValue;
+            double minY = double.MaxValue, maxY = double.MinValue;
+            
+            foreach (var segment in stroke.Segments)
+            {
+                var (x1, y1) = TransformGcodeToDocument(segment.FromX, segment.FromY, docHeight);
+                var (x2, y2) = TransformGcodeToDocument(segment.ToX, segment.ToY, docHeight);
+                
+                minX = Math.Min(minX, Math.Min(x1, x2));
+                maxX = Math.Max(maxX, Math.Max(x1, x2));
+                minY = Math.Min(minY, Math.Min(y1, y2));
+                maxY = Math.Max(maxY, Math.Max(y1, y2));
+            }
+            
+            // Add padding around the bounding box
+            const double padding = 5.0;
+            minX -= padding;
+            minY -= padding;
+            maxX += padding;
+            maxY += padding;
+            
+            var width = maxX - minX;
+            var height = maxY - minY;
+            
+            // Selection indicator color (golden/yellow)
+            var selectionColor = Color.FromRgb(255, 200, 0);
+            
+            // Draw dashed rectangle
+            var selectionRect = new Rectangle
+            {
+                Width = width,
+                Height = height,
+                Stroke = new SolidColorBrush(selectionColor),
+                StrokeThickness = Math.Max(1.5, 2.0 / zoomScale),
+                StrokeDashArray = new DoubleCollection { 4, 2 },
+                Fill = new SolidColorBrush(Color.FromArgb(20, 255, 200, 0)),
+                IsHitTestVisible = false,
+                SnapsToDevicePixels = true
+            };
+            
+            Canvas.SetLeft(selectionRect, minX);
+            Canvas.SetTop(selectionRect, minY);
+            Panel.SetZIndex(selectionRect, 5);
+            _drawCanvas.Children.Add(selectionRect);
+        }
+        
+        /// <summary>
+        /// Transforms G-code work coordinates to document coordinates for display.
+        /// G-code uses: X positive right, Y negative down (from top-left origin)
+        /// Document uses: X positive right, Y positive down (standard screen coords)
+        /// </summary>
+        private static (double docX, double docY) TransformGcodeToDocument(double gcodeX, double gcodeY, double docHeight)
+        {
+            // G-code Y is negative, so negate it to get positive document Y
+            // G-code X is already in document space
+            return (gcodeX, -gcodeY);
+        }
+        
+        /// <summary>
+        /// Creates a label for a G-code painting stroke showing its number, paint well name, and brush profile indicator.
+        /// </summary>
+        private Border CreateGcodePaintingStrokeLabel(
+            PointMm position,
+            int strokeNumber,
+            string? paintWellName,
+            Color color,
+            bool hasBrushProfiles,
+            double canvasRotationAngle)
+        {
+            var displayText = paintWellName != null 
+                ? $"{strokeNumber} ({paintWellName})"
+                : strokeNumber.ToString();
+            
+            if (hasBrushProfiles)
+            {
+                displayText += " ???"; // Brush emoji to indicate brush profiles
+            }
+            
+            // Create contrasting text color
+            var brightness = (color.R * 0.299 + color.G * 0.587 + color.B * 0.114) / 255;
+            var textColor = brightness > 0.5 ? Colors.Black : Colors.White;
+            
+            var textBlock = new TextBlock
+            {
+                Text = displayText,
+                FontSize = 10,
+                FontWeight = FontWeights.Bold,
+                Foreground = new SolidColorBrush(textColor),
+                VerticalAlignment = System.Windows.VerticalAlignment.Center,
+                HorizontalAlignment = System.Windows.HorizontalAlignment.Center
+            };
+            
+            var border = new Border
+            {
+                Background = new SolidColorBrush(color),
+                BorderBrush = new SolidColorBrush(Color.FromArgb(180, 0, 0, 0)),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(3),
+                Padding = new Thickness(4, 2, 4, 2),
+                Child = textBlock,
+                IsHitTestVisible = false
+            };
+            
+            // Apply counter-rotation so text stays readable when canvas is rotated
+            if (canvasRotationAngle != 0)
+            {
+                border.RenderTransformOrigin = new Point(0, 0.5);
+                border.RenderTransform = new RotateTransform(-canvasRotationAngle);
+            }
+            
+            // Position at start point with small offset
+            Canvas.SetLeft(border, position.X + 5);
+            Canvas.SetTop(border, position.Y - 15);
+            
+            return border;
+        }
+        
+        /// <summary>
+        /// Clears selection in Paint Only view mode.
+        /// </summary>
+        public void ClearPaintOnlySelection()
+        {
+            SelectedPaintingStrokeNumbers.Clear();
+            HoveredPaintingStrokeNumber = -1;
+        }
+        
+        /// <summary>
+        /// Selects a painting stroke in Paint Only view mode.
+        /// </summary>
+        public void SelectPaintingStroke(int strokeNumber, bool addToSelection = false)
+        {
+            if (!addToSelection)
+            {
+                SelectedPaintingStrokeNumbers.Clear();
+            }
+            SelectedPaintingStrokeNumbers.Add(strokeNumber);
+        }
+        
+        /// <summary>
+        /// Toggles selection of a painting stroke in Paint Only view mode.
+        /// </summary>
+        public void TogglePaintingStrokeSelection(int strokeNumber)
+        {
+            if (SelectedPaintingStrokeNumbers.Contains(strokeNumber))
+            {
+                SelectedPaintingStrokeNumbers.Remove(strokeNumber);
+            }
+            else
+            {
+                SelectedPaintingStrokeNumbers.Add(strokeNumber);
+            }
+        }
+        
+        /// <summary>
+        /// Gets the selected G-code painting strokes.
+        /// </summary>
+        public List<GcodePaintingStroke> GetSelectedGcodePaintingStrokes()
+        {
+            if (_gcodePaintingStrokeService == null) return new List<GcodePaintingStroke>();
+            
+            return _gcodePaintingStrokeService.PaintingStrokes
+                .Where(s => SelectedPaintingStrokeNumbers.Contains(s.StrokeNumber))
+                .ToList();
+        }
+        
+        /// <summary>
+        /// Gets the G-code painting stroke service.
+        /// </summary>
+        public GcodePaintingStrokeService? GetGcodePaintingStrokeService() => _gcodePaintingStrokeService;
 
         #endregion
 

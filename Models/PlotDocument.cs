@@ -101,16 +101,9 @@ public sealed class LineStroke
     /// </summary>
     public bool IsGroupEnd { get; set; }
 
-    /// <summary>
-    /// Set of brush profile names that are enabled for this stroke.
-    /// When plotting, one profile is randomly selected from this set to apply Z curves.
-    /// If empty or null, normal Z operation is used (simple pen up/down).
-    /// </summary>
-    public HashSet<string>? EnabledBrushProfiles { get; set; }
-
     public LineStroke(PointMm a, PointMm b, Guid? paintWellId = null, Guid? groupId = null, 
                           bool isGroupStart = false, bool isGroupEnd = false, Guid? parentGroupId = null,
-                          long paintOrder = 0, HashSet<string>? enabledBrushProfiles = null)
+                          long paintOrder = 0)
         {
             A = a;
             B = b;
@@ -120,24 +113,20 @@ public sealed class LineStroke
             ParentGroupId = parentGroupId;
             IsGroupStart = isGroupStart;
             IsGroupEnd = isGroupEnd;
-            EnabledBrushProfiles = enabledBrushProfiles;
         }
 
-        public LineStroke Reversed() => new LineStroke(B, A, PaintWellId, GroupId, IsGroupEnd, IsGroupStart, ParentGroupId, PaintOrder, EnabledBrushProfiles);
+        public LineStroke Reversed() => new LineStroke(B, A, PaintWellId, GroupId, IsGroupEnd, IsGroupStart, ParentGroupId, PaintOrder);
 
         /// <summary>Creates a copy with a different paint well assignment and optional new paint order</summary>
         public LineStroke WithPaintWell(Guid? paintWellId, long paintOrder = 0) => 
-            new LineStroke(A, B, paintWellId, GroupId, IsGroupStart, IsGroupEnd, ParentGroupId, paintOrder > 0 ? paintOrder : PaintOrder, EnabledBrushProfiles);
+            new LineStroke(A, B, paintWellId, GroupId, IsGroupStart, IsGroupEnd, ParentGroupId, paintOrder > 0 ? paintOrder : PaintOrder);
 
         /// <summary>Creates a copy with a different group assignment</summary>
-        public LineStroke WithGroup(Guid? groupId) => new LineStroke(A, B, PaintWellId, groupId, IsGroupStart, IsGroupEnd, ParentGroupId, PaintOrder, EnabledBrushProfiles);
+        public LineStroke WithGroup(Guid? groupId) => new LineStroke(A, B, PaintWellId, groupId, IsGroupStart, IsGroupEnd, ParentGroupId, PaintOrder);
 
         /// <summary>Creates a copy with a new parent group assignment</summary>
-        public LineStroke WithParentGroup(Guid? parentGroupId) => new LineStroke(A, B, PaintWellId, GroupId, IsGroupStart, IsGroupEnd, parentGroupId, PaintOrder, EnabledBrushProfiles);
+        public LineStroke WithParentGroup(Guid? parentGroupId) => new LineStroke(A, B, PaintWellId, GroupId, IsGroupStart, IsGroupEnd, parentGroupId, PaintOrder);
 
         /// <summary>Creates a copy with new start/end markers</summary>
-        public LineStroke WithMarkers(bool isGroupStart, bool isGroupEnd) => new LineStroke(A, B, PaintWellId, GroupId, isGroupStart, isGroupEnd, ParentGroupId, PaintOrder, EnabledBrushProfiles);
-
-        /// <summary>Creates a copy with new brush profile assignments</summary>
-        public LineStroke WithBrushProfiles(HashSet<string>? enabledProfiles) => new LineStroke(A, B, PaintWellId, GroupId, IsGroupStart, IsGroupEnd, ParentGroupId, PaintOrder, enabledProfiles);
+        public LineStroke WithMarkers(bool isGroupStart, bool isGroupEnd) => new LineStroke(A, B, PaintWellId, GroupId, isGroupStart, isGroupEnd, ParentGroupId, PaintOrder);
     }

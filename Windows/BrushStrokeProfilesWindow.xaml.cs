@@ -114,6 +114,86 @@ namespace NVSPlotter.Windows
             };
         }
         
+        /// <summary>
+        /// Loads active brush profiles (those with IsInGroup enabled) directly from the saved JSON file.
+        /// This can be called without instantiating a BrushStrokeProfilesWindow.
+        /// </summary>
+        /// <returns>List of active brush profiles, or empty list if none found.</returns>
+        public static IReadOnlyList<BrushProfile> LoadActiveProfilesFromDisk()
+        {
+            var profiles = new List<BrushProfile>();
+            var path = GetProfilesPathStatic();
+            
+            if (!File.Exists(path))
+                return profiles;
+            
+            try
+            {
+                var json = File.ReadAllText(path);
+                var savedProfiles = JsonSerializer.Deserialize<List<SerializableProfileStatic>>(json);
+                
+                if (savedProfiles == null || savedProfiles.Count == 0)
+                    return profiles;
+                
+                foreach (var saved in savedProfiles)
+                {
+                    if (saved.IsInGroup)
+                    {
+                        var points = saved.Points?
+                            .Select(p => new System.Windows.Point(p.X, p.Y))
+                            .ToList() ?? new List<System.Windows.Point>();
+                        
+                        profiles.Add(new BrushProfile
+                        {
+                            Name = saved.Name ?? string.Empty,
+                            NormalizedPoints = points,
+                            StrokeSpeed = saved.StrokeSpeed,
+                            PressureMultiplier = saved.PressureMultiplier,
+                            MinZ = saved.MinZ,
+                            MaxZ = saved.MaxZ,
+                            SampleCount = saved.SampleCount,
+                            BedWidthMm = saved.BedWidthMm,
+                            Description = saved.Description ?? string.Empty
+                        });
+                    }
+                }
+            }
+            catch
+            {
+                // Ignore load errors - return empty list
+            }
+            
+            return profiles;
+        }
+        
+        private static string GetProfilesPathStatic()
+        {
+            var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "NVSPlotter");
+            Directory.CreateDirectory(dir);
+            return Path.Combine(dir, "brushprofiles.json");
+        }
+        
+        // Helper class for static deserialization (same structure as SerializableProfile)
+        private class SerializableProfileStatic
+        {
+            public List<SerializablePointStatic>? Points { get; set; }
+            public string Name { get; set; } = string.Empty;
+            public bool IsInGroup { get; set; } = false;
+            public double StrokeSpeed { get; set; } = 100.0;
+            public double PressureMultiplier { get; set; } = 1.0;
+            public double BedWidthMm { get; set; } = 200.0;
+            public double MinZ { get; set; } = 0.0;
+            public double MaxZ { get; set; } = 10.0;
+            public int SampleCount { get; set; } = 200;
+            public string Description { get; set; } = string.Empty;
+        }
+        
+        private class SerializablePointStatic
+        {
+            public double X { get; set; }
+            public double Y { get; set; }
+        }
+        
         private void RaiseActiveProfilesChanged()
         {
             ActiveProfilesChanged?.Invoke(this, ActiveProfiles);
