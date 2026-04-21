@@ -293,16 +293,13 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 - Add XML documentation for public APIs
 - Keep methods focused and single-purpose
 
-## 📝 License
-
-This project is licenseable.
-
 ## 🙏 Acknowledgments
 
 - Built with WPF and .NET 8
 - GRBL firmware compatibility
 - Uses WpfAnimatedGif for loading indicators
 - Emoji.Wpf for emoji rendering support
+- FontAwesome for Icons
 
 ## 📧 Contact
 
@@ -318,7 +315,24 @@ This project is licenseable.
 
 ## 📸 Screenshots
 
-*TODO: Add screenshots of the main interface, paint only mode, brush profile editor, and G-code visualizer*
+<img width="99%" alt="Full_Interface_DK" src="https://github.com/user-attachments/assets/8b592083-8351-47dd-9bf0-8ed5cebef63d" />
+
+<p float="left">
+  <img width="49%"  alt="Machine_Settings" src="https://github.com/user-attachments/assets/8bcb7824-e24a-41cb-b594-bc8ef92e30fa" />
+  <img width="49%"  alt="painting_mode" src="https://github.com/user-attachments/assets/7d5e4535-0d2d-4211-8a38-b1c12fb5636c" />
+</p>
+
+<img width="99%" alt="path_visualiser" src="https://github.com/user-attachments/assets/a8ec80b3-eff7-48a3-b3bc-8a7cccc8f879" />
+
+<p float="left">
+<img width="49%"  alt="brush_profiles" src="https://github.com/user-attachments/assets/a58da0ef-4c36-4229-9c5f-f2d0b9699175" />
+<img width="49%" alt="Console" src="https://github.com/user-attachments/assets/8ba91f1d-692c-430e-8026-edc47930fcd9" />
+<img width="49%" alt="gcode_settings" src="https://github.com/user-attachments/assets/b5fdc8b5-3f61-4249-87c8-785cfb94f8ae" />
+<img width="49%" alt="plotter_settings" src="https://github.com/user-attachments/assets/fac270c6-d1b7-49d4-9b8b-a971e57eed72" />
+<img width="49%" alt="subdivide" src="https://github.com/user-attachments/assets/d261bce2-e4e6-4d5d-86e4-b932f1dc117a" />  
+</p>
+
+
 
 ---
 
