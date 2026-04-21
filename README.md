@@ -17,7 +17,7 @@ A powerful WPF application for creating and controlling painting plotters with G
 ### ??? Brush Stroke Profiles
 - **Dynamic Z-Axis Control**: Apply pressure curves to strokes for realistic brush effects
 - **Custom Profiles**: Create and manage reusable brush stroke profiles with pressure curves
-- **Visual Profile Editor**: Interactive Bézier curve editor for designing brush behaviors
+- **Visual Profile Editor**: Interactive BÃ©zier curve editor for designing brush behaviors
 - **Profile Parameters**: 
   - Customizable sample count for smooth curves
   - Adjustable stroke speed per profile
@@ -25,7 +25,7 @@ A powerful WPF application for creating and controlling painting plotters with G
 - **Paint Only Mode Integration**: Assign brush profiles to painting strokes after G-code generation
 
 ### ?? Drawing Tools
-- **Vector Drawing**: Lines, rectangles, circles, polylines, and Bézier curves
+- **Vector Drawing**: Lines, rectangles, circles, polylines, and BÃ©zier curves
 - **Object Grouping**: Group/ungroup strokes, hierarchical parent groups
 - **Subdivision**: Add intermediate points to strokes for finer control
 - **Selection & Transform**: Select, move, copy, paste, and delete strokes
@@ -37,7 +37,7 @@ A powerful WPF application for creating and controlling painting plotters with G
 - **Popular Canvas Presets**: Quick selection of A-series, US Letter/Legal, and common art canvas sizes
 - **Individual Margins**: Set different safe margins for each side
 - **Margin Lock to Canvas**: Calculate margins from paint canvas edges
-- **Auto-Rotation**: Automatically rotate canvas 90° to optimize bed usage
+- **Auto-Rotation**: Automatically rotate canvas 90Â° to optimize bed usage
 - **Zoom & Pan**: Smooth canvas navigation with mouse wheel zoom
 
 ### ?? G-code Generation
@@ -178,7 +178,7 @@ Each paint well has:
 
 ### Profile Editor
 - **Interactive Curve**: Click to add control points, drag to adjust
-- **Bézier Interpolation**: Smooth curves between control points
+- **BÃ©zier Interpolation**: Smooth curves between control points
 - **Sample Count**: Control smoothness (20-200 samples)
 - **Stroke Speed**: Override default feed rate
 - **Z Range**: Min/Max Z depth limits
@@ -265,7 +265,7 @@ Save and load complete projects including:
 - **PlotDocument**: Main document containing strokes and paint wells
 - **LineStroke**: Individual line segment with paint/group metadata
 - **PaintWell**: Paint source definition with position and parameters
-- **BrushProfile**: Brush stroke profile with Bézier curve
+- **BrushProfile**: Brush stroke profile with BÃ©zier curve
 - **GcodePaintingStroke**: Parsed painting stroke from G-code
 - **ProjectFile**: Complete project serialization
 
