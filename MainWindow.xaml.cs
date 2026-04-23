@@ -5162,5 +5162,11 @@ namespace NVSPlotter
                 _paintOnlyMarqueeRect = null;
             }
         }
+
+        protected override void OnClosed(EventArgs e)
+        {
+            try { _grblManager.Dispose(); } catch { }
+            base.OnClosed(e);
+        }
     }
 }
