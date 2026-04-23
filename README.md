@@ -1,6 +1,6 @@
-# PlotPaint 🎨
+# PlottPaint 🎨
 
-PlotPaint transforms your gantry-style plotter into an automated painting machine with intelligent brush stroke profiles, color management, and advanced path optimization.
+PlottPaint transforms your gantry-style plotter into an automated painting machine with intelligent brush stroke profiles, color management, and advanced path optimization.
 
 [![.NET 8](https://img.shields.io/badge/.NET-8.0-512BD4)](https://dotnet.microsoft.com/download/dotnet/8.0)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
@@ -79,8 +79,8 @@ PlotPaint transforms your gantry-style plotter into an automated painting machin
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/teryakisan/PlotPaint.git
-cd PlotPaint
+git clone https://github.com/teryakisan/PlottPaint.git
+cd PlottPaint
 ```
 
 2. Open the solution:
@@ -304,7 +304,7 @@ Contributions are welcome! Please feel free to submit issues and pull requests.
 ## 📧 Contact
 
 - GitHub: [@teryakisan](https://github.com/teryakisan)
-- Project: [PlotPaint](https://github.com/teryakisan/PlotPaint)
+- Project: [PlottPaint](https://github.com/teryakisan/PlottPaint)
 
 ## 🗺️ Roadmap
 
