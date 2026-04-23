@@ -16,6 +16,7 @@ public sealed class GrblConnection : IDisposable
     private readonly object _rxLock = new();
     private readonly StringBuilder _rx = new(8192);
     private readonly Queue<string> _lines = new();
+    private readonly SemaphoreSlim _lineAvailable = new(0, int.MaxValue);
 
     private readonly SemaphoreSlim _sendLock = new(1, 1);
 
@@ -117,19 +118,19 @@ public sealed class GrblConnection : IDisposable
 
     private async Task<string?> ReadLineAsync(CancellationToken ct)
     {
-        for (int i = 0; i < 500; i++)
+        lock (_rxLock)
         {
-            ct.ThrowIfCancellationRequested();
-
-            lock (_rxLock)
-            {
-                if (_lines.Count > 0)
-                    return _lines.Dequeue();
-            }
-
-            await Task.Delay(10, ct);
+            if (_lines.Count > 0)
+                return _lines.Dequeue();
         }
-        return null;
+
+        if (!await _lineAvailable.WaitAsync(TimeSpan.FromSeconds(5), ct))
+            return null;
+
+        lock (_rxLock)
+        {
+            return _lines.Count > 0 ? _lines.Dequeue() : null;
+        }
     }
 
     private void Port_DataReceived(object sender, SerialDataReceivedEventArgs e)
@@ -139,6 +140,7 @@ public sealed class GrblConnection : IDisposable
             var s = _port.ReadExisting();
             if (string.IsNullOrEmpty(s)) return;
 
+            int enqueued = 0;
             lock (_rxLock)
             {
                 _rx.Append(s);
@@ -151,11 +153,14 @@ public sealed class GrblConnection : IDisposable
 
                     var line = str[..idx].Trim('\r');
                     _lines.Enqueue(line);
+                    enqueued++;
 
                     _rx.Clear();
                     _rx.Append(str[(idx + 1)..]);
                 }
             }
+
+            if (enqueued > 0) _lineAvailable.Release(enqueued);
         }
         catch
         {
@@ -169,5 +174,6 @@ public sealed class GrblConnection : IDisposable
         try { if (_port.IsOpen) _port.Close(); } catch { }
         _port.Dispose();
         _sendLock.Dispose();
+        _lineAvailable.Dispose();
     }
 }
