@@ -4318,7 +4318,27 @@ namespace NVSPlotter
             _paintWellController.SetActiveColor(well);
             
             // AUTO-APPLY: If strokes are selected, apply this color to them immediately
-            if (_selectionController.HasSelection && _selectionController.SelectedIndices.Count > 0)
+            if (_isPaintOnlyViewEnabled && _paintOnlyModeController != null && _paintOnlyModeController.HasSelection)
+            {
+                // In paint only mode, selection is GcodePaintingStrokes; map back to source LineStrokes
+                var selectedGcodeStrokes = _paintOnlyModeController.GetSelectedStrokes();
+                var sourceIndices = new HashSet<int>();
+                foreach (var gcodeStroke in selectedGcodeStrokes)
+                    foreach (var idx in gcodeStroke.SourceStrokeIndices)
+                        sourceIndices.Add(idx);
+
+                foreach (var idx in sourceIndices)
+                {
+                    if (idx >= 0 && idx < _doc.Strokes.Count)
+                    {
+                        var paintOrder = _doc.GetNextPaintOrder();
+                        _doc.Strokes[idx] = _doc.Strokes[idx].WithPaintWell(well.Id, paintOrder);
+                    }
+                }
+                _lastGcode = "";
+                AppendLog($"Applied '{well.Name}' color to {selectedGcodeStrokes.Count} painting stroke(s).");
+            }
+            else if (_selectionController.HasSelection && _selectionController.SelectedIndices.Count > 0)
             {
                 foreach (var idx in _selectionController.SelectedIndices)
                 {
